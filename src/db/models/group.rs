@@ -1,47 +1,75 @@
-use chrono::{NaiveDateTime, Utc};
-use serde_json::Value;
+use axum_util::errors::ApiResult;
+use chrono::{DateTime, Utc};
+use serde_json::{json, Value};
+use tokio_postgres::Row;
+use uuid::Uuid;
 
-db_object! {
-    #[derive(Identifiable, Queryable, Insertable, AsChangeset)]
-    #[diesel(table_name = groups)]
-    #[diesel(primary_key(uuid))]
-    pub struct Group {
-        pub uuid: String,
-        pub organizations_uuid: String,
-        pub name: String,
-        pub access_all: bool,
-        pub external_id: Option<String>,
-        pub creation_date: NaiveDateTime,
-        pub revision_date: NaiveDateTime,
+use crate::db::Conn;
+
+pub struct Group {
+    pub uuid: Uuid,
+    pub organization_uuid: Uuid,
+    pub name: String,
+    pub access_all: bool,
+    pub external_id: Option<String>,
+    pub creation_date: DateTime<Utc>,
+    pub revision_date: DateTime<Utc>,
+}
+
+impl From<Row> for Group {
+    fn from(row: Row) -> Self {
+        Self {
+            uuid: row.get(0),
+            organization_uuid: row.get(1),
+            name: row.get(2),
+            access_all: row.get(3),
+            external_id: row.get(4),
+            creation_date: row.get(5),
+            revision_date: row.get(6),
+        }
     }
+}
 
-    #[derive(Identifiable, Queryable, Insertable)]
-    #[diesel(table_name = collections_groups)]
-    #[diesel(primary_key(collections_uuid, groups_uuid))]
-    pub struct CollectionGroup {
-        pub collections_uuid: String,
-        pub groups_uuid: String,
-        pub read_only: bool,
-        pub hide_passwords: bool,
+pub struct CollectionGroup {
+    pub collection_uuid: Uuid,
+    pub group_uuid: Uuid,
+    pub read_only: bool,
+    pub hide_passwords: bool,
+}
+
+impl From<Row> for CollectionGroup {
+    fn from(row: Row) -> Self {
+        Self {
+            collection_uuid: row.get(0),
+            group_uuid: row.get(1),
+            read_only: row.get(2),
+            hide_passwords: row.get(3),
+        }
     }
+}
 
-    #[derive(Identifiable, Queryable, Insertable)]
-    #[diesel(table_name = groups_users)]
-    #[diesel(primary_key(groups_uuid, users_organizations_uuid))]
-    pub struct GroupUser {
-        pub groups_uuid: String,
-        pub users_organizations_uuid: String
+pub struct GroupUser {
+    pub group_uuid: Uuid,
+    pub user_uuid: Uuid,
+}
+
+impl From<Row> for GroupUser {
+    fn from(row: Row) -> Self {
+        Self {
+            group_uuid: row.get(0),
+            user_uuid: row.get(1),
+        }
     }
 }
 
 /// Local methods
 impl Group {
-    pub fn new(organizations_uuid: String, name: String, access_all: bool, external_id: Option<String>) -> Self {
-        let now = Utc::now().naive_utc();
+    pub fn new(organization_uuid: Uuid, name: String, access_all: bool, external_id: Option<String>) -> Self {
+        let now = Utc::now();
 
         let mut new_model = Self {
-            uuid: crate::util::get_uuid(),
-            organizations_uuid,
+            uuid: Uuid::new_v4(),
+            organization_uuid,
             name,
             access_all,
             external_id: None,
@@ -59,7 +87,7 @@ impl Group {
 
         json!({
             "Id": self.uuid,
-            "OrganizationId": self.organizations_uuid,
+            "OrganizationId": self.organization_uuid,
             "Name": self.name,
             "AccessAll": self.access_all,
             "ExternalId": self.external_id,
@@ -69,28 +97,28 @@ impl Group {
         })
     }
 
-    pub async fn to_json_details(&self, conn: &mut DbConn) -> Value {
-        let collections_groups: Vec<Value> = CollectionGroup::find_by_group(&self.uuid, conn)
-            .await
+    pub async fn to_json_details(&self, conn: &Conn) -> ApiResult<Value> {
+        let collections_groups: Vec<Value> = CollectionGroup::find_by_group(conn, self.uuid)
+            .await?
             .iter()
             .map(|entry| {
                 json!({
-                    "Id": entry.collections_uuid,
+                    "Id": entry.collection_uuid,
                     "ReadOnly": entry.read_only,
                     "HidePasswords": entry.hide_passwords
                 })
             })
             .collect();
 
-        json!({
+        Ok(json!({
             "Id": self.uuid,
-            "OrganizationId": self.organizations_uuid,
+            "OrganizationId": self.organization_uuid,
             "Name": self.name,
             "AccessAll": self.access_all,
             "ExternalId": self.external_id,
             "Collections": collections_groups,
             "Object": "groupDetails"
-        })
+        }))
     }
 
     pub fn set_external_id(&mut self, external_id: Option<String>) {
@@ -110,10 +138,10 @@ impl Group {
 }
 
 impl CollectionGroup {
-    pub fn new(collections_uuid: String, groups_uuid: String, read_only: bool, hide_passwords: bool) -> Self {
+    pub fn new(collection_uuid: Uuid, group_uuid: Uuid, read_only: bool, hide_passwords: bool) -> Self {
         Self {
-            collections_uuid,
-            groups_uuid,
+            collection_uuid,
+            group_uuid,
             read_only,
             hide_passwords,
         }
@@ -121,429 +149,158 @@ impl CollectionGroup {
 }
 
 impl GroupUser {
-    pub fn new(groups_uuid: String, users_organizations_uuid: String) -> Self {
+    pub fn new(group_uuid: Uuid, user_uuid: Uuid) -> Self {
         Self {
-            groups_uuid,
-            users_organizations_uuid,
+            group_uuid,
+            user_uuid,
         }
     }
 }
 
-use crate::db::DbConn;
-
-use crate::api::EmptyResult;
-use crate::error::MapResult;
-
-use super::{User, UserOrganization};
-
 /// Database methods
 impl Group {
-    pub async fn save(&mut self, conn: &mut DbConn) -> EmptyResult {
-        self.revision_date = Utc::now().naive_utc();
+    pub async fn save(&mut self, conn: &Conn) -> ApiResult<()> {
+        self.revision_date = Utc::now();
 
-        db_run! { conn:
-            sqlite, mysql {
-                match diesel::replace_into(groups::table)
-                    .values(GroupDb::to_db(self))
-                    .execute(conn)
-                {
-                    Ok(_) => Ok(()),
-                    // Record already exists and causes a Foreign Key Violation because replace_into() wants to delete the record first.
-                    Err(diesel::result::Error::DatabaseError(diesel::result::DatabaseErrorKind::ForeignKeyViolation, _)) => {
-                        diesel::update(groups::table)
-                            .filter(groups::uuid.eq(&self.uuid))
-                            .set(GroupDb::to_db(self))
-                            .execute(conn)
-                            .map_res("Error saving group")
-                    }
-                    Err(e) => Err(e.into()),
-                }.map_res("Error saving group")
-            }
-            postgresql {
-                let value = GroupDb::to_db(self);
-                diesel::insert_into(groups::table)
-                    .values(&value)
-                    .on_conflict(groups::uuid)
-                    .do_update()
-                    .set(&value)
-                    .execute(conn)
-                    .map_res("Error saving group")
-            }
-        }
-    }
-
-    pub async fn delete_all_by_organization(org_uuid: &str, conn: &mut DbConn) -> EmptyResult {
-        for group in Self::find_by_organization(org_uuid, conn).await {
-            group.delete(conn).await?;
-        }
+        conn.execute(r"INSERT INTO groups (uuid, organization_uuid, name, access_all, external_id, creation_date, revision_date) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (uuid) DO UPDATE
+        SET
+        organization_uuid = EXCLUDED.organization_uuid,
+        name = EXCLUDED.name,
+        access_all = EXCLUDED.access_all,
+        external_id = EXCLUDED.external_id,
+        creation_date = EXCLUDED.creation_date,
+        revision_date = EXCLUDED.revision_date", &[
+            &self.uuid,
+            &self.organization_uuid,
+            &self.name,
+            &self.access_all,
+            &self.external_id,
+            &self.creation_date,
+            &self.revision_date,
+        ]).await?;
         Ok(())
     }
 
-    pub async fn find_by_organization(organizations_uuid: &str, conn: &mut DbConn) -> Vec<Self> {
-        db_run! { conn: {
-            groups::table
-                .filter(groups::organizations_uuid.eq(organizations_uuid))
-                .load::<GroupDb>(conn)
-                .expect("Error loading groups")
-                .from_db()
-        }}
+    pub async fn find_by_organization(conn: &Conn, organization_uuid: Uuid) -> ApiResult<Vec<Self>> {
+        Ok(conn.query(r"SELECT cu.* FROM groups cu WHERE cu.organization_uuid = $1", &[&organization_uuid]).await?.into_iter().map(|x| x.into()).collect())
     }
 
-    pub async fn count_by_org(organizations_uuid: &str, conn: &mut DbConn) -> i64 {
-        db_run! { conn: {
-            groups::table
-                .filter(groups::organizations_uuid.eq(organizations_uuid))
-                .count()
-                .first::<i64>(conn)
-                .ok()
-                .unwrap_or(0)
-        }}
+    pub async fn count_by_org(conn: &Conn, organization_uuid: Uuid) -> ApiResult<i64> {
+        Ok(conn.query_one(r"SELECT count(1) FROM groups WHERE organization_uuid = $1", &[&organization_uuid]).await?.get(0))
     }
 
-    pub async fn find_by_uuid(uuid: &str, conn: &mut DbConn) -> Option<Self> {
-        db_run! { conn: {
-            groups::table
-                .filter(groups::uuid.eq(uuid))
-                .first::<GroupDb>(conn)
-                .ok()
-                .from_db()
-        }}
+    pub async fn get(conn: &Conn, uuid: Uuid) -> ApiResult<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM groups WHERE uuid = $1", &[&uuid]).await?.map(Into::into))
     }
 
-    pub async fn find_by_external_id(id: &str, conn: &mut DbConn) -> Option<Self> {
-        db_run! { conn: {
-            groups::table
-                .filter(groups::external_id.eq(id))
-                .first::<GroupDb>(conn)
-                .ok()
-                .from_db()
-        }}
-    }
-    //Returns all organizations the user has full access to
-    pub async fn gather_user_organizations_full_access(user_uuid: &str, conn: &mut DbConn) -> Vec<String> {
-        db_run! { conn: {
-            groups_users::table
-                .inner_join(users_organizations::table.on(
-                    users_organizations::uuid.eq(groups_users::users_organizations_uuid)
-                ))
-                .inner_join(groups::table.on(
-                    groups::uuid.eq(groups_users::groups_uuid)
-                ))
-                .filter(users_organizations::user_uuid.eq(user_uuid))
-                .filter(groups::access_all.eq(true))
-                .select(groups::organizations_uuid)
-                .distinct()
-                .load::<String>(conn)
-                .expect("Error loading organization group full access information for user")
-        }}
+    pub async fn get_for_org(conn: &Conn, uuid: Uuid, organization_uuid: Uuid) -> ApiResult<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM groups WHERE uuid = $1 AND organization_uuid = $2", &[&uuid, &organization_uuid]).await?.map(Into::into))
     }
 
-    pub async fn is_in_full_access_group(user_uuid: &str, org_uuid: &str, conn: &mut DbConn) -> bool {
-        db_run! { conn: {
-            groups::table
-                .inner_join(groups_users::table.on(
-                    groups_users::groups_uuid.eq(groups::uuid)
-                ))
-                .inner_join(users_organizations::table.on(
-                    users_organizations::uuid.eq(groups_users::users_organizations_uuid)
-                ))
-                .filter(users_organizations::user_uuid.eq(user_uuid))
-                .filter(groups::organizations_uuid.eq(org_uuid))
-                .filter(groups::access_all.eq(true))
-                .select(groups::access_all)
-                .first::<bool>(conn)
-                .unwrap_or_default()
-        }}
+    pub async fn find_by_external_id(conn: &Conn, id: &str) -> ApiResult<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM groups WHERE external_id = $1", &[&id]).await?.map(Into::into))
     }
 
-    pub async fn delete(&self, conn: &mut DbConn) -> EmptyResult {
-        CollectionGroup::delete_all_by_group(&self.uuid, conn).await?;
-        GroupUser::delete_all_by_group(&self.uuid, conn).await?;
+    // //Returns all organizations the user has full access to
+    // pub async fn gather_user_organizations_full_access(conn: &Conn, user_uuid: Uuid) -> Vec<String> {
+    //     db_run! { conn: {
+    //         groups_users::table
+    //             .inner_join(users_organizations::table.on(
+    //                 users_organizations::uuid.eq(groups_users::users_organization_uuid)
+    //             ))
+    //             .inner_join(groups::table.on(
+    //                 groups::uuid.eq(groups_users::group_uuid)
+    //             ))
+    //             .filter(users_organizations::user_uuid.eq(user_uuid))
+    //             .filter(groups::access_all.eq(true))
+    //             .select(groups::organization_uuid)
+    //             .distinct()
+    //             .load::<String>(conn)
+    //             .expect("Error loading organization group full access information for user")
+    //     }}
+    // }
 
-        db_run! { conn: {
-            diesel::delete(groups::table.filter(groups::uuid.eq(&self.uuid)))
-                .execute(conn)
-                .map_res("Error deleting group")
-        }}
-    }
-
-    pub async fn update_revision(uuid: &str, conn: &mut DbConn) {
-        if let Err(e) = Self::_update_revision(uuid, &Utc::now().naive_utc(), conn).await {
-            warn!("Failed to update revision for {}: {:#?}", uuid, e);
-        }
-    }
-
-    async fn _update_revision(uuid: &str, date: &NaiveDateTime, conn: &mut DbConn) -> EmptyResult {
-        db_run! {conn: {
-            crate::util::retry(|| {
-                diesel::update(groups::table.filter(groups::uuid.eq(uuid)))
-                    .set(groups::revision_date.eq(date))
-                    .execute(conn)
-            }, 10)
-            .map_res("Error updating group revision")
-        }}
+    pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
+        conn.execute(r"DELETE FROM groups WHERE uuid = $1", &[&self.uuid]).await?;
+        Ok(())
     }
 }
 
 impl CollectionGroup {
-    pub async fn save(&mut self, conn: &mut DbConn) -> EmptyResult {
-        let group_users = GroupUser::find_by_group(&self.groups_uuid, conn).await;
-        for group_user in group_users {
-            group_user.update_user_revision(conn).await;
-        }
-
-        db_run! { conn:
-            sqlite, mysql {
-                match diesel::replace_into(collections_groups::table)
-                    .values((
-                        collections_groups::collections_uuid.eq(&self.collections_uuid),
-                        collections_groups::groups_uuid.eq(&self.groups_uuid),
-                        collections_groups::read_only.eq(&self.read_only),
-                        collections_groups::hide_passwords.eq(&self.hide_passwords),
-                    ))
-                    .execute(conn)
-                {
-                    Ok(_) => Ok(()),
-                    // Record already exists and causes a Foreign Key Violation because replace_into() wants to delete the record first.
-                    Err(diesel::result::Error::DatabaseError(diesel::result::DatabaseErrorKind::ForeignKeyViolation, _)) => {
-                        diesel::update(collections_groups::table)
-                            .filter(collections_groups::collections_uuid.eq(&self.collections_uuid))
-                            .filter(collections_groups::groups_uuid.eq(&self.groups_uuid))
-                            .set((
-                                collections_groups::collections_uuid.eq(&self.collections_uuid),
-                                collections_groups::groups_uuid.eq(&self.groups_uuid),
-                                collections_groups::read_only.eq(&self.read_only),
-                                collections_groups::hide_passwords.eq(&self.hide_passwords),
-                            ))
-                            .execute(conn)
-                            .map_res("Error adding group to collection")
-                    }
-                    Err(e) => Err(e.into()),
-                }.map_res("Error adding group to collection")
-            }
-            postgresql {
-                diesel::insert_into(collections_groups::table)
-                    .values((
-                        collections_groups::collections_uuid.eq(&self.collections_uuid),
-                        collections_groups::groups_uuid.eq(&self.groups_uuid),
-                        collections_groups::read_only.eq(self.read_only),
-                        collections_groups::hide_passwords.eq(self.hide_passwords),
-                    ))
-                    .on_conflict((collections_groups::collections_uuid, collections_groups::groups_uuid))
-                    .do_update()
-                    .set((
-                        collections_groups::read_only.eq(self.read_only),
-                        collections_groups::hide_passwords.eq(self.hide_passwords),
-                    ))
-                    .execute(conn)
-                    .map_res("Error adding group to collection")
-            }
-        }
+    pub async fn save(&self, conn: &Conn) -> ApiResult<()> {
+        conn.execute(r"INSERT INTO collection_groups (collection_uuid, group_uuid, read_only, hide_passwords) VALUES ($1, $2, $3, $4) ON CONFLICT (collection_uuid, group_uuid) DO UPDATE
+        SET
+        read_only = EXCLUDED.read_only,
+        hide_passwords = EXCLUDED.hide_passwords", &[
+            &self.collection_uuid,
+            &self.group_uuid,
+            &self.read_only,
+            &self.hide_passwords,
+        ]).await?;
+        Ok(())
     }
 
-    pub async fn find_by_group(group_uuid: &str, conn: &mut DbConn) -> Vec<Self> {
-        db_run! { conn: {
-            collections_groups::table
-                .filter(collections_groups::groups_uuid.eq(group_uuid))
-                .load::<CollectionGroupDb>(conn)
-                .expect("Error loading collection groups")
-                .from_db()
-        }}
+    pub async fn find_by_group(conn: &Conn, group_uuid: Uuid) -> ApiResult<Vec<Self>> {
+        Ok(conn.query(r"SELECT * FROM collection_groups WHERE group_uuid = $1", &[&group_uuid]).await?.into_iter().map(|x| x.into()).collect())
     }
 
-    pub async fn find_by_user(user_uuid: &str, conn: &mut DbConn) -> Vec<Self> {
-        db_run! { conn: {
-            collections_groups::table
-                .inner_join(groups_users::table.on(
-                    groups_users::groups_uuid.eq(collections_groups::groups_uuid)
-                ))
-                .inner_join(users_organizations::table.on(
-                    users_organizations::uuid.eq(groups_users::users_organizations_uuid)
-                ))
-                .filter(users_organizations::user_uuid.eq(user_uuid))
-                .select(collections_groups::all_columns)
-                .load::<CollectionGroupDb>(conn)
-                .expect("Error loading user collection groups")
-                .from_db()
-        }}
+    pub async fn find_by_collection(conn: &Conn, collection_uuid: Uuid) -> ApiResult<Vec<Self>> {
+        Ok(conn.query(r"SELECT * FROM collection_groups WHERE collection_uuid = $1", &[&collection_uuid]).await?.into_iter().map(|x| x.into()).collect())
     }
 
-    pub async fn find_by_collection(collection_uuid: &str, conn: &mut DbConn) -> Vec<Self> {
-        db_run! { conn: {
-            collections_groups::table
-                .filter(collections_groups::collections_uuid.eq(collection_uuid))
-                .select(collections_groups::all_columns)
-                .load::<CollectionGroupDb>(conn)
-                .expect("Error loading collection groups")
-                .from_db()
-        }}
+    pub async fn delete_all_by_group(conn: &Conn, group_uuid: Uuid) -> ApiResult<()> {
+        conn.execute(r"DELETE FROM collection_groups WHERE group_uuid = $1", &[&group_uuid]).await?;
+        Ok(())
     }
 
-    pub async fn delete(&self, conn: &mut DbConn) -> EmptyResult {
-        let group_users = GroupUser::find_by_group(&self.groups_uuid, conn).await;
-        for group_user in group_users {
-            group_user.update_user_revision(conn).await;
-        }
-
-        db_run! { conn: {
-            diesel::delete(collections_groups::table)
-                .filter(collections_groups::collections_uuid.eq(&self.collections_uuid))
-                .filter(collections_groups::groups_uuid.eq(&self.groups_uuid))
-                .execute(conn)
-                .map_res("Error deleting collection group")
-        }}
-    }
-
-    pub async fn delete_all_by_group(group_uuid: &str, conn: &mut DbConn) -> EmptyResult {
-        let group_users = GroupUser::find_by_group(group_uuid, conn).await;
-        for group_user in group_users {
-            group_user.update_user_revision(conn).await;
-        }
-
-        db_run! { conn: {
-            diesel::delete(collections_groups::table)
-                .filter(collections_groups::groups_uuid.eq(group_uuid))
-                .execute(conn)
-                .map_res("Error deleting collection group")
-        }}
-    }
-
-    pub async fn delete_all_by_collection(collection_uuid: &str, conn: &mut DbConn) -> EmptyResult {
-        let collection_assigned_to_groups = CollectionGroup::find_by_collection(collection_uuid, conn).await;
-        for collection_assigned_to_group in collection_assigned_to_groups {
-            let group_users = GroupUser::find_by_group(&collection_assigned_to_group.groups_uuid, conn).await;
-            for group_user in group_users {
-                group_user.update_user_revision(conn).await;
-            }
-        }
-
-        db_run! { conn: {
-            diesel::delete(collections_groups::table)
-                .filter(collections_groups::collections_uuid.eq(collection_uuid))
-                .execute(conn)
-                .map_res("Error deleting collection group")
-        }}
+    pub async fn delete_all_by_collection(conn: &Conn, collection_uuid: Uuid) -> ApiResult<()> {
+        conn.execute(r"DELETE FROM collection_groups WHERE collection_uuid = $1", &[&collection_uuid]).await?;
+        Ok(())
     }
 }
 
 impl GroupUser {
-    pub async fn save(&mut self, conn: &mut DbConn) -> EmptyResult {
-        self.update_user_revision(conn).await;
-
-        db_run! { conn:
-            sqlite, mysql {
-                match diesel::replace_into(groups_users::table)
-                    .values((
-                        groups_users::users_organizations_uuid.eq(&self.users_organizations_uuid),
-                        groups_users::groups_uuid.eq(&self.groups_uuid),
-                    ))
-                    .execute(conn)
-                {
-                    Ok(_) => Ok(()),
-                    // Record already exists and causes a Foreign Key Violation because replace_into() wants to delete the record first.
-                    Err(diesel::result::Error::DatabaseError(diesel::result::DatabaseErrorKind::ForeignKeyViolation, _)) => {
-                        diesel::update(groups_users::table)
-                            .filter(groups_users::users_organizations_uuid.eq(&self.users_organizations_uuid))
-                            .filter(groups_users::groups_uuid.eq(&self.groups_uuid))
-                            .set((
-                                groups_users::users_organizations_uuid.eq(&self.users_organizations_uuid),
-                                groups_users::groups_uuid.eq(&self.groups_uuid),
-                            ))
-                            .execute(conn)
-                            .map_res("Error adding user to group")
-                    }
-                    Err(e) => Err(e.into()),
-                }.map_res("Error adding user to group")
-            }
-            postgresql {
-                diesel::insert_into(groups_users::table)
-                    .values((
-                        groups_users::users_organizations_uuid.eq(&self.users_organizations_uuid),
-                        groups_users::groups_uuid.eq(&self.groups_uuid),
-                    ))
-                    .on_conflict((groups_users::users_organizations_uuid, groups_users::groups_uuid))
-                    .do_update()
-                    .set((
-                        groups_users::users_organizations_uuid.eq(&self.users_organizations_uuid),
-                        groups_users::groups_uuid.eq(&self.groups_uuid),
-                    ))
-                    .execute(conn)
-                    .map_res("Error adding user to group")
-            }
-        }
+    pub async fn save(&self, conn: &Conn) -> ApiResult<()> {
+        conn.execute(
+            "INSERT INTO group_users (group_uuid, user_uuid) VALUES ($1, $2) ON CONFLICT (group_uuid, user_uuid) DO NOTHING",
+            &[&self.group_uuid, &self.user_uuid],
+        )
+        .await?;
+        Ok(())
     }
 
-    pub async fn find_by_group(group_uuid: &str, conn: &mut DbConn) -> Vec<Self> {
-        db_run! { conn: {
-            groups_users::table
-                .filter(groups_users::groups_uuid.eq(group_uuid))
-                .load::<GroupUserDb>(conn)
-                .expect("Error loading group users")
-                .from_db()
-        }}
+    pub async fn find_by_group(conn: &Conn, group_uuid: Uuid) -> ApiResult<Vec<Self>> {
+        Ok(conn.query(r"SELECT * FROM group_users WHERE group_uuid = $1", &[&group_uuid]).await?.into_iter().map(|x| x.into()).collect())
     }
 
-    pub async fn find_by_user(users_organizations_uuid: &str, conn: &mut DbConn) -> Vec<Self> {
-        db_run! { conn: {
-            groups_users::table
-                .filter(groups_users::users_organizations_uuid.eq(users_organizations_uuid))
-                .load::<GroupUserDb>(conn)
-                .expect("Error loading groups for user")
-                .from_db()
-        }}
+    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid, organization_uuid: Uuid) -> ApiResult<Vec<Self>> {
+        Ok(conn
+            .query(
+                r"SELECT gu.* FROM group_users gu INNER JOIN groups g ON g.uuid = gu.group_uuid WHERE gu.user_uuid = $1 AND g.organization_uuid = $2",
+                &[&user_uuid, &organization_uuid],
+            )
+            .await?
+            .into_iter()
+            .map(|x| x.into())
+            .collect())
     }
 
-    pub async fn update_user_revision(&self, conn: &mut DbConn) {
-        match UserOrganization::find_by_uuid(&self.users_organizations_uuid, conn).await {
-            Some(user) => User::update_uuid_revision(&user.user_uuid, conn).await,
-            None => warn!("User could not be found!"),
-        }
+    pub async fn delete_by_group_uuid_and_user_id(conn: &Conn, group_uuid: Uuid, user_uuid: Uuid) -> ApiResult<()> {
+        conn.execute(r"DELETE FROM group_users WHERE user_uuid = $1 AND group_uuid = $2", &[&user_uuid, &group_uuid]).await?;
+        Ok(())
     }
 
-    pub async fn delete_by_group_id_and_user_id(
-        group_uuid: &str,
-        users_organizations_uuid: &str,
-        conn: &mut DbConn,
-    ) -> EmptyResult {
-        match UserOrganization::find_by_uuid(users_organizations_uuid, conn).await {
-            Some(user) => User::update_uuid_revision(&user.user_uuid, conn).await,
-            None => warn!("User could not be found!"),
-        };
-
-        db_run! { conn: {
-            diesel::delete(groups_users::table)
-                .filter(groups_users::groups_uuid.eq(group_uuid))
-                .filter(groups_users::users_organizations_uuid.eq(users_organizations_uuid))
-                .execute(conn)
-                .map_res("Error deleting group users")
-        }}
+    pub async fn delete_all_by_group(conn: &Conn, group_uuid: Uuid) -> ApiResult<()> {
+        conn.execute(r"DELETE FROM group_users WHERE group_uuid = $1", &[&group_uuid]).await?;
+        Ok(())
     }
 
-    pub async fn delete_all_by_group(group_uuid: &str, conn: &mut DbConn) -> EmptyResult {
-        let group_users = GroupUser::find_by_group(group_uuid, conn).await;
-        for group_user in group_users {
-            group_user.update_user_revision(conn).await;
-        }
-
-        db_run! { conn: {
-            diesel::delete(groups_users::table)
-                .filter(groups_users::groups_uuid.eq(group_uuid))
-                .execute(conn)
-                .map_res("Error deleting group users")
-        }}
-    }
-
-    pub async fn delete_all_by_user(users_organizations_uuid: &str, conn: &mut DbConn) -> EmptyResult {
-        match UserOrganization::find_by_uuid(users_organizations_uuid, conn).await {
-            Some(user) => User::update_uuid_revision(&user.user_uuid, conn).await,
-            None => warn!("User could not be found!"),
-        }
-
-        db_run! { conn: {
-            diesel::delete(groups_users::table)
-                .filter(groups_users::users_organizations_uuid.eq(users_organizations_uuid))
-                .execute(conn)
-                .map_res("Error deleting user groups")
-        }}
+    pub async fn delete_all_by_user(conn: &Conn, user_uuid: Uuid, organization_uuid: Uuid) -> ApiResult<()> {
+        conn.execute(
+            r"DELETE FROM group_users gu INNER JOIN groups g ON g.uuid = gu.group_uuid WHERE gu.user_uuid = $1 AND g.organization_uuid = $2",
+            &[&user_uuid, &organization_uuid],
+        )
+        .await?;
+        Ok(())
     }
 }

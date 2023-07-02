@@ -1,55 +1,85 @@
-use chrono::{NaiveDateTime, Utc};
-use serde_json::Value;
+use axum_util::errors::{ApiError, ApiResult};
+use chrono::{DateTime, Utc};
+use data_encoding::BASE64URL_NOPAD;
+use log::error;
+use serde_json::{json, Value};
+use serde_repr::{Deserialize_repr, Serialize_repr};
+use tokio_postgres::Row;
+
+use crate::{db::Conn, CONFIG};
 
 use super::User;
+use uuid::Uuid;
 
-db_object! {
-    #[derive(Identifiable, Queryable, Insertable, AsChangeset)]
-    #[diesel(table_name = sends)]
-    #[diesel(treat_none_as_null = true)]
-    #[diesel(primary_key(uuid))]
-    pub struct Send {
-        pub uuid: String,
+#[derive(Debug)]
+pub struct Send {
+    pub uuid: Uuid,
 
-        pub user_uuid: Option<String>,
-        pub organization_uuid: Option<String>,
+    pub user_uuid: Option<Uuid>,
+    pub organization_uuid: Option<Uuid>,
 
+    pub name: String,
+    pub notes: Option<String>,
 
-        pub name: String,
-        pub notes: Option<String>,
+    pub atype: SendType,
+    pub data: Value,
+    pub akey: String,
+    pub password_hash: Option<Vec<u8>>,
+    password_salt: Option<Vec<u8>>,
+    password_iter: Option<i32>,
 
-        pub atype: i32,
-        pub data: String,
-        pub akey: String,
-        pub password_hash: Option<Vec<u8>>,
-        password_salt: Option<Vec<u8>>,
-        password_iter: Option<i32>,
+    pub max_access_count: Option<i32>,
+    pub access_count: i32,
 
-        pub max_access_count: Option<i32>,
-        pub access_count: i32,
+    pub creation_date: DateTime<Utc>,
+    pub revision_date: DateTime<Utc>,
+    pub expiration_date: Option<DateTime<Utc>>,
+    pub deletion_date: DateTime<Utc>,
 
-        pub creation_date: NaiveDateTime,
-        pub revision_date: NaiveDateTime,
-        pub expiration_date: Option<NaiveDateTime>,
-        pub deletion_date: NaiveDateTime,
+    pub disabled: bool,
+    pub hide_email: Option<bool>,
+}
 
-        pub disabled: bool,
-        pub hide_email: Option<bool>,
+impl From<Row> for Send {
+    fn from(row: Row) -> Self {
+        Self {
+            uuid: row.get(0),
+            user_uuid: row.get(1),
+            organization_uuid: row.get(2),
+            name: row.get(3),
+            notes: row.get(4),
+            atype: SendType::from_repr(row.get(5)).unwrap_or(SendType::Unknown),
+            data: row.get(6),
+            akey: row.get(7),
+            password_hash: row.get(8),
+            password_salt: row.get(9),
+            password_iter: row.get(10),
+            max_access_count: row.get(11),
+            access_count: row.get(12),
+            creation_date: row.get(13),
+            revision_date: row.get(14),
+            expiration_date: row.get(15),
+            deletion_date: row.get(16),
+            disabled: row.get(17),
+            hide_email: row.get(18),
+        }
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, num_derive::FromPrimitive)]
+#[derive(Copy, Clone, PartialEq, Eq, strum::FromRepr, Debug, Serialize_repr, Deserialize_repr)]
+#[repr(i32)]
 pub enum SendType {
     Text = 0,
     File = 1,
+    Unknown = i32::MAX,
 }
 
 impl Send {
-    pub fn new(atype: i32, name: String, data: String, akey: String, deletion_date: NaiveDateTime) -> Self {
-        let now = Utc::now().naive_utc();
+    pub fn new(atype: SendType, name: String, data: Value, akey: String, deletion_date: DateTime<Utc>) -> Self {
+        let now = Utc::now();
 
         Self {
-            uuid: crate::util::get_uuid(),
+            uuid: Uuid::new_v4(),
             user_uuid: None,
             organization_uuid: None,
 
@@ -94,45 +124,39 @@ impl Send {
 
     pub fn check_password(&self, password: &str) -> bool {
         match (&self.password_hash, &self.password_salt, self.password_iter) {
-            (Some(hash), Some(salt), Some(iter)) => {
-                crate::crypto::verify_password_hash(password.as_bytes(), salt, hash, iter as u32)
-            }
+            (Some(hash), Some(salt), Some(iter)) => crate::crypto::verify_password_hash(password.as_bytes(), salt, hash, iter as u32),
             _ => false,
         }
     }
 
-    pub async fn creator_identifier(&self, conn: &mut DbConn) -> Option<String> {
+    pub async fn creator_identifier(&self, conn: &Conn) -> ApiResult<Option<String>> {
         if let Some(hide_email) = self.hide_email {
             if hide_email {
-                return None;
+                return Ok(None);
             }
         }
 
-        if let Some(user_uuid) = &self.user_uuid {
-            if let Some(user) = User::find_by_uuid(user_uuid, conn).await {
-                return Some(user.email);
+        if let Some(user_uuid) = self.user_uuid {
+            if let Some(user) = User::get(conn, user_uuid).await? {
+                return Ok(Some(user.email));
             }
         }
 
-        None
+        Ok(None)
     }
 
     pub fn to_json(&self) -> Value {
         use crate::util::format_date;
-        use data_encoding::BASE64URL_NOPAD;
-        use uuid::Uuid;
-
-        let data: Value = serde_json::from_str(&self.data).unwrap_or_default();
 
         json!({
             "Id": self.uuid,
-            "AccessId": BASE64URL_NOPAD.encode(Uuid::parse_str(&self.uuid).unwrap_or_default().as_bytes()),
-            "Type": self.atype,
+            "AccessId": BASE64URL_NOPAD.encode(self.uuid.as_bytes()),
+            "Type": self.atype as i32,
 
             "Name": self.name,
             "Notes": self.notes,
-            "Text": if self.atype == SendType::Text as i32 { Some(&data) } else { None },
-            "File": if self.atype == SendType::File as i32 { Some(&data) } else { None },
+            "Text": if self.atype == SendType::Text { Some(&self.data) } else { None },
+            "File": if self.atype == SendType::File { Some(&self.data) } else { None },
 
             "Key": self.akey,
             "MaxAccessCount": self.max_access_count,
@@ -148,158 +172,114 @@ impl Send {
         })
     }
 
-    pub async fn to_json_access(&self, conn: &mut DbConn) -> Value {
+    pub async fn to_json_access(&self, conn: &Conn) -> ApiResult<Value> {
         use crate::util::format_date;
 
-        let data: Value = serde_json::from_str(&self.data).unwrap_or_default();
-
-        json!({
+        Ok(json!({
             "Id": self.uuid,
-            "Type": self.atype,
+            "Type": self.atype as i32,
 
             "Name": self.name,
-            "Text": if self.atype == SendType::Text as i32 { Some(&data) } else { None },
-            "File": if self.atype == SendType::File as i32 { Some(&data) } else { None },
+            "Text": if self.atype == SendType::Text { Some(&self.data) } else { None },
+            "File": if self.atype == SendType::File { Some(&self.data) } else { None },
 
             "ExpirationDate": self.expiration_date.as_ref().map(format_date),
-            "CreatorIdentifier": self.creator_identifier(conn).await,
+            "CreatorIdentifier": self.creator_identifier(conn).await?,
             "Object": "send-access",
-        })
+        }))
     }
 }
 
-use crate::db::DbConn;
-
-use crate::api::EmptyResult;
-use crate::error::MapResult;
-
 impl Send {
-    pub async fn save(&mut self, conn: &mut DbConn) -> EmptyResult {
-        self.update_users_revision(conn).await;
-        self.revision_date = Utc::now().naive_utc();
+    pub fn decode_access_id(access_id: &str) -> ApiResult<Uuid> {
+        let uuid_vec = match BASE64URL_NOPAD.decode(access_id.as_bytes()) {
+            Ok(v) => v,
+            Err(_) => return Err(ApiError::BadRequest("invalid access id".to_string())),
+        };
 
-        db_run! { conn:
-            sqlite, mysql {
-                match diesel::replace_into(sends::table)
-                    .values(SendDb::to_db(self))
-                    .execute(conn)
-                {
-                    Ok(_) => Ok(()),
-                    // Record already exists and causes a Foreign Key Violation because replace_into() wants to delete the record first.
-                    Err(diesel::result::Error::DatabaseError(diesel::result::DatabaseErrorKind::ForeignKeyViolation, _)) => {
-                        diesel::update(sends::table)
-                            .filter(sends::uuid.eq(&self.uuid))
-                            .set(SendDb::to_db(self))
-                            .execute(conn)
-                            .map_res("Error saving send")
-                    }
-                    Err(e) => Err(e.into()),
-                }.map_res("Error saving send")
-            }
-            postgresql {
-                let value = SendDb::to_db(self);
-                diesel::insert_into(sends::table)
-                    .values(&value)
-                    .on_conflict(sends::uuid)
-                    .do_update()
-                    .set(&value)
-                    .execute(conn)
-                    .map_res("Error saving send")
-            }
-        }
+        Uuid::from_slice(&uuid_vec).map_err(|_| ApiError::BadRequest("invalid access id".to_string()))
     }
 
-    pub async fn delete(&self, conn: &mut DbConn) -> EmptyResult {
-        self.update_users_revision(conn).await;
+    pub async fn save(&mut self, conn: &Conn) -> ApiResult<()> {
+        self.revision_date = Utc::now();
 
-        if self.atype == SendType::File as i32 {
-            std::fs::remove_dir_all(std::path::Path::new(&crate::CONFIG.sends_folder()).join(&self.uuid)).ok();
+        conn.execute(r"INSERT INTO sends (uuid, user_uuid, organization_uuid, name, notes, atype, data, akey, password_hash, password_salt, password_iter, max_access_count, access_count, creation_date, revision_date, expiration_date, deletion_date, disabled, hide_email) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) ON CONFLICT (uuid) DO UPDATE
+        SET
+        uuid = EXCLUDED.uuid,
+        user_uuid = EXCLUDED.user_uuid,
+        organization_uuid = EXCLUDED.organization_uuid,
+        name = EXCLUDED.name,
+        notes = EXCLUDED.notes,
+        atype = EXCLUDED.atype,
+        data = EXCLUDED.data,
+        akey = EXCLUDED.akey,
+        password_hash = EXCLUDED.password_hash,
+        password_salt = EXCLUDED.password_salt,
+        password_iter = EXCLUDED.password_iter,
+        max_access_count = EXCLUDED.max_access_count,
+        access_count = EXCLUDED.access_count,
+        creation_date = EXCLUDED.creation_date,
+        revision_date = EXCLUDED.revision_date,
+        expiration_date = EXCLUDED.expiration_date,
+        deletion_date = EXCLUDED.deletion_date,
+        disabled = EXCLUDED.disabled,
+        hide_email = EXCLUDED.hide_email", &[
+            &self.uuid,
+            &self.user_uuid,
+            &self.organization_uuid,
+            &self.name,
+            &self.notes,
+            &(self.atype as i32),
+            &self.data,
+            &self.akey,
+            &self.password_hash,
+            &self.password_salt,
+            &self.password_iter,
+            &self.max_access_count,
+            &self.access_count,
+            &self.creation_date,
+            &self.revision_date,
+            &self.expiration_date,
+            &self.deletion_date,
+            &self.disabled,
+            &self.hide_email,
+        ]).await?;
+        Ok(())
+    }
+
+    pub async fn delete(&self, conn: &mut Conn) -> ApiResult<()> {
+        let txn = conn.transaction().await?;
+        txn.execute(r"DELETE FROM sends WHERE uuid = $1", &[&self.uuid]).await?;
+        if self.atype == SendType::File {
+            tokio::fs::remove_dir_all(CONFIG.folders.sends().join(self.uuid.to_string())).await?;
         }
-
-        db_run! { conn: {
-            diesel::delete(sends::table.filter(sends::uuid.eq(&self.uuid)))
-                .execute(conn)
-                .map_res("Error deleting send")
-        }}
+        txn.commit().await?;
+        Ok(())
     }
 
     /// Purge all sends that are past their deletion date.
-    pub async fn purge(conn: &mut DbConn) {
-        for send in Self::find_by_past_deletion_date(conn).await {
-            send.delete(conn).await.ok();
-        }
-    }
-
-    pub async fn update_users_revision(&self, conn: &mut DbConn) -> Vec<String> {
-        let mut user_uuids = Vec::new();
-        match &self.user_uuid {
-            Some(user_uuid) => {
-                User::update_uuid_revision(user_uuid, conn).await;
-                user_uuids.push(user_uuid.clone())
+    pub async fn purge(conn: &mut Conn) -> ApiResult<()> {
+        for send in Self::find_by_past_deletion_date(conn).await? {
+            if let Err(e) = send.delete(conn).await {
+                error!("failed to purge send {}: {e}", send.uuid);
             }
-            None => {
-                // Belongs to Organization, not implemented
-            }
-        };
-        user_uuids
-    }
-
-    pub async fn delete_all_by_user(user_uuid: &str, conn: &mut DbConn) -> EmptyResult {
-        for send in Self::find_by_user(user_uuid, conn).await {
-            send.delete(conn).await?;
         }
         Ok(())
     }
 
-    pub async fn find_by_access_id(access_id: &str, conn: &mut DbConn) -> Option<Self> {
-        use data_encoding::BASE64URL_NOPAD;
-        use uuid::Uuid;
-
-        let uuid_vec = match BASE64URL_NOPAD.decode(access_id.as_bytes()) {
-            Ok(v) => v,
-            Err(_) => return None,
-        };
-
-        let uuid = match Uuid::from_slice(&uuid_vec) {
-            Ok(u) => u.to_string(),
-            Err(_) => return None,
-        };
-
-        Self::find_by_uuid(&uuid, conn).await
+    pub async fn find_by_past_deletion_date(conn: &Conn) -> ApiResult<Vec<Self>> {
+        Ok(conn.query(r"SELECT * FROM sends WHERE deletion_date < $1", &[&Utc::now()]).await?.into_iter().map(|x| x.into()).collect())
     }
 
-    pub async fn find_by_uuid(uuid: &str, conn: &mut DbConn) -> Option<Self> {
-        db_run! {conn: {
-            sends::table
-                .filter(sends::uuid.eq(uuid))
-                .first::<SendDb>(conn)
-                .ok()
-                .from_db()
-        }}
+    pub async fn get(conn: &Conn, uuid: Uuid) -> ApiResult<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM sends WHERE uuid = $1", &[&uuid]).await?.map(Into::into))
     }
 
-    pub async fn find_by_user(user_uuid: &str, conn: &mut DbConn) -> Vec<Self> {
-        db_run! {conn: {
-            sends::table
-                .filter(sends::user_uuid.eq(user_uuid))
-                .load::<SendDb>(conn).expect("Error loading sends").from_db()
-        }}
+    pub async fn get_for_user(conn: &Conn, uuid: Uuid, user_uuid: Uuid) -> ApiResult<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM sends WHERE uuid = $1 AND user_uuid = $2", &[&uuid, &user_uuid]).await?.map(Into::into))
     }
 
-    pub async fn find_by_org(org_uuid: &str, conn: &mut DbConn) -> Vec<Self> {
-        db_run! {conn: {
-            sends::table
-                .filter(sends::organization_uuid.eq(org_uuid))
-                .load::<SendDb>(conn).expect("Error loading sends").from_db()
-        }}
-    }
-
-    pub async fn find_by_past_deletion_date(conn: &mut DbConn) -> Vec<Self> {
-        let now = Utc::now().naive_utc();
-        db_run! {conn: {
-            sends::table
-                .filter(sends::deletion_date.lt(now))
-                .load::<SendDb>(conn).expect("Error loading sends").from_db()
-        }}
+    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<Vec<Self>> {
+        Ok(conn.query(r"SELECT * FROM sends WHERE user_uuid = $1", &[&user_uuid]).await?.into_iter().map(|x| x.into()).collect())
     }
 }

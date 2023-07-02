@@ -8,85 +8,90 @@ mod public;
 mod sends;
 pub mod two_factor;
 
-pub use ciphers::{purge_trashed_ciphers, CipherData, CipherSyncData, CipherSyncType};
-pub use emergency_access::{emergency_notification_reminder_job, emergency_request_timeout_job};
-pub use events::{event_cleanup_job, log_event, log_user_event};
-pub use sends::purge_sends;
-pub use two_factor::send_incomplete_2fa_notifications;
+pub use ciphers::CipherData;
 
-pub fn routes() -> Vec<Route> {
-    let mut eq_domains_routes = routes![get_eq_domains, post_eq_domains, put_eq_domains];
-    let mut hibp_routes = routes![hibp_breach];
-    let mut meta_routes = routes![alive, now, version, config];
+use axum::{extract::Query, routing, Json, Router};
+use axum_util::errors::{ApiError, ApiResult};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
-    let mut routes = Vec::new();
-    routes.append(&mut accounts::routes());
-    routes.append(&mut ciphers::routes());
-    routes.append(&mut emergency_access::routes());
-    routes.append(&mut events::routes());
-    routes.append(&mut folders::routes());
-    routes.append(&mut organizations::routes());
-    routes.append(&mut two_factor::routes());
-    routes.append(&mut sends::routes());
-    routes.append(&mut public::routes());
-    routes.append(&mut eq_domains_routes);
-    routes.append(&mut hibp_routes);
-    routes.append(&mut meta_routes);
-
-    routes
-}
-
-pub fn events_routes() -> Vec<Route> {
-    let mut routes = Vec::new();
-    routes.append(&mut events::main_routes());
-
-    routes
-}
-
-//
-// Move this somewhere else
-//
-use rocket::{serde::json::Json, Catcher, Route};
-use serde_json::Value;
+pub use events::post_events_collect;
 
 use crate::{
-    api::{JsonResult, JsonUpcase, Notify, UpdateType},
+    api::{ws_users, UpdateType},
     auth::Headers,
-    db::DbConn,
-    error::Error,
-    util::get_reqwest_client,
+    db::DB,
+    util::{get_reqwest_client, Upcase},
+    CONFIG,
 };
 
+pub fn route() -> Router {
+    let mut router = Router::new()
+        .route("/settings/domains", routing::get(get_eq_domains))
+        .route("/settings/domains", routing::post(post_eq_domains))
+        .route("/settings/domains", routing::put(post_eq_domains))
+        .route("/hibp/breach", routing::get(hibp_breach))
+        .route("/alive", routing::get(now))
+        .route("/now", routing::get(now))
+        .route("/version", routing::get(version))
+        .route("/config", routing::get(config))
+        .route("/organizations/:org_uuid/events", routing::get(events::get_org_events))
+        .route("/ciphers/:uuid/events", routing::get(events::get_cipher_events))
+        .route("/organizations/:org_uuid/users/:user_id/events", routing::get(events::get_user_events))
+        .route("/folders", routing::get(folders::get_folders))
+        .route("/folders/:uuid", routing::get(folders::get_folder))
+        .route("/folders", routing::post(folders::post_folders))
+        .route("/folders/:uuid", routing::post(folders::put_folder))
+        .route("/folders/:uuid", routing::put(folders::put_folder))
+        .route("/folders/:uuid", routing::delete(folders::delete_folder))
+        .route("/folders/:uuid/delete", routing::post(folders::delete_folder))
+        .route("/devices/knowndevice/:email/:uuid", routing::get(accounts::get_known_device_from_path))
+        .route("/devices/knowndevice", routing::get(accounts::get_known_device))
+        .route("/devices/identifier/:uuid/token", routing::post(accounts::put_device_token))
+        .route("/devices/identifier/:uuid/token", routing::put(accounts::put_device_token))
+        .route("/devices/identifier/:uuid/clear-token", routing::put(accounts::put_clear_device_token))
+        .route("/devices/identifier/:uuid/clear-token", routing::post(accounts::put_clear_device_token))
+        .route("/public/organization/import", routing::post(public::ldap_import));
+
+    router = ciphers::route(router);
+    router = accounts::route(router);
+    router = two_factor::route(router);
+    router = sends::route(router);
+    router = organizations::route(router);
+    router = emergency_access::route(router);
+    router
+}
+
 #[derive(Serialize, Deserialize, Debug)]
-#[allow(non_snake_case)]
+#[serde(rename_all = "PascalCase")]
 struct GlobalDomain {
-    Type: i32,
-    Domains: Vec<String>,
-    Excluded: bool,
+    r#type: i32,
+    domains: Vec<String>,
+    excluded: bool,
 }
 
 const GLOBAL_DOMAINS: &str = include_str!("../../static/global_domains.json");
 
-#[get("/settings/domains")]
-fn get_eq_domains(headers: Headers) -> Json<Value> {
-    _get_eq_domains(headers, false)
+#[derive(Deserialize)]
+struct GlobalDomainQuery {
+    #[serde(default)]
+    no_excluded: bool,
 }
 
-fn _get_eq_domains(headers: Headers, no_excluded: bool) -> Json<Value> {
+async fn get_eq_domains(headers: Headers, Query(query): Query<GlobalDomainQuery>) -> Json<Value> {
     let user = headers.user;
-    use serde_json::from_str;
 
-    let equivalent_domains: Vec<Vec<String>> = from_str(&user.equivalent_domains).unwrap();
-    let excluded_globals: Vec<i32> = from_str(&user.excluded_globals).unwrap();
+    let equivalent_domains: Vec<Vec<String>> = serde_json::from_str(&user.equivalent_domains).unwrap();
+    let excluded_globals: Vec<i32> = serde_json::from_str(&user.excluded_globals).unwrap();
 
-    let mut globals: Vec<GlobalDomain> = from_str(GLOBAL_DOMAINS).unwrap();
+    let mut globals: Vec<GlobalDomain> = serde_json::from_str(GLOBAL_DOMAINS).unwrap();
 
     for global in &mut globals {
-        global.Excluded = excluded_globals.contains(&global.Type);
+        global.excluded = excluded_globals.contains(&global.r#type);
     }
 
-    if no_excluded {
-        globals.retain(|g| !g.Excluded);
+    if query.no_excluded {
+        globals.retain(|g| !g.excluded);
     }
 
     Json(json!({
@@ -97,23 +102,17 @@ fn _get_eq_domains(headers: Headers, no_excluded: bool) -> Json<Value> {
 }
 
 #[derive(Deserialize, Debug)]
-#[allow(non_snake_case)]
+#[serde(rename_all = "PascalCase")]
 struct EquivDomainData {
-    ExcludedGlobalEquivalentDomains: Option<Vec<i32>>,
-    EquivalentDomains: Option<Vec<Vec<String>>>,
+    excluded_global_equivalent_domains: Option<Vec<i32>>,
+    equivalent_domains: Option<Vec<Vec<String>>>,
 }
 
-#[post("/settings/domains", data = "<data>")]
-async fn post_eq_domains(
-    data: JsonUpcase<EquivDomainData>,
-    headers: Headers,
-    mut conn: DbConn,
-    nt: Notify<'_>,
-) -> JsonResult {
-    let data: EquivDomainData = data.into_inner().data;
+async fn post_eq_domains(headers: Headers, data: Json<Upcase<EquivDomainData>>) -> ApiResult<Json<Value>> {
+    let data: EquivDomainData = data.0.data;
 
-    let excluded_globals = data.ExcludedGlobalEquivalentDomains.unwrap_or_default();
-    let equivalent_domains = data.EquivalentDomains.unwrap_or_default();
+    let excluded_globals = data.excluded_global_equivalent_domains.unwrap_or_default();
+    let equivalent_domains = data.equivalent_domains.unwrap_or_default();
 
     let mut user = headers.user;
     use serde_json::to_string;
@@ -121,37 +120,34 @@ async fn post_eq_domains(
     user.excluded_globals = to_string(&excluded_globals).unwrap_or_else(|_| "[]".to_string());
     user.equivalent_domains = to_string(&equivalent_domains).unwrap_or_else(|_| "[]".to_string());
 
-    user.save(&mut conn).await?;
+    let conn = DB.get().await?;
+    user.save(&conn).await?;
 
-    nt.send_user_update(UpdateType::SyncSettings, &user).await;
+    ws_users().send_user_update(UpdateType::SyncSettings, &conn, &user).await?;
 
     Ok(Json(json!({})))
 }
 
-#[put("/settings/domains", data = "<data>")]
-async fn put_eq_domains(
-    data: JsonUpcase<EquivDomainData>,
-    headers: Headers,
-    conn: DbConn,
-    nt: Notify<'_>,
-) -> JsonResult {
-    post_eq_domains(data, headers, conn, nt).await
+#[derive(Deserialize)]
+struct HibpQuery {
+    username: String,
 }
 
-#[get("/hibp/breach?<username>")]
-async fn hibp_breach(username: &str) -> JsonResult {
-    let url = format!(
-        "https://haveibeenpwned.com/api/v3/breachedaccount/{username}?truncateResponse=false&includeUnverified=false"
-    );
+async fn hibp_breach(
+    Query(HibpQuery {
+        username,
+    }): Query<HibpQuery>,
+) -> ApiResult<Json<Value>> {
+    let url = format!("https://haveibeenpwned.com/api/v3/breachedaccount/{username}?truncateResponse=false&includeUnverified=false");
 
-    if let Some(api_key) = crate::CONFIG.hibp_api_key() {
+    if let Some(api_key) = &CONFIG.settings.hibp_api_key {
         let hibp_client = get_reqwest_client();
 
         let res = hibp_client.get(&url).header("hibp-api-key", api_key).send().await?;
 
         // If we get a 404, return a 404, it means no breached accounts
         if res.status() == 404 {
-            return Err(Error::empty().with_code(404));
+            return Err(ApiError::NotFound);
         }
 
         let value: Value = res.error_for_status()?.json().await?;
@@ -173,25 +169,16 @@ async fn hibp_breach(username: &str) -> JsonResult {
     }
 }
 
-// We use DbConn here to let the alive healthcheck also verify the database connection.
-#[get("/alive")]
-fn alive(_conn: DbConn) -> Json<String> {
-    now()
+async fn now() -> Json<String> {
+    Json(crate::util::format_date(&chrono::Utc::now()))
 }
 
-#[get("/now")]
-pub fn now() -> Json<String> {
-    Json(crate::util::format_date(&chrono::Utc::now().naive_utc()))
+async fn version() -> Json<&'static str> {
+    Json(crate::VERSION)
 }
 
-#[get("/version")]
-fn version() -> Json<&'static str> {
-    Json(crate::VERSION.unwrap_or_default())
-}
-
-#[get("/config")]
-fn config() -> Json<Value> {
-    let domain = crate::CONFIG.domain();
+async fn config() -> Json<Value> {
+    let domain = &CONFIG.settings.public;
     Json(json!({
         "version": crate::VERSION,
         "gitHash": option_env!("GIT_REV"),
@@ -204,23 +191,8 @@ fn config() -> Json<Value> {
           "api": format!("{domain}/api"),
           "identity": format!("{domain}/identity"),
           "notifications": format!("{domain}/notifications"),
-          "sso": "",
+          "sso": "", // TODO?
         },
         "object": "config",
-    }))
-}
-
-pub fn catchers() -> Vec<Catcher> {
-    catchers![api_not_found]
-}
-
-#[catch(404)]
-fn api_not_found() -> Json<Value> {
-    Json(json!({
-        "error": {
-            "code": 404,
-            "reason": "Not Found",
-            "description": "The requested resource could not be found."
-        }
     }))
 }

@@ -1,29 +1,32 @@
 //
 // Error generator macro
 //
-use crate::db::models::EventType;
+use crate::db::EventType;
 use std::error::Error as StdError;
 
 macro_rules! make_error {
     ( $( $name:ident ( $ty:ty ): $src_fn:expr, $usr_msg_fun:expr ),+ $(,)? ) => {
-        const BAD_REQUEST: u16 = 400;
-
         pub enum ErrorKind { $($name( $ty )),+ }
 
         #[derive(Debug)]
         pub struct ErrorEvent { pub event: EventType }
-        pub struct Error { message: String, error: ErrorKind, error_code: u16, event: Option<ErrorEvent> }
+        pub struct Error { message: String, error: ErrorKind, error_code: StatusCode, event: Option<ErrorEvent> }
 
         $(impl From<$ty> for Error {
             fn from(err: $ty) -> Self { Error::from((stringify!($name), err)) }
         })+
         $(impl<S: Into<String>> From<(S, $ty)> for Error {
             fn from(val: (S, $ty)) -> Self {
-                Error { message: val.0.into(), error: ErrorKind::$name(val.1), error_code: BAD_REQUEST, event: None }
+                Error { message: val.0.into(), error: ErrorKind::$name(val.1), error_code: StatusCode::BAD_REQUEST, event: None }
             }
         })+
-        impl StdError for Error {
-            fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        // impl StdError for Error {
+        //     fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        //         match &self.error {$( ErrorKind::$name(e) => $src_fn(e), )+}
+        //     }
+        // }
+        impl Error {
+            fn err_source(&self) -> Option<&(dyn StdError + 'static)> {
                 match &self.error {$( ErrorKind::$name(e) => $src_fn(e), )+}
             }
         }
@@ -37,19 +40,17 @@ macro_rules! make_error {
     };
 }
 
-use diesel::r2d2::PoolError as R2d2Err;
-use diesel::result::Error as DieselErr;
-use diesel::ConnectionError as DieselConErr;
+use axum::headers::{ContentType, HeaderMapExt};
+use axum::response::{IntoResponse, Response};
+use axum_util::errors::ApiError;
 use handlebars::RenderError as HbErr;
-use jsonwebtoken::errors::Error as JwtErr;
 use lettre::address::AddressError as AddrErr;
 use lettre::error::Error as LettreErr;
 use lettre::transport::smtp::Error as SmtpErr;
-use openssl::error::ErrorStack as SSLErr;
 use regex::Error as RegexErr;
-use reqwest::Error as ReqErr;
-use rocket::error::Error as RocketErr;
-use serde_json::{Error as SerdeErr, Value};
+use reqwest::{Error as ReqErr, StatusCode};
+use serde::Serialize;
+use serde_json::{json, Error as SerdeErr, Value};
 use std::io::Error as IoErr;
 use std::time::SystemTimeError as TimeErr;
 use tokio_tungstenite::tungstenite::Error as TungstError;
@@ -71,10 +72,7 @@ make_error! {
     Simple(String):  _no_source,  _api_error,
     // Used for special return values, like 2FA errors
     Json(Value):     _no_source,  _serialize,
-    Db(DieselErr):   _has_source, _api_error,
-    R2d2(R2d2Err):   _has_source, _api_error,
     Serde(SerdeErr): _has_source, _api_error,
-    JWt(JwtErr):     _has_source, _api_error,
     Handlebars(HbErr): _has_source, _api_error,
 
     Io(IoErr):       _has_source, _api_error,
@@ -86,17 +84,14 @@ make_error! {
     Lettre(LettreErr): _has_source, _api_error,
     Address(AddrErr):  _has_source, _api_error,
     Smtp(SmtpErr):     _has_source, _api_error,
-    OpenSSL(SSLErr):   _has_source, _api_error,
-    Rocket(RocketErr): _has_source, _api_error,
 
-    DieselCon(DieselConErr): _has_source, _api_error,
     Webauthn(WebauthnErr):   _has_source, _api_error,
     WebSocket(TungstError):  _has_source, _api_error,
 }
 
 impl std::fmt::Debug for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.source() {
+        match self.err_source() {
             Some(e) => write!(f, "{}.\n[CAUSE] {:#?}", self.message, e),
             None => match self.error {
                 ErrorKind::Empty(_) => Ok(()),
@@ -130,7 +125,7 @@ impl Error {
     }
 
     #[must_use]
-    pub const fn with_code(mut self, code: u16) -> Self {
+    pub const fn with_code(mut self, code: StatusCode) -> Self {
         self.error_code = code;
         self
     }
@@ -147,24 +142,24 @@ impl Error {
 }
 
 pub trait MapResult<S> {
-    fn map_res(self, msg: &str) -> Result<S, Error>;
+    fn map_res(self, msg: &str) -> Result<S, ApiError>;
 }
 
 impl<S, E: Into<Error>> MapResult<S> for Result<S, E> {
-    fn map_res(self, msg: &str) -> Result<S, Error> {
-        self.map_err(|e| e.into().with_msg(msg))
+    fn map_res(self, msg: &str) -> Result<S, ApiError> {
+        self.map_err(|e| e.into().with_msg(msg).into())
     }
 }
 
 impl<E: Into<Error>> MapResult<()> for Result<usize, E> {
-    fn map_res(self, msg: &str) -> Result<(), Error> {
+    fn map_res(self, msg: &str) -> Result<(), ApiError> {
         self.and(Ok(())).map_res(msg)
     }
 }
 
 impl<S> MapResult<S> for Option<S> {
-    fn map_res(self, msg: &str) -> Result<S, Error> {
-        self.ok_or_else(|| Error::new(msg, ""))
+    fn map_res(self, msg: &str) -> Result<S, ApiError> {
+        self.ok_or_else(|| Error::new(msg, "").into())
     }
 }
 
@@ -197,26 +192,32 @@ fn _api_error(_: &impl std::any::Any, msg: &str) -> String {
     _serialize(&json, "")
 }
 
-//
-// Rocket responder impl
-//
-use std::io::Cursor;
+impl Error {
+    pub fn api(self) -> ApiError {
+        ApiError::Response(self.into_response())
+    }
+}
 
-use rocket::http::{ContentType, Status};
-use rocket::request::Request;
-use rocket::response::{self, Responder, Response};
+impl Into<ApiError> for Error {
+    fn into(self) -> ApiError {
+        ApiError::Response(self.into_response())
+    }
+}
 
-impl<'r> Responder<'r, 'static> for Error {
-    fn respond_to(self, _: &Request<'_>) -> response::Result<'static> {
+//todo: where to handle events?
+impl IntoResponse for Error {
+    fn into_response(self) -> Response {
         match self.error {
             ErrorKind::Empty(_) => {}  // Don't print the error in this situation
             ErrorKind::Simple(_) => {} // Don't print the error in this situation
-            _ => error!(target: "error", "{:#?}", self),
+            _ => log::error!(target: "error", "{:#?}", self),
         };
 
-        let code = Status::from_code(self.error_code).unwrap_or(Status::BadRequest);
         let body = self.to_string();
-        Response::build().status(code).header(ContentType::JSON).sized_body(Some(body.len()), Cursor::new(body)).ok()
+        let mut response = body.into_response();
+        *response.status_mut() = self.error_code;
+        response.headers_mut().typed_insert(ContentType::json());
+        response
     }
 }
 
@@ -226,20 +227,20 @@ impl<'r> Responder<'r, 'static> for Error {
 #[macro_export]
 macro_rules! err {
     ($msg:expr) => {{
-        error!("{}", $msg);
-        return Err($crate::error::Error::new($msg, $msg));
+        log::error!("{}", $msg);
+        return Err($crate::error::Error::new($msg, $msg).into());
     }};
     ($msg:expr, ErrorEvent $err_event:tt) => {{
-        error!("{}", $msg);
-        return Err($crate::error::Error::new($msg, $msg).with_event($crate::error::ErrorEvent $err_event));
+        log::error!("{}", $msg);
+        return Err($crate::error::Error::new($msg, $msg).with_event($crate::error::ErrorEvent $err_event).into());
     }};
     ($usr_msg:expr, $log_value:expr) => {{
-        error!("{}. {}", $usr_msg, $log_value);
-        return Err($crate::error::Error::new($usr_msg, $log_value));
+        log::error!("{}. {}", $usr_msg, $log_value);
+        return Err($crate::error::Error::new($usr_msg, $log_value).into());
     }};
     ($usr_msg:expr, $log_value:expr, ErrorEvent $err_event:tt) => {{
-        error!("{}. {}", $usr_msg, $log_value);
-        return Err($crate::error::Error::new($usr_msg, $log_value).with_event($crate::error::ErrorEvent $err_event));
+        log::error!("{}. {}", $usr_msg, $log_value);
+        return Err($crate::error::Error::new($usr_msg, $log_value).with_event($crate::error::ErrorEvent $err_event).into());
     }};
 }
 
@@ -256,12 +257,12 @@ macro_rules! err_silent {
 #[macro_export]
 macro_rules! err_code {
     ($msg:expr, $err_code:expr) => {{
-        error!("{}", $msg);
-        return Err($crate::error::Error::new($msg, $msg).with_code($err_code));
+        log::error!("{}", $msg);
+        return Err($crate::error::Error::new($msg, $msg).with_code($err_code).into());
     }};
     ($usr_msg:expr, $log_value:expr, $err_code:expr) => {{
-        error!("{}. {}", $usr_msg, $log_value);
-        return Err($crate::error::Error::new($usr_msg, $log_value).with_code($err_code));
+        log::error!("{}. {}", $usr_msg, $log_value);
+        return Err($crate::error::Error::new($usr_msg, $log_value).with_code($err_code).into());
     }};
 }
 
@@ -280,21 +281,11 @@ macro_rules! err_discard {
 #[macro_export]
 macro_rules! err_json {
     ($expr:expr, $log_value:expr) => {{
-        return Err(($log_value, $expr).into());
+        let err: $crate::error::Error = ($log_value, $expr).into();
+        return Err(err.into());
     }};
     ($expr:expr, $log_value:expr, $err_event:expr, ErrorEvent) => {{
-        return Err(($log_value, $expr).into().with_event($err_event));
-    }};
-}
-
-#[macro_export]
-macro_rules! err_handler {
-    ($expr:expr) => {{
-        error!(target: "auth", "Unauthorized Error: {}", $expr);
-        return ::rocket::request::Outcome::Failure((rocket::http::Status::Unauthorized, $expr));
-    }};
-    ($usr_msg:expr, $log_value:expr) => {{
-        error!(target: "auth", "Unauthorized Error: {}. {}", $usr_msg, $log_value);
-        return ::rocket::request::Outcome::Failure((rocket::http::Status::Unauthorized, $usr_msg));
+        let err: $crate::error::Error = ($log_value, $expr).into().with_event($err_event);
+        return Err(err.into());
     }};
 }

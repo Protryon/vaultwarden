@@ -118,23 +118,6 @@
                     </div>
                 </div>
 
-                {{#if page_data.can_backup}}
-                <div class="card bg-light mb-3">
-                    <button id="b_database" type="button" class="card-header text-start btn btn-link text-decoration-none" aria-expanded="false" aria-controls="g_database"
-                            data-bs-toggle="collapse" data-bs-target="#g_database">Backup Database</button>
-                    <div id="g_database" class="card-body collapse">
-                        <div class="small mb-3">
-                            WARNING: This function only creates a backup copy of the SQLite database.
-                            This does not include any configuration or file attachment data that may
-                            also be needed to fully restore a vaultwarden instance. For details on
-                            how to perform complete backups, refer to the wiki page on
-                            <a href="https://github.com/dani-garcia/vaultwarden/wiki/Backing-up-your-vault" target="_blank" rel="noopener noreferrer">backups</a>.
-                        </div>
-                        <button type="button" class="btn btn-primary" id="backupDatabase">Backup Database</button>
-                    </div>
-                </div>
-                {{/if}}
-
                 <button type="submit" class="btn btn-primary">Save</button>
                 <button type="button" class="btn btn-danger float-end" id="deleteConf">Reset defaults</button>
             </form>

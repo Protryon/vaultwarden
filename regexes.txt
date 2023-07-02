@@ -1,0 +1,57 @@
+This file contains some of the regexes used to automatically convert Rocket into Axum.
+
+
+#(\[(?:put|post|get|delete)\("(?:[^"]+)".*)\n((?:pub )?async fn [^(]+.*)\n
+to -> XXXXXXXX$1\nXXXXXXXX$2\n\n
+
+
+^[^X].*
+to -> ""
+
+\n\n+
+ -> \n\n
+
+
+XXXXXXXX
+-> ""
+
+(\[(?:put|post|get|delete)\("(?:[^"]+)".*\n(?:pub )?async fn [^(]+).*
+-> $1
+
+
+\[(put|post|get|delete)\("([^"]+)".*\n(?:pub )?async fn ([^\n]+)
+-> 
+.route("$2", routing::$1(accounts::$3))
+
+
+\n+
+-> \n
+
+
+back in source:
+
+
+^async fn
+->
+pub async fn
+
+^#\[(put|post|get|delete).*\n
+-> ""
+
+, mut conn: DbConn
+, nt: Notify<'_>
+-> ""
+
+
+xform config for docs
+
+^#.*\n -> ""
+
+///(.*)\n/// (.*)
+->
+///$1 $2
+
+
+/// (.*)(?: \|> (.*))\n^pub ([^:]+): ([^,]+),
+->
+FieldInfo::new("$3", "$1", "$2", CONFIG.settings.$3, $4),

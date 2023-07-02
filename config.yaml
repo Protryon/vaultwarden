@@ -1,0 +1,10 @@
+api_bind: 0.0.0.0:10765
+db:
+  host: 127.0.0.2
+  username: p
+  password: ""
+
+data: /home/p/git/vaultwarden/data
+public: http://localhost:10765
+# test is admin password
+admin_token: $argon2id$v=19$m=16,t=2,p=1$dGVzdHRlc3Q$aME57ODlq+maIRv0ouzcLA

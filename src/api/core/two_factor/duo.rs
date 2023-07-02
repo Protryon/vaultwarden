@@ -1,72 +1,68 @@
+use axum::Json;
+use axum_util::errors::{ApiError, ApiResult};
 use chrono::Utc;
 use data_encoding::BASE64;
-use rocket::serde::json::Json;
-use rocket::Route;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use url::Url;
+use uuid::Uuid;
 
 use crate::{
-    api::{
-        core::log_user_event, core::two_factor::_generate_recover_code, ApiResult, EmptyResult, JsonResult, JsonUpcase,
-        PasswordData,
-    },
+    api::PasswordData,
     auth::Headers,
     crypto,
-    db::{
-        models::{EventType, TwoFactor, TwoFactorType, User},
-        DbConn,
-    },
+    db::{Conn, EventType, TwoFactor, TwoFactorType, User, DB},
     error::MapResult,
-    util::get_reqwest_client,
+    events::log_user_event,
+    util::{get_reqwest_client, Upcase},
     CONFIG,
 };
 
-pub fn routes() -> Vec<Route> {
-    routes![get_duo, activate_duo, activate_duo_put,]
-}
+use super::_generate_recover_code;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct DuoData {
-    host: String, // Duo API hostname
-    ik: String,   // integration key
-    sk: String,   // secret key
+    host: Url,               // Duo API hostname
+    integration_key: String, // integration key
+    secret_key: String,      // secret key
 }
 
 impl DuoData {
     fn global() -> Option<Self> {
-        match (CONFIG._enable_duo(), CONFIG.duo_host()) {
-            (true, Some(host)) => Some(Self {
-                host,
-                ik: CONFIG.duo_ikey().unwrap(),
-                sk: CONFIG.duo_skey().unwrap(),
+        match CONFIG.duo.as_ref() {
+            Some(duo) => Some(Self {
+                host: duo.server.clone(),
+                integration_key: duo.integration_key.clone(),
+                secret_key: duo.secret_key.clone(),
             }),
             _ => None,
         }
     }
     fn msg(s: &str) -> Self {
         Self {
-            host: s.into(),
-            ik: s.into(),
-            sk: s.into(),
+            host: Url::parse("http://none").unwrap(),
+            integration_key: s.into(),
+            secret_key: s.into(),
         }
     }
     fn secret() -> Self {
         Self::msg("<global_secret>")
     }
     fn obscure(self) -> Self {
-        let mut host = self.host;
-        let mut ik = self.ik;
-        let mut sk = self.sk;
+        let host = self.host;
+        let mut integration_key = self.integration_key;
+        let mut secret_key = self.secret_key;
 
         let digits = 4;
         let replaced = "************";
 
-        host.replace_range(digits.., replaced);
-        ik.replace_range(digits.., replaced);
-        sk.replace_range(digits.., replaced);
+        integration_key.replace_range(digits.., replaced);
+        secret_key.replace_range(digits.., replaced);
 
         Self {
             host,
-            ik,
-            sk,
+            integration_key,
+            secret_key,
         }
     }
 }
@@ -91,15 +87,15 @@ impl DuoStatus {
 
 const DISABLED_MESSAGE_DEFAULT: &str = "<To use the global Duo keys, please leave these fields untouched>";
 
-#[post("/two-factor/get-duo", data = "<data>")]
-async fn get_duo(data: JsonUpcase<PasswordData>, headers: Headers, mut conn: DbConn) -> JsonResult {
-    let data: PasswordData = data.into_inner().data;
+pub async fn get_duo(headers: Headers, data: Json<Upcase<PasswordData>>) -> ApiResult<Json<Value>> {
+    let data: PasswordData = data.0.data;
 
-    if !headers.user.check_valid_password(&data.MasterPasswordHash) {
+    if !headers.user.check_valid_password(&data.master_password_hash) {
         err!("Invalid password");
     }
+    let conn = DB.get().await?;
 
-    let data = get_user_duo_data(&headers.user.uuid, &mut conn).await;
+    let data = get_user_duo_data(headers.user.uuid, &conn).await?;
 
     let (enabled, data) = match data {
         DuoStatus::Global(_) => (true, Some(DuoData::secret())),
@@ -112,8 +108,8 @@ async fn get_duo(data: JsonUpcase<PasswordData>, headers: Headers, mut conn: DbC
         json!({
             "Enabled": enabled,
             "Host": data.host,
-            "SecretKey": data.sk,
-            "IntegrationKey": data.ik,
+            "SecretKey": data.secret_key,
+            "IntegrationKey": data.integration_key,
             "Object": "twoFactorDuo"
         })
     } else {
@@ -127,20 +123,21 @@ async fn get_duo(data: JsonUpcase<PasswordData>, headers: Headers, mut conn: DbC
 }
 
 #[derive(Deserialize)]
-#[allow(non_snake_case, dead_code)]
-struct EnableDuoData {
-    MasterPasswordHash: String,
-    Host: String,
-    SecretKey: String,
-    IntegrationKey: String,
+#[allow(dead_code)]
+#[serde(rename_all = "PascalCase")]
+pub struct EnableDuoData {
+    master_password_hash: String,
+    host: Url,
+    secret_key: String,
+    integration_key: String,
 }
 
 impl From<EnableDuoData> for DuoData {
     fn from(d: EnableDuoData) -> Self {
         Self {
-            host: d.Host,
-            ik: d.IntegrationKey,
-            sk: d.SecretKey,
+            host: d.host,
+            integration_key: d.integration_key,
+            secret_key: d.secret_key,
         }
     }
 }
@@ -151,59 +148,54 @@ fn check_duo_fields_custom(data: &EnableDuoData) -> bool {
         st.is_empty() || s == DISABLED_MESSAGE_DEFAULT
     }
 
-    !empty_or_default(&data.Host) && !empty_or_default(&data.SecretKey) && !empty_or_default(&data.IntegrationKey)
+    !empty_or_default(&data.secret_key) && !empty_or_default(&data.integration_key)
 }
 
-#[post("/two-factor/duo", data = "<data>")]
-async fn activate_duo(data: JsonUpcase<EnableDuoData>, headers: Headers, mut conn: DbConn) -> JsonResult {
-    let data: EnableDuoData = data.into_inner().data;
+pub async fn activate_duo(headers: Headers, data: Json<Upcase<EnableDuoData>>) -> ApiResult<Json<Value>> {
+    let data: EnableDuoData = data.0.data;
     let mut user = headers.user;
 
-    if !user.check_valid_password(&data.MasterPasswordHash) {
+    if !user.check_valid_password(&data.master_password_hash) {
         err!("Invalid password");
     }
 
     let (data, data_str) = if check_duo_fields_custom(&data) {
         let data_req: DuoData = data.into();
-        let data_str = serde_json::to_string(&data_req)?;
-        duo_api_request("GET", "/auth/v2/check", "", &data_req).await.map_res("Failed to validate Duo credentials")?;
+        let data_str = serde_json::to_value(data_req.clone())?;
+        duo_api_request("GET", "/auth/v2/check", "", &data_req).await?;
         (data_req.obscure(), data_str)
     } else {
-        (DuoData::secret(), String::new())
+        (DuoData::secret(), Value::Null)
     };
 
-    let type_ = TwoFactorType::Duo;
-    let twofactor = TwoFactor::new(user.uuid.clone(), type_, data_str);
-    twofactor.save(&mut conn).await?;
+    let mut conn = DB.get().await?;
 
-    _generate_recover_code(&mut user, &mut conn).await;
+    let twofactor = TwoFactor::new(user.uuid, TwoFactorType::Duo, data_str);
+    twofactor.save(&conn).await?;
 
-    log_user_event(EventType::UserUpdated2fa as i32, &user.uuid, headers.device.atype, &headers.ip.ip, &mut conn).await;
+    _generate_recover_code(&mut user, &conn).await?;
+
+    log_user_event(EventType::UserUpdated2fa, user.uuid, headers.device.atype, Utc::now(), headers.ip, &mut conn).await?;
 
     Ok(Json(json!({
         "Enabled": true,
         "Host": data.host,
-        "SecretKey": data.sk,
-        "IntegrationKey": data.ik,
+        "SecretKey": data.secret_key,
+        "IntegrationKey": data.integration_key,
         "Object": "twoFactorDuo"
     })))
 }
 
-#[put("/two-factor/duo", data = "<data>")]
-async fn activate_duo_put(data: JsonUpcase<EnableDuoData>, headers: Headers, conn: DbConn) -> JsonResult {
-    activate_duo(data, headers, conn).await
-}
-
-async fn duo_api_request(method: &str, path: &str, params: &str, data: &DuoData) -> EmptyResult {
+async fn duo_api_request(method: &str, path: &str, params: &str, data: &DuoData) -> ApiResult<()> {
     use reqwest::{header, Method};
     use std::str::FromStr;
 
     // https://duo.com/docs/authapi#api-details
     let url = format!("https://{}{}", &data.host, path);
     let date = Utc::now().to_rfc2822();
-    let username = &data.ik;
-    let fields = [&date, method, &data.host, path, params];
-    let password = crypto::hmac_sign(&data.sk, &fields.join("\n"));
+    let username = &data.integration_key;
+    let fields = [&date, method, &data.host.to_string(), path, params];
+    let password = crypto::hmac_sign(&data.secret_key, &fields.join("\n"));
 
     let m = Method::from_str(method).unwrap_or_default();
 
@@ -228,41 +220,39 @@ const AUTH_PREFIX: &str = "AUTH";
 const DUO_PREFIX: &str = "TX";
 const APP_PREFIX: &str = "APP";
 
-async fn get_user_duo_data(uuid: &str, conn: &mut DbConn) -> DuoStatus {
-    let type_ = TwoFactorType::Duo as i32;
-
+async fn get_user_duo_data(uuid: Uuid, conn: &Conn) -> ApiResult<DuoStatus> {
     // If the user doesn't have an entry, disabled
-    let twofactor = match TwoFactor::find_by_user_and_type(uuid, type_, conn).await {
+    let twofactor = match TwoFactor::find_by_user_and_type(conn, uuid, TwoFactorType::Duo).await? {
         Some(t) => t,
-        None => return DuoStatus::Disabled(DuoData::global().is_some()),
+        None => return Ok(DuoStatus::Disabled(DuoData::global().is_some())),
     };
 
     // If the user has the required values, we use those
-    if let Ok(data) = serde_json::from_str(&twofactor.data) {
-        return DuoStatus::User(data);
+    if let Ok(data) = serde_json::from_value(twofactor.data) {
+        return Ok(DuoStatus::User(data));
     }
 
     // Otherwise, we try to use the globals
     if let Some(global) = DuoData::global() {
-        return DuoStatus::Global(global);
+        return Ok(DuoStatus::Global(global));
     }
 
     // If there are no globals configured, just disable it
-    DuoStatus::Disabled(false)
+    Ok(DuoStatus::Disabled(false))
 }
 
 // let (ik, sk, ak, host) = get_duo_keys();
-async fn get_duo_keys_email(email: &str, conn: &mut DbConn) -> ApiResult<(String, String, String, String)> {
-    let data = match User::find_by_mail(email, conn).await {
-        Some(u) => get_user_duo_data(&u.uuid, conn).await.data(),
+async fn get_duo_keys_email(email: &str, conn: &Conn) -> ApiResult<(String, String, String, Url)> {
+    let data = match User::find_by_email(conn, email).await? {
+        Some(u) => get_user_duo_data(u.uuid, conn).await?.data(),
         _ => DuoData::global(),
     }
     .map_res("Can't fetch Duo Keys")?;
 
-    Ok((data.ik, data.sk, CONFIG.get_duo_akey(), data.host))
+    Ok((data.integration_key, data.secret_key, CONFIG.duo.as_ref().map(|x| x.app_key.clone()).ok_or(ApiError::NotFound)?, data.host))
 }
 
-pub async fn generate_duo_signature(email: &str, conn: &mut DbConn) -> ApiResult<(String, String)> {
+pub async fn generate_duo_signature(email: &str, conn: &Conn) -> ApiResult<(String, Url)> {
     let now = Utc::now().timestamp();
 
     let (ik, sk, ak, host) = get_duo_keys_email(email, conn).await?;
@@ -280,7 +270,7 @@ fn sign_duo_values(key: &str, email: &str, ikey: &str, prefix: &str, expire: i64
     format!("{}|{}", cookie, crypto::hmac_sign(key, &cookie))
 }
 
-pub async fn validate_duo_login(email: &str, response: &str, conn: &mut DbConn) -> EmptyResult {
+pub async fn validate_duo_login(email: &str, response: &str, conn: &Conn) -> ApiResult<()> {
     // email is as entered by the user, so it needs to be normalized before
     // comparison with auth_user below.
     let email = &email.to_lowercase();

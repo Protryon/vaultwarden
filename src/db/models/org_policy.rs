@@ -1,28 +1,27 @@
+use axum_util::errors::ApiResult;
+use log::error;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
+use serde_repr::{Deserialize_repr, Serialize_repr};
+use tokio_postgres::Row;
+use uuid::Uuid;
 
-use crate::api::EmptyResult;
-use crate::db::DbConn;
-use crate::error::MapResult;
-use crate::util::UpCase;
+use crate::{db::Conn, util::Upcase};
 
-use super::{TwoFactor, UserOrgStatus, UserOrgType, UserOrganization};
+use super::{TwoFactor, UserOrgType, UserOrganization};
 
-db_object! {
-    #[derive(Identifiable, Queryable, Insertable, AsChangeset)]
-    #[diesel(table_name = org_policies)]
-    #[diesel(primary_key(uuid))]
-    pub struct OrgPolicy {
-        pub uuid: String,
-        pub org_uuid: String,
-        pub atype: i32,
-        pub enabled: bool,
-        pub data: String,
-    }
+//TODO: i think primary key can just be (org_id, atype)
+pub struct OrganizationPolicy {
+    pub uuid: Uuid,
+    pub organization_uuid: Uuid,
+    pub atype: OrgPolicyType,
+    pub enabled: bool,
+    pub data: Value,
 }
 
 // https://github.com/bitwarden/server/blob/b86a04cef9f1e1b82cf18e49fc94e017c641130c/src/Core/Enums/PolicyType.cs
-#[derive(Copy, Clone, Eq, PartialEq, num_derive::FromPrimitive)]
+#[derive(Copy, Clone, Eq, PartialEq, strum::FromRepr, Serialize_repr, Deserialize_repr)]
+#[repr(i32)]
 pub enum OrgPolicyType {
     TwoFactorAuthentication = 0,
     MasterPassword = 1,
@@ -35,53 +34,61 @@ pub enum OrgPolicyType {
     ResetPassword = 8,
     // MaximumVaultTimeout = 9, // Not supported (Not AGPLv3 Licensed)
     // DisablePersonalVaultExport = 10, // Not supported (Not AGPLv3 Licensed)
+    Unknown = i32::MAX,
 }
 
 // https://github.com/bitwarden/server/blob/5cbdee137921a19b1f722920f0fa3cd45af2ef0f/src/Core/Models/Data/Organizations/Policies/SendOptionsPolicyData.cs
 #[derive(Deserialize)]
-#[allow(non_snake_case)]
+#[serde(rename_all = "PascalCase")]
 pub struct SendOptionsPolicyData {
-    pub DisableHideEmail: bool,
+    pub disable_hide_email: bool,
 }
 
 // https://github.com/bitwarden/server/blob/5cbdee137921a19b1f722920f0fa3cd45af2ef0f/src/Core/Models/Data/Organizations/Policies/ResetPasswordDataModel.cs
 #[derive(Deserialize)]
-#[allow(non_snake_case)]
+#[serde(rename_all = "PascalCase")]
 pub struct ResetPasswordDataModel {
-    pub AutoEnrollEnabled: bool,
+    pub auto_enroll_enabled: bool,
 }
 
 pub type OrgPolicyResult = Result<(), OrgPolicyErr>;
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub enum OrgPolicyErr {
     TwoFactorMissing,
     SingleOrgEnforced,
 }
 
-/// Local methods
-impl OrgPolicy {
-    pub fn new(org_uuid: String, atype: OrgPolicyType, data: String) -> Self {
+impl From<Row> for OrganizationPolicy {
+    fn from(row: Row) -> Self {
         Self {
-            uuid: crate::util::get_uuid(),
-            org_uuid,
-            atype: atype as i32,
+            uuid: row.get(0),
+            organization_uuid: row.get(1),
+            atype: OrgPolicyType::from_repr(row.get(2)).unwrap_or(OrgPolicyType::Unknown),
+            enabled: row.get(3),
+            data: row.get(4),
+        }
+    }
+}
+
+/// Local methods
+impl OrganizationPolicy {
+    pub fn new(organization_uuid: Uuid, atype: OrgPolicyType, data: Value) -> Self {
+        Self {
+            uuid: Uuid::new_v4(),
+            organization_uuid,
+            atype: atype,
             enabled: false,
             data,
         }
     }
 
-    pub fn has_type(&self, policy_type: OrgPolicyType) -> bool {
-        self.atype == policy_type as i32
-    }
-
     pub fn to_json(&self) -> Value {
-        let data_json: Value = serde_json::from_str(&self.data).unwrap_or(Value::Null);
         json!({
             "Id": self.uuid,
-            "OrganizationId": self.org_uuid,
+            "OrganizationId": self.organization_uuid,
             "Type": self.atype,
-            "Data": data_json,
+            "Data": self.data,
             "Enabled": self.enabled,
             "Object": "policy",
         })
@@ -89,203 +96,114 @@ impl OrgPolicy {
 }
 
 /// Database methods
-impl OrgPolicy {
-    pub async fn save(&self, conn: &mut DbConn) -> EmptyResult {
-        db_run! { conn:
-            sqlite, mysql {
-                match diesel::replace_into(org_policies::table)
-                    .values(OrgPolicyDb::to_db(self))
-                    .execute(conn)
-                {
-                    Ok(_) => Ok(()),
-                    // Record already exists and causes a Foreign Key Violation because replace_into() wants to delete the record first.
-                    Err(diesel::result::Error::DatabaseError(diesel::result::DatabaseErrorKind::ForeignKeyViolation, _)) => {
-                        diesel::update(org_policies::table)
-                            .filter(org_policies::uuid.eq(&self.uuid))
-                            .set(OrgPolicyDb::to_db(self))
-                            .execute(conn)
-                            .map_res("Error saving org_policy")
-                    }
-                    Err(e) => Err(e.into()),
-                }.map_res("Error saving org_policy")
-            }
-            postgresql {
-                let value = OrgPolicyDb::to_db(self);
-                // We need to make sure we're not going to violate the unique constraint on org_uuid and atype.
-                // This happens automatically on other DBMS backends due to replace_into(). PostgreSQL does
-                // not support multiple constraints on ON CONFLICT clauses.
-                diesel::delete(
-                    org_policies::table
-                        .filter(org_policies::org_uuid.eq(&self.org_uuid))
-                        .filter(org_policies::atype.eq(&self.atype)),
-                )
-                .execute(conn)
-                .map_res("Error deleting org_policy for insert")?;
-
-                diesel::insert_into(org_policies::table)
-                    .values(&value)
-                    .on_conflict(org_policies::uuid)
-                    .do_update()
-                    .set(&value)
-                    .execute(conn)
-                    .map_res("Error saving org_policy")
-            }
-        }
+impl OrganizationPolicy {
+    pub async fn save(&mut self, conn: &Conn) -> ApiResult<()> {
+        conn.execute(
+            r"INSERT INTO organization_policies (uuid, organization_uuid, atype, enabled, data) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (uuid) DO UPDATE
+        SET
+        organization_uuid = EXCLUDED.organization_uuid,
+        atype = EXCLUDED.atype,
+        enabled = EXCLUDED.enabled,
+        data = EXCLUDED.data",
+            &[&self.uuid, &self.organization_uuid, &(self.atype as i32), &self.enabled, &self.data],
+        )
+        .await?;
+        Ok(())
     }
 
-    pub async fn delete(self, conn: &mut DbConn) -> EmptyResult {
-        db_run! { conn: {
-            diesel::delete(org_policies::table.filter(org_policies::uuid.eq(self.uuid)))
-                .execute(conn)
-                .map_res("Error deleting org_policy")
-        }}
+    pub async fn find_by_org(conn: &Conn, organization_uuid: Uuid) -> ApiResult<Vec<Self>> {
+        Ok(conn
+            .query(r"SELECT * FROM organization_policies WHERE organization_uuid = $1", &[&organization_uuid])
+            .await?
+            .into_iter()
+            .map(|x| x.into())
+            .collect())
     }
 
-    pub async fn find_by_uuid(uuid: &str, conn: &mut DbConn) -> Option<Self> {
-        db_run! { conn: {
-            org_policies::table
-                .filter(org_policies::uuid.eq(uuid))
-                .first::<OrgPolicyDb>(conn)
-                .ok()
-                .from_db()
-        }}
+    pub async fn find_confirmed_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<Vec<Self>> {
+        Ok(conn
+            .query(
+                r"
+        SELECT op.*
+        FROM organization_policies op
+        INNER JOIN user_organizations uo ON uo.organization_uuid = op.organization_uuid
+        WHERE uo.user_uuid = $1 AND uo.status = 2
+        ",
+                &[&user_uuid],
+            )
+            .await?
+            .into_iter()
+            .map(|x| x.into())
+            .collect())
     }
 
-    pub async fn find_by_org(org_uuid: &str, conn: &mut DbConn) -> Vec<Self> {
-        db_run! { conn: {
-            org_policies::table
-                .filter(org_policies::org_uuid.eq(org_uuid))
-                .load::<OrgPolicyDb>(conn)
-                .expect("Error loading org_policy")
-                .from_db()
-        }}
+    pub async fn find_by_org_and_type(conn: &Conn, organization_uuid: Uuid, policy_type: OrgPolicyType) -> ApiResult<Option<Self>> {
+        Ok(conn
+            .query_opt(r"SELECT * FROM organization_policies WHERE organization_uuid = $1 AND atype = $2", &[&organization_uuid, &(policy_type as i32)])
+            .await?
+            .map(Into::into))
     }
 
-    pub async fn find_confirmed_by_user(user_uuid: &str, conn: &mut DbConn) -> Vec<Self> {
-        db_run! { conn: {
-            org_policies::table
-                .inner_join(
-                    users_organizations::table.on(
-                        users_organizations::org_uuid.eq(org_policies::org_uuid)
-                            .and(users_organizations::user_uuid.eq(user_uuid)))
-                )
-                .filter(
-                    users_organizations::status.eq(UserOrgStatus::Confirmed as i32)
-                )
-                .select(org_policies::all_columns)
-                .load::<OrgPolicyDb>(conn)
-                .expect("Error loading org_policy")
-                .from_db()
-        }}
+    pub async fn find_accepted_and_confirmed_by_user_and_active_policy(conn: &Conn, user_uuid: Uuid, policy_type: OrgPolicyType) -> ApiResult<Vec<Self>> {
+        Ok(conn
+            .query(
+                r"
+        SELECT op.*
+        FROM organization_policies op
+        INNER JOIN user_organizations uo ON uo.organization_uuid = op.organization_uuid
+        WHERE uo.user_uuid = $1 AND (uo.status = 2 OR uo.status = 1) AND op.atype = $2 AND op.enabled
+        ",
+                &[&user_uuid, &(policy_type as i32)],
+            )
+            .await?
+            .into_iter()
+            .map(|x| x.into())
+            .collect())
     }
 
-    pub async fn find_by_org_and_type(org_uuid: &str, policy_type: OrgPolicyType, conn: &mut DbConn) -> Option<Self> {
-        db_run! { conn: {
-            org_policies::table
-                .filter(org_policies::org_uuid.eq(org_uuid))
-                .filter(org_policies::atype.eq(policy_type as i32))
-                .first::<OrgPolicyDb>(conn)
-                .ok()
-                .from_db()
-        }}
-    }
-
-    pub async fn delete_all_by_organization(org_uuid: &str, conn: &mut DbConn) -> EmptyResult {
-        db_run! { conn: {
-            diesel::delete(org_policies::table.filter(org_policies::org_uuid.eq(org_uuid)))
-                .execute(conn)
-                .map_res("Error deleting org_policy")
-        }}
-    }
-
-    pub async fn find_accepted_and_confirmed_by_user_and_active_policy(
-        user_uuid: &str,
-        policy_type: OrgPolicyType,
-        conn: &mut DbConn,
-    ) -> Vec<Self> {
-        db_run! { conn: {
-            org_policies::table
-                .inner_join(
-                    users_organizations::table.on(
-                        users_organizations::org_uuid.eq(org_policies::org_uuid)
-                            .and(users_organizations::user_uuid.eq(user_uuid)))
-                )
-                .filter(
-                    users_organizations::status.eq(UserOrgStatus::Accepted as i32)
-                )
-                .or_filter(
-                    users_organizations::status.eq(UserOrgStatus::Confirmed as i32)
-                )
-                .filter(org_policies::atype.eq(policy_type as i32))
-                .filter(org_policies::enabled.eq(true))
-                .select(org_policies::all_columns)
-                .load::<OrgPolicyDb>(conn)
-                .expect("Error loading org_policy")
-                .from_db()
-        }}
-    }
-
-    pub async fn find_confirmed_by_user_and_active_policy(
-        user_uuid: &str,
-        policy_type: OrgPolicyType,
-        conn: &mut DbConn,
-    ) -> Vec<Self> {
-        db_run! { conn: {
-            org_policies::table
-                .inner_join(
-                    users_organizations::table.on(
-                        users_organizations::org_uuid.eq(org_policies::org_uuid)
-                            .and(users_organizations::user_uuid.eq(user_uuid)))
-                )
-                .filter(
-                    users_organizations::status.eq(UserOrgStatus::Confirmed as i32)
-                )
-                .filter(org_policies::atype.eq(policy_type as i32))
-                .filter(org_policies::enabled.eq(true))
-                .select(org_policies::all_columns)
-                .load::<OrgPolicyDb>(conn)
-                .expect("Error loading org_policy")
-                .from_db()
-        }}
+    pub async fn find_confirmed_by_user_and_active_policy(conn: &Conn, user_uuid: Uuid, policy_type: OrgPolicyType) -> ApiResult<Vec<Self>> {
+        Ok(conn
+            .query(
+                r"
+        SELECT op.*
+        FROM organization_policies op
+        INNER JOIN user_organizations uo ON uo.organization_uuid = op.organization_uuid
+        WHERE uo.user_uuid = $1 AND uo.status = 2 AND op.atype = $2 AND op.enabled
+        ",
+                &[&user_uuid, &(policy_type as i32)],
+            )
+            .await?
+            .into_iter()
+            .map(|x| x.into())
+            .collect())
     }
 
     /// Returns true if the user belongs to an org that has enabled the specified policy type,
     /// and the user is not an owner or admin of that org. This is only useful for checking
     /// applicability of policy types that have these particular semantics.
-    pub async fn is_applicable_to_user(
-        user_uuid: &str,
-        policy_type: OrgPolicyType,
-        exclude_org_uuid: Option<&str>,
-        conn: &mut DbConn,
-    ) -> bool {
-        for policy in
-            OrgPolicy::find_accepted_and_confirmed_by_user_and_active_policy(user_uuid, policy_type, conn).await
-        {
+    pub async fn is_applicable_to_user(conn: &Conn, user_uuid: Uuid, policy_type: OrgPolicyType, exclude_org_uuid: Option<Uuid>) -> ApiResult<bool> {
+        //TODO: refactor this to not be N+1 query
+        for policy in OrganizationPolicy::find_accepted_and_confirmed_by_user_and_active_policy(conn, user_uuid, policy_type).await? {
             // Check if we need to skip this organization.
-            if exclude_org_uuid.is_some() && exclude_org_uuid.unwrap() == policy.org_uuid {
+            if exclude_org_uuid == Some(policy.organization_uuid) {
                 continue;
             }
 
-            if let Some(user) = UserOrganization::find_by_user_and_org(user_uuid, &policy.org_uuid, conn).await {
+            if let Some(user) = UserOrganization::get(conn, user_uuid, policy.organization_uuid).await? {
                 if user.atype < UserOrgType::Admin {
-                    return true;
+                    return Ok(true);
                 }
             }
         }
-        false
+        Ok(false)
     }
 
-    pub async fn is_user_allowed(
-        user_uuid: &str,
-        org_uuid: &str,
-        exclude_current_org: bool,
-        conn: &mut DbConn,
-    ) -> OrgPolicyResult {
+    pub async fn is_user_allowed(conn: &Conn, user_uuid: Uuid, org_uuid: Uuid, exclude_current_org: bool) -> ApiResult<OrgPolicyResult> {
         // Enforce TwoFactor/TwoStep login
-        if TwoFactor::find_by_user(user_uuid, conn).await.is_empty() {
-            match Self::find_by_org_and_type(org_uuid, OrgPolicyType::TwoFactorAuthentication, conn).await {
+        if TwoFactor::find_by_user_official(conn, user_uuid).await?.is_empty() {
+            match Self::find_by_org_and_type(conn, org_uuid, OrgPolicyType::TwoFactorAuthentication).await? {
                 Some(p) if p.enabled => {
-                    return Err(OrgPolicyErr::TwoFactorMissing);
+                    return Ok(Err(OrgPolicyErr::TwoFactorMissing));
                 }
                 _ => {}
             };
@@ -298,46 +216,44 @@ impl OrgPolicy {
         } else {
             None
         };
-        if Self::is_applicable_to_user(user_uuid, OrgPolicyType::SingleOrg, exclude_org, conn).await {
-            return Err(OrgPolicyErr::SingleOrgEnforced);
+        if Self::is_applicable_to_user(conn, user_uuid, OrgPolicyType::SingleOrg, exclude_org).await? {
+            return Ok(Err(OrgPolicyErr::SingleOrgEnforced));
         }
 
-        Ok(())
+        Ok(Ok(()))
     }
 
-    pub async fn org_is_reset_password_auto_enroll(org_uuid: &str, conn: &mut DbConn) -> bool {
-        match OrgPolicy::find_by_org_and_type(org_uuid, OrgPolicyType::ResetPassword, conn).await {
-            Some(policy) => match serde_json::from_str::<UpCase<ResetPasswordDataModel>>(&policy.data) {
+    pub async fn org_is_reset_password_auto_enroll(conn: &Conn, org_uuid: Uuid) -> ApiResult<bool> {
+        match OrganizationPolicy::find_by_org_and_type(conn, org_uuid, OrgPolicyType::ResetPassword).await? {
+            Some(policy) => match serde_json::from_value::<Upcase<ResetPasswordDataModel>>(policy.data) {
                 Ok(opts) => {
-                    return policy.enabled && opts.data.AutoEnrollEnabled;
+                    return Ok(policy.enabled && opts.data.auto_enroll_enabled);
                 }
-                _ => error!("Failed to deserialize ResetPasswordDataModel: {}", policy.data),
+                Err(e) => error!("Failed to deserialize ResetPasswordDataModel: {e}"),
             },
-            None => return false,
+            None => return Ok(false),
         }
 
-        false
+        Ok(false)
     }
 
     /// Returns true if the user belongs to an org that has enabled the `DisableHideEmail`
     /// option of the `Send Options` policy, and the user is not an owner or admin of that org.
-    pub async fn is_hide_email_disabled(user_uuid: &str, conn: &mut DbConn) -> bool {
-        for policy in
-            OrgPolicy::find_confirmed_by_user_and_active_policy(user_uuid, OrgPolicyType::SendOptions, conn).await
-        {
-            if let Some(user) = UserOrganization::find_by_user_and_org(user_uuid, &policy.org_uuid, conn).await {
+    pub async fn is_hide_email_disabled(conn: &Conn, user_uuid: Uuid) -> ApiResult<bool> {
+        for policy in OrganizationPolicy::find_confirmed_by_user_and_active_policy(conn, user_uuid, OrgPolicyType::SendOptions).await? {
+            if let Some(user) = UserOrganization::get(conn, user_uuid, policy.organization_uuid).await? {
                 if user.atype < UserOrgType::Admin {
-                    match serde_json::from_str::<UpCase<SendOptionsPolicyData>>(&policy.data) {
+                    match serde_json::from_value::<Upcase<SendOptionsPolicyData>>(policy.data) {
                         Ok(opts) => {
-                            if opts.data.DisableHideEmail {
-                                return true;
+                            if opts.data.disable_hide_email {
+                                return Ok(true);
                             }
                         }
-                        _ => error!("Failed to deserialize SendOptionsPolicyData: {}", policy.data),
+                        Err(e) => error!("Failed to deserialize SendOptionsPolicyData: {e}"),
                     }
                 }
             }
         }
-        false
+        Ok(false)
     }
 }

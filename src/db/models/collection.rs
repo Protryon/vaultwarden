@@ -1,43 +1,70 @@
-use serde_json::Value;
+use axum_util::errors::{ApiError, ApiResult};
+use serde_json::{json, Value};
 
-use super::{CollectionGroup, User, UserOrgStatus, UserOrgType, UserOrganization};
+use tokio_postgres::Row;
+use uuid::Uuid;
 
-db_object! {
-    #[derive(Identifiable, Queryable, Insertable, AsChangeset)]
-    #[diesel(table_name = collections)]
-    #[diesel(primary_key(uuid))]
-    pub struct Collection {
-        pub uuid: String,
-        pub org_uuid: String,
-        pub name: String,
-    }
+use crate::db::Conn;
 
-    #[derive(Identifiable, Queryable, Insertable)]
-    #[diesel(table_name = users_collections)]
-    #[diesel(primary_key(user_uuid, collection_uuid))]
-    pub struct CollectionUser {
-        pub user_uuid: String,
-        pub collection_uuid: String,
-        pub read_only: bool,
-        pub hide_passwords: bool,
-    }
+use super::cipher::AccessRestrictions;
 
-    #[derive(Identifiable, Queryable, Insertable)]
-    #[diesel(table_name = ciphers_collections)]
-    #[diesel(primary_key(cipher_uuid, collection_uuid))]
-    pub struct CollectionCipher {
-        pub cipher_uuid: String,
-        pub collection_uuid: String,
+#[derive(Debug)]
+pub struct Collection {
+    pub uuid: Uuid,
+    pub organization_uuid: Uuid,
+    pub name: String,
+}
+
+#[derive(Debug)]
+pub struct CollectionUser {
+    pub user_uuid: Uuid,
+    pub collection_uuid: Uuid,
+    pub read_only: bool,
+    pub hide_passwords: bool,
+}
+
+#[derive(Debug)]
+pub struct CollectionCipher {
+    pub cipher_uuid: Uuid,
+    pub collection_uuid: Uuid,
+}
+
+impl From<Row> for Collection {
+    fn from(row: Row) -> Self {
+        Self {
+            uuid: row.get(0),
+            organization_uuid: row.get(1),
+            name: row.get(2),
+        }
     }
 }
 
-/// Local methods
-impl Collection {
-    pub fn new(org_uuid: String, name: String) -> Self {
+impl From<Row> for CollectionUser {
+    fn from(row: Row) -> Self {
         Self {
-            uuid: crate::util::get_uuid(),
+            user_uuid: row.get(0),
+            collection_uuid: row.get(1),
+            read_only: row.get(2),
+            hide_passwords: row.get(3),
+        }
+    }
+}
 
-            org_uuid,
+impl From<Row> for CollectionCipher {
+    fn from(row: Row) -> Self {
+        Self {
+            cipher_uuid: row.get(0),
+            collection_uuid: row.get(1),
+        }
+    }
+}
+
+impl Collection {
+    pub fn new(organization_uuid: Uuid, name: String) -> Self {
+        Self {
+            uuid: Uuid::new_v4(),
+
+            organization_uuid,
             name,
         }
     }
@@ -46,599 +73,224 @@ impl Collection {
         json!({
             "ExternalId": null, // Not support by us
             "Id": self.uuid,
-            "OrganizationId": self.org_uuid,
+            "OrganizationId": self.organization_uuid,
             "Name": self.name,
             "Object": "collection",
         })
     }
 
-    pub async fn to_json_details(
-        &self,
-        user_uuid: &str,
-        cipher_sync_data: Option<&crate::api::core::CipherSyncData>,
-        conn: &mut DbConn,
-    ) -> Value {
-        let (read_only, hide_passwords) = if let Some(cipher_sync_data) = cipher_sync_data {
-            match cipher_sync_data.user_organizations.get(&self.org_uuid) {
-                Some(uo) if uo.has_full_access() => (false, false),
-                Some(_) => {
-                    if let Some(uc) = cipher_sync_data.user_collections.get(&self.uuid) {
-                        (uc.read_only, uc.hide_passwords)
-                    } else if let Some(cg) = cipher_sync_data.user_collections_groups.get(&self.uuid) {
-                        (cg.read_only, cg.hide_passwords)
-                    } else {
-                        (false, false)
-                    }
-                }
-                _ => (true, true),
-            }
-        } else {
-            (!self.is_writable_by_user(user_uuid, conn).await, self.hide_passwords_for_user(user_uuid, conn).await)
-        };
+    pub async fn to_json_details(&self, conn: &Conn, user_uuid: Uuid) -> ApiResult<Value> {
+        let access = self.get_access_restrictions(conn, user_uuid).await?.ok_or(ApiError::NotFound)?;
 
         let mut json_object = self.to_json();
         json_object["Object"] = json!("collectionDetails");
-        json_object["ReadOnly"] = json!(read_only);
-        json_object["HidePasswords"] = json!(hide_passwords);
-        json_object
+        json_object["ReadOnly"] = json!(access.read_only);
+        json_object["HidePasswords"] = json!(access.hide_passwords);
+        Ok(json_object)
     }
 }
 
-use crate::db::DbConn;
-
-use crate::api::EmptyResult;
-use crate::error::MapResult;
-
-/// Database methods
 impl Collection {
-    pub async fn save(&self, conn: &mut DbConn) -> EmptyResult {
-        self.update_users_revision(conn).await;
-
-        db_run! { conn:
-            sqlite, mysql {
-                match diesel::replace_into(collections::table)
-                    .values(CollectionDb::to_db(self))
-                    .execute(conn)
-                {
-                    Ok(_) => Ok(()),
-                    // Record already exists and causes a Foreign Key Violation because replace_into() wants to delete the record first.
-                    Err(diesel::result::Error::DatabaseError(diesel::result::DatabaseErrorKind::ForeignKeyViolation, _)) => {
-                        diesel::update(collections::table)
-                            .filter(collections::uuid.eq(&self.uuid))
-                            .set(CollectionDb::to_db(self))
-                            .execute(conn)
-                            .map_res("Error saving collection")
-                    }
-                    Err(e) => Err(e.into()),
-                }.map_res("Error saving collection")
-            }
-            postgresql {
-                let value = CollectionDb::to_db(self);
-                diesel::insert_into(collections::table)
-                    .values(&value)
-                    .on_conflict(collections::uuid)
-                    .do_update()
-                    .set(&value)
-                    .execute(conn)
-                    .map_res("Error saving collection")
-            }
-        }
-    }
-
-    pub async fn delete(self, conn: &mut DbConn) -> EmptyResult {
-        self.update_users_revision(conn).await;
-        CollectionCipher::delete_all_by_collection(&self.uuid, conn).await?;
-        CollectionUser::delete_all_by_collection(&self.uuid, conn).await?;
-        CollectionGroup::delete_all_by_collection(&self.uuid, conn).await?;
-
-        db_run! { conn: {
-            diesel::delete(collections::table.filter(collections::uuid.eq(self.uuid)))
-                .execute(conn)
-                .map_res("Error deleting collection")
-        }}
-    }
-
-    pub async fn delete_all_by_organization(org_uuid: &str, conn: &mut DbConn) -> EmptyResult {
-        for collection in Self::find_by_organization(org_uuid, conn).await {
-            collection.delete(conn).await?;
-        }
+    pub async fn save(&self, conn: &Conn) -> ApiResult<()> {
+        conn.execute(
+            r"INSERT INTO collections (uuid, organization_uuid, name) VALUES ($1, $2, $3) ON CONFLICT (uuid) DO UPDATE
+        SET
+        organization_uuid = EXCLUDED.organization_uuid,
+        name = EXCLUDED.name",
+            &[&self.uuid, &self.organization_uuid, &self.name],
+        )
+        .await?;
         Ok(())
     }
 
-    pub async fn update_users_revision(&self, conn: &mut DbConn) {
-        for user_org in UserOrganization::find_by_collection_and_org(&self.uuid, &self.org_uuid, conn).await.iter() {
-            User::update_uuid_revision(&user_org.user_uuid, conn).await;
-        }
+    pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
+        conn.execute(r"DELETE FROM collections WHERE uuid = $1", &[&self.uuid]).await?;
+        Ok(())
     }
 
-    pub async fn find_by_uuid(uuid: &str, conn: &mut DbConn) -> Option<Self> {
-        db_run! { conn: {
-            collections::table
-                .filter(collections::uuid.eq(uuid))
-                .first::<CollectionDb>(conn)
-                .ok()
-                .from_db()
-        }}
+    pub async fn get(conn: &Conn, uuid: Uuid) -> ApiResult<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM collections WHERE uuid = $1", &[&uuid]).await?.map(Into::into))
     }
 
-    pub async fn find_by_user_uuid(user_uuid: String, conn: &mut DbConn) -> Vec<Self> {
-        db_run! { conn: {
-            collections::table
-            .left_join(users_collections::table.on(
-                users_collections::collection_uuid.eq(collections::uuid).and(
-                    users_collections::user_uuid.eq(user_uuid.clone())
-                )
-            ))
-            .left_join(users_organizations::table.on(
-                collections::org_uuid.eq(users_organizations::org_uuid).and(
-                    users_organizations::user_uuid.eq(user_uuid.clone())
-                )
-            ))
-            .left_join(groups_users::table.on(
-                groups_users::users_organizations_uuid.eq(users_organizations::uuid)
-            ))
-            .left_join(groups::table.on(
-                groups::uuid.eq(groups_users::groups_uuid)
-            ))
-            .left_join(collections_groups::table.on(
-                collections_groups::groups_uuid.eq(groups_users::groups_uuid).and(
-                    collections_groups::collections_uuid.eq(collections::uuid)
-                )
-            ))
-            .filter(
-                users_organizations::status.eq(UserOrgStatus::Confirmed as i32)
+    pub async fn get_for_org(conn: &Conn, organization_uuid: Uuid, uuid: Uuid) -> ApiResult<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM collections c WHERE uuid = $2 AND organization_uuid = $1", &[&organization_uuid, &uuid]).await?.map(Into::into))
+    }
+
+    pub async fn get_for_user_writable(conn: &Conn, user_uuid: Uuid, uuid: Uuid) -> ApiResult<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM collections c INNER JOIN user_collection_auth uca ON uca.collection_uuid = c.uuid AND uca.user_uuid = $1 WHERE uuid = $2 AND NOT uca.read_only", &[&user_uuid, &uuid]).await?.map(Into::into))
+    }
+
+    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid, visible_only: bool) -> ApiResult<Vec<Self>> {
+        //TODO: implement visible_only
+        Ok(conn
+            .query(
+                r"
+        SELECT co.*
+        FROM collections co
+        INNER JOIN user_collection_auth uca ON uca.collection_uuid = co.uuid AND uca.user_uuid = $1
+        ",
+                &[&user_uuid],
             )
-            .filter(
-                users_collections::user_uuid.eq(user_uuid).or( // Directly accessed collection
-                    users_organizations::access_all.eq(true) // access_all in Organization
-                ).or(
-                    groups::access_all.eq(true) // access_all in groups
-                ).or( // access via groups
-                    groups_users::users_organizations_uuid.eq(users_organizations::uuid).and(
-                        collections_groups::collections_uuid.is_not_null()
-                    )
-                )
-            )
-            .select(collections::all_columns)
-            .distinct()
-            .load::<CollectionDb>(conn).expect("Error loading collections").from_db()
-        }}
-    }
-
-    // Check if a user has access to a specific collection
-    // FIXME: This needs to be reviewed. The query used by `find_by_user_uuid` could be adjusted to filter when needed.
-    //        For now this is a good solution without making to much changes.
-    pub async fn has_access_by_collection_and_user_uuid(
-        collection_uuid: &str,
-        user_uuid: &str,
-        conn: &mut DbConn,
-    ) -> bool {
-        Self::find_by_user_uuid(user_uuid.to_owned(), conn).await.into_iter().any(|c| c.uuid == collection_uuid)
-    }
-
-    pub async fn find_by_organization_and_user_uuid(org_uuid: &str, user_uuid: &str, conn: &mut DbConn) -> Vec<Self> {
-        Self::find_by_user_uuid(user_uuid.to_owned(), conn)
-            .await
+            .await?
             .into_iter()
-            .filter(|c| c.org_uuid == org_uuid)
-            .collect()
+            .map(|x| x.into())
+            .collect())
     }
 
-    pub async fn find_by_organization(org_uuid: &str, conn: &mut DbConn) -> Vec<Self> {
-        db_run! { conn: {
-            collections::table
-                .filter(collections::org_uuid.eq(org_uuid))
-                .load::<CollectionDb>(conn)
-                .expect("Error loading collections")
-                .from_db()
-        }}
-    }
-
-    pub async fn count_by_org(org_uuid: &str, conn: &mut DbConn) -> i64 {
-        db_run! { conn: {
-            collections::table
-                .filter(collections::org_uuid.eq(org_uuid))
-                .count()
-                .first::<i64>(conn)
-                .ok()
-                .unwrap_or(0)
-        }}
-    }
-
-    pub async fn find_by_uuid_and_org(uuid: &str, org_uuid: &str, conn: &mut DbConn) -> Option<Self> {
-        db_run! { conn: {
-            collections::table
-                .filter(collections::uuid.eq(uuid))
-                .filter(collections::org_uuid.eq(org_uuid))
-                .select(collections::all_columns)
-                .first::<CollectionDb>(conn)
-                .ok()
-                .from_db()
-        }}
-    }
-
-    pub async fn find_by_uuid_and_user(uuid: &str, user_uuid: String, conn: &mut DbConn) -> Option<Self> {
-        db_run! { conn: {
-            collections::table
-            .left_join(users_collections::table.on(
-                users_collections::collection_uuid.eq(collections::uuid).and(
-                    users_collections::user_uuid.eq(user_uuid.clone())
-                )
-            ))
-            .left_join(users_organizations::table.on(
-                collections::org_uuid.eq(users_organizations::org_uuid).and(
-                    users_organizations::user_uuid.eq(user_uuid)
-                )
-            ))
-            .left_join(groups_users::table.on(
-                groups_users::users_organizations_uuid.eq(users_organizations::uuid)
-            ))
-            .left_join(groups::table.on(
-                groups::uuid.eq(groups_users::groups_uuid)
-            ))
-            .left_join(collections_groups::table.on(
-                collections_groups::groups_uuid.eq(groups_users::groups_uuid).and(
-                    collections_groups::collections_uuid.eq(collections::uuid)
-                )
-            ))
-            .filter(collections::uuid.eq(uuid))
-            .filter(
-                users_collections::collection_uuid.eq(uuid).or( // Directly accessed collection
-                    users_organizations::access_all.eq(true).or( // access_all in Organization
-                        users_organizations::atype.le(UserOrgType::Admin as i32) // Org admin or owner
-                )).or(
-                    groups::access_all.eq(true) // access_all in groups
-                ).or( // access via groups
-                    groups_users::users_organizations_uuid.eq(users_organizations::uuid).and(
-                        collections_groups::collections_uuid.is_not_null()
-                    )
-                )
-            ).select(collections::all_columns)
-            .first::<CollectionDb>(conn).ok()
-            .from_db()
-        }}
-    }
-
-    pub async fn is_writable_by_user(&self, user_uuid: &str, conn: &mut DbConn) -> bool {
-        let user_uuid = user_uuid.to_string();
-        db_run! { conn: {
-            collections::table
-            .left_join(users_collections::table.on(
-                users_collections::collection_uuid.eq(collections::uuid).and(
-                    users_collections::user_uuid.eq(user_uuid.clone())
-                )
-            ))
-            .left_join(users_organizations::table.on(
-                collections::org_uuid.eq(users_organizations::org_uuid).and(
-                    users_organizations::user_uuid.eq(user_uuid)
-                )
-            ))
-            .left_join(groups_users::table.on(
-                groups_users::users_organizations_uuid.eq(users_organizations::uuid)
-            ))
-            .left_join(groups::table.on(
-                groups::uuid.eq(groups_users::groups_uuid)
-            ))
-            .left_join(collections_groups::table.on(
-                collections_groups::groups_uuid.eq(groups_users::groups_uuid).and(
-                    collections_groups::collections_uuid.eq(collections::uuid)
-                )
-            ))
-            .filter(collections::uuid.eq(&self.uuid))
-            .filter(
-                users_collections::collection_uuid.eq(&self.uuid).and(users_collections::read_only.eq(false)).or(// Directly accessed collection
-                    users_organizations::access_all.eq(true).or( // access_all in Organization
-                        users_organizations::atype.le(UserOrgType::Admin as i32) // Org admin or owner
-                )).or(
-                    groups::access_all.eq(true) // access_all in groups
-                ).or( // access via groups
-                    groups_users::users_organizations_uuid.eq(users_organizations::uuid).and(
-                        collections_groups::collections_uuid.is_not_null().and(
-                            collections_groups::read_only.eq(false))
-                    )
-                )
+    pub async fn find_by_organization(conn: &Conn, organization_uuid: Uuid) -> ApiResult<Vec<Self>> {
+        Ok(conn
+            .query(
+                r"
+        SELECT co.*
+        FROM collections co
+        WHERE co.organization_uuid = $1
+        ",
+                &[&organization_uuid],
             )
-            .count()
-            .first::<i64>(conn)
-            .ok()
-            .unwrap_or(0) != 0
-        }}
+            .await?
+            .into_iter()
+            .map(|x| x.into())
+            .collect())
     }
 
-    pub async fn hide_passwords_for_user(&self, user_uuid: &str, conn: &mut DbConn) -> bool {
-        let user_uuid = user_uuid.to_string();
-        db_run! { conn: {
-            collections::table
-            .left_join(users_collections::table.on(
-                users_collections::collection_uuid.eq(collections::uuid).and(
-                    users_collections::user_uuid.eq(user_uuid.clone())
-                )
-            ))
-            .left_join(users_organizations::table.on(
-                collections::org_uuid.eq(users_organizations::org_uuid).and(
-                    users_organizations::user_uuid.eq(user_uuid)
-                )
-            ))
-            .left_join(groups_users::table.on(
-                groups_users::users_organizations_uuid.eq(users_organizations::uuid)
-            ))
-            .left_join(groups::table.on(
-                groups::uuid.eq(groups_users::groups_uuid)
-            ))
-            .left_join(collections_groups::table.on(
-                collections_groups::groups_uuid.eq(groups_users::groups_uuid).and(
-                    collections_groups::collections_uuid.eq(collections::uuid)
-                )
-            ))
-            .filter(collections::uuid.eq(&self.uuid))
-            .filter(
-                users_collections::collection_uuid.eq(&self.uuid).and(users_collections::hide_passwords.eq(true)).or(// Directly accessed collection
-                    users_organizations::access_all.eq(true).or( // access_all in Organization
-                        users_organizations::atype.le(UserOrgType::Admin as i32) // Org admin or owner
-                )).or(
-                    groups::access_all.eq(true) // access_all in groups
-                ).or( // access via groups
-                    groups_users::users_organizations_uuid.eq(users_organizations::uuid).and(
-                        collections_groups::collections_uuid.is_not_null().and(
-                            collections_groups::hide_passwords.eq(true))
-                    )
-                )
+    pub async fn count_by_org(conn: &Conn, organization_uuid: Uuid) -> ApiResult<i64> {
+        Ok(conn.query_one(r"SELECT count(1) FROM collections WHERE organization_uuid = $1", &[&organization_uuid]).await?.get(0))
+    }
+
+    pub async fn find_by_uuid_and_org(conn: &Conn, uuid: Uuid, organization_uuid: Uuid) -> ApiResult<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM collections WHERE uuid = $1 AND organization_uuid = $2", &[&uuid, &organization_uuid]).await?.map(Into::into))
+    }
+
+    pub async fn find_by_uuid_and_user(conn: &Conn, uuid: Uuid, user_uuid: Uuid) -> ApiResult<Option<Self>> {
+        Ok(conn
+            .query_opt(
+                r"
+        SELECT co.*
+        FROM collections co
+        INNER JOIN user_collection_auth uca ON uca.collection_uuid = co.uuid AND uca.user_uuid = $1
+        WHERE co.uuid = $2
+        ",
+                &[&user_uuid, &uuid],
             )
-            .count()
-            .first::<i64>(conn)
-            .ok()
-            .unwrap_or(0) != 0
-        }}
+            .await?
+            .map(Into::into))
+    }
+
+    pub async fn find_by_uuid_and_user_writable(conn: &Conn, uuid: Uuid, user_uuid: Uuid) -> ApiResult<Option<Self>> {
+        Ok(conn
+            .query_opt(
+                r"
+        SELECT co.*
+        FROM collections co
+        INNER JOIN user_collection_auth uca ON uca.collection_uuid = co.uuid AND uca.user_uuid = $1 AND NOT uca.read_only
+        WHERE co.uuid = $2
+        ",
+                &[&user_uuid, &uuid],
+            )
+            .await?
+            .map(Into::into))
+    }
+
+    pub async fn get_access_restrictions(&self, conn: &Conn, user_uuid: Uuid) -> ApiResult<Option<AccessRestrictions>> {
+        Ok(conn
+            .query_opt(r"SELECT read_only, hide_passwords FROM user_collection_auth WHERE user_uuid = $1 AND collection_uuid = $2", &[&user_uuid, &self.uuid])
+            .await?
+            .map(|x| AccessRestrictions {
+                read_only: x.get(0),
+                hide_passwords: x.get(1),
+            }))
     }
 }
 
-/// Database methods
 impl CollectionUser {
-    pub async fn find_by_organization_and_user_uuid(org_uuid: &str, user_uuid: &str, conn: &mut DbConn) -> Vec<Self> {
-        db_run! { conn: {
-            users_collections::table
-                .filter(users_collections::user_uuid.eq(user_uuid))
-                .inner_join(collections::table.on(collections::uuid.eq(users_collections::collection_uuid)))
-                .filter(collections::org_uuid.eq(org_uuid))
-                .select(users_collections::all_columns)
-                .load::<CollectionUserDb>(conn)
-                .expect("Error loading users_collections")
-                .from_db()
-        }}
-    }
-
-    pub async fn find_by_organization(org_uuid: &str, conn: &mut DbConn) -> Vec<Self> {
-        db_run! { conn: {
-            users_collections::table
-                .inner_join(collections::table.on(collections::uuid.eq(users_collections::collection_uuid)))
-                .filter(collections::org_uuid.eq(org_uuid))
-                .inner_join(users_organizations::table.on(users_organizations::user_uuid.eq(users_collections::user_uuid)))
-                .select((users_organizations::uuid, users_collections::collection_uuid, users_collections::read_only, users_collections::hide_passwords))
-                .load::<CollectionUserDb>(conn)
-                .expect("Error loading users_collections")
-                .from_db()
-        }}
-    }
-
-    pub async fn save(
-        user_uuid: &str,
-        collection_uuid: &str,
-        read_only: bool,
-        hide_passwords: bool,
-        conn: &mut DbConn,
-    ) -> EmptyResult {
-        User::update_uuid_revision(user_uuid, conn).await;
-
-        db_run! { conn:
-            sqlite, mysql {
-                match diesel::replace_into(users_collections::table)
-                    .values((
-                        users_collections::user_uuid.eq(user_uuid),
-                        users_collections::collection_uuid.eq(collection_uuid),
-                        users_collections::read_only.eq(read_only),
-                        users_collections::hide_passwords.eq(hide_passwords),
-                    ))
-                    .execute(conn)
-                {
-                    Ok(_) => Ok(()),
-                    // Record already exists and causes a Foreign Key Violation because replace_into() wants to delete the record first.
-                    Err(diesel::result::Error::DatabaseError(diesel::result::DatabaseErrorKind::ForeignKeyViolation, _)) => {
-                        diesel::update(users_collections::table)
-                            .filter(users_collections::user_uuid.eq(user_uuid))
-                            .filter(users_collections::collection_uuid.eq(collection_uuid))
-                            .set((
-                                users_collections::user_uuid.eq(user_uuid),
-                                users_collections::collection_uuid.eq(collection_uuid),
-                                users_collections::read_only.eq(read_only),
-                                users_collections::hide_passwords.eq(hide_passwords),
-                            ))
-                            .execute(conn)
-                            .map_res("Error adding user to collection")
-                    }
-                    Err(e) => Err(e.into()),
-                }.map_res("Error adding user to collection")
-            }
-            postgresql {
-                diesel::insert_into(users_collections::table)
-                    .values((
-                        users_collections::user_uuid.eq(user_uuid),
-                        users_collections::collection_uuid.eq(collection_uuid),
-                        users_collections::read_only.eq(read_only),
-                        users_collections::hide_passwords.eq(hide_passwords),
-                    ))
-                    .on_conflict((users_collections::user_uuid, users_collections::collection_uuid))
-                    .do_update()
-                    .set((
-                        users_collections::read_only.eq(read_only),
-                        users_collections::hide_passwords.eq(hide_passwords),
-                    ))
-                    .execute(conn)
-                    .map_res("Error adding user to collection")
-            }
-        }
-    }
-
-    pub async fn delete(self, conn: &mut DbConn) -> EmptyResult {
-        User::update_uuid_revision(&self.user_uuid, conn).await;
-
-        db_run! { conn: {
-            diesel::delete(
-                users_collections::table
-                    .filter(users_collections::user_uuid.eq(&self.user_uuid))
-                    .filter(users_collections::collection_uuid.eq(&self.collection_uuid)),
+    pub async fn find_by_organization_and_user_uuid(conn: &Conn, organization_uuid: Uuid, user_uuid: Uuid) -> ApiResult<Vec<Self>> {
+        Ok(conn
+            .query(
+                r"
+        SELECT cu.*
+        FROM collection_users cu
+        INNER JOIN user_collection_auth uca ON uca.collection_uuid = cu.collection_uuid AND uca.user_uuid = $1
+        INNER JOIN collections co ON co.uuid = cu.collection_uuid
+        WHERE co.organization_uuid = $2
+        ",
+                &[&user_uuid, &organization_uuid],
             )
-            .execute(conn)
-            .map_res("Error removing user from collection")
-        }}
+            .await?
+            .into_iter()
+            .map(|x| x.into())
+            .collect())
     }
 
-    pub async fn find_by_collection(collection_uuid: &str, conn: &mut DbConn) -> Vec<Self> {
-        db_run! { conn: {
-            users_collections::table
-                .filter(users_collections::collection_uuid.eq(collection_uuid))
-                .select(users_collections::all_columns)
-                .load::<CollectionUserDb>(conn)
-                .expect("Error loading users_collections")
-                .from_db()
-        }}
+    pub async fn find_by_organization(conn: &Conn, organization_uuid: Uuid) -> ApiResult<Vec<Self>> {
+        Ok(conn
+            .query(
+                r"
+        SELECT cu.*
+        FROM collection_users cu
+        INNER JOIN collections co ON co.uuid = cu.collection_uuid
+        WHERE co.organization_uuid = $1
+        ",
+                &[&organization_uuid],
+            )
+            .await?
+            .into_iter()
+            .map(|x| x.into())
+            .collect())
     }
 
-    pub async fn find_by_collection_swap_user_uuid_with_org_user_uuid(
-        collection_uuid: &str,
-        conn: &mut DbConn,
-    ) -> Vec<Self> {
-        db_run! { conn: {
-            users_collections::table
-                .filter(users_collections::collection_uuid.eq(collection_uuid))
-                .inner_join(users_organizations::table.on(users_organizations::user_uuid.eq(users_collections::user_uuid)))
-                .select((users_organizations::uuid, users_collections::collection_uuid, users_collections::read_only, users_collections::hide_passwords))
-                .load::<CollectionUserDb>(conn)
-                .expect("Error loading users_collections")
-                .from_db()
-        }}
+    pub async fn save(&self, conn: &Conn) -> ApiResult<()> {
+        conn.execute(r"INSERT INTO collection_users (user_uuid, collection_uuid, read_only, hide_passwords) VALUES ($1, $2, $3, $4) ON CONFLICT (user_uuid, collection_uuid) DO UPDATE
+        SET
+        read_only = EXCLUDED.read_only,
+        hide_passwords = EXCLUDED.hide_passwords", &[
+            &self.user_uuid,
+            &self.collection_uuid,
+            &self.read_only,
+            &self.hide_passwords,
+        ]).await?;
+        Ok(())
     }
 
-    pub async fn find_by_collection_and_user(
-        collection_uuid: &str,
-        user_uuid: &str,
-        conn: &mut DbConn,
-    ) -> Option<Self> {
-        db_run! { conn: {
-            users_collections::table
-                .filter(users_collections::collection_uuid.eq(collection_uuid))
-                .filter(users_collections::user_uuid.eq(user_uuid))
-                .select(users_collections::all_columns)
-                .first::<CollectionUserDb>(conn)
-                .ok()
-                .from_db()
-        }}
+    pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
+        conn.execute(r"DELETE FROM collection_users WHERE user_uuid = $1 AND collection_uuid = $2", &[&self.user_uuid, &self.collection_uuid]).await?;
+        Ok(())
     }
 
-    pub async fn find_by_user(user_uuid: &str, conn: &mut DbConn) -> Vec<Self> {
-        db_run! { conn: {
-            users_collections::table
-                .filter(users_collections::user_uuid.eq(user_uuid))
-                .select(users_collections::all_columns)
-                .load::<CollectionUserDb>(conn)
-                .expect("Error loading users_collections")
-                .from_db()
-        }}
+    pub async fn find_by_collection(conn: &Conn, collection_uuid: Uuid) -> ApiResult<Vec<Self>> {
+        Ok(conn
+            .query(r"SELECT cu.* FROM collection_users cu WHERE cu.collection_uuid = $1", &[&collection_uuid])
+            .await?
+            .into_iter()
+            .map(|x| x.into())
+            .collect())
     }
 
-    pub async fn delete_all_by_collection(collection_uuid: &str, conn: &mut DbConn) -> EmptyResult {
-        for collection in CollectionUser::find_by_collection(collection_uuid, conn).await.iter() {
-            User::update_uuid_revision(&collection.user_uuid, conn).await;
-        }
-
-        db_run! { conn: {
-            diesel::delete(users_collections::table.filter(users_collections::collection_uuid.eq(collection_uuid)))
-                .execute(conn)
-                .map_res("Error deleting users from collection")
-        }}
+    pub async fn find_by_collection_and_user(conn: &Conn, collection_uuid: Uuid, user_uuid: Uuid) -> ApiResult<Option<Self>> {
+        Ok(conn
+            .query_opt(r"SELECT cu.* FROM collection_users cu WHERE cu.collection_uuid = $1 AND cu.user_uuid = $2", &[&collection_uuid, &user_uuid])
+            .await?
+            .map(Into::into))
     }
 
-    pub async fn delete_all_by_user_and_org(user_uuid: &str, org_uuid: &str, conn: &mut DbConn) -> EmptyResult {
-        let collectionusers = Self::find_by_organization_and_user_uuid(org_uuid, user_uuid, conn).await;
-
-        db_run! { conn: {
-            for user in collectionusers {
-                diesel::delete(users_collections::table.filter(
-                    users_collections::user_uuid.eq(user_uuid)
-                    .and(users_collections::collection_uuid.eq(user.collection_uuid))
-                ))
-                    .execute(conn)
-                    .map_res("Error removing user from collections")?;
-            }
-            Ok(())
-        }}
+    pub async fn delete_all_by_collection(conn: &Conn, collection_uuid: Uuid) -> ApiResult<()> {
+        conn.execute(r"DELETE FROM collection_users WHERE collection_uuid = $1", &[&collection_uuid]).await?;
+        Ok(())
     }
 }
 
 /// Database methods
 impl CollectionCipher {
-    pub async fn save(cipher_uuid: &str, collection_uuid: &str, conn: &mut DbConn) -> EmptyResult {
-        Self::update_users_revision(collection_uuid, conn).await;
-
-        db_run! { conn:
-            sqlite, mysql {
-                // Not checking for ForeignKey Constraints here.
-                // Table ciphers_collections does not have ForeignKey Constraints which would cause conflicts.
-                // This table has no constraints pointing to itself, but only to others.
-                diesel::replace_into(ciphers_collections::table)
-                    .values((
-                        ciphers_collections::cipher_uuid.eq(cipher_uuid),
-                        ciphers_collections::collection_uuid.eq(collection_uuid),
-                    ))
-                    .execute(conn)
-                    .map_res("Error adding cipher to collection")
-            }
-            postgresql {
-                diesel::insert_into(ciphers_collections::table)
-                    .values((
-                        ciphers_collections::cipher_uuid.eq(cipher_uuid),
-                        ciphers_collections::collection_uuid.eq(collection_uuid),
-                    ))
-                    .on_conflict((ciphers_collections::cipher_uuid, ciphers_collections::collection_uuid))
-                    .do_nothing()
-                    .execute(conn)
-                    .map_res("Error adding cipher to collection")
-            }
-        }
+    pub async fn save(conn: &Conn, cipher_uuid: Uuid, collection_uuid: Uuid) -> ApiResult<()> {
+        conn.execute(
+            "INSERT INTO collection_ciphers (cipher_uuid, collection_uuid) VALUES ($1, $2) ON CONFLICT (cipher_uuid, collection_uuid) DO NOTHING",
+            &[&cipher_uuid, &collection_uuid],
+        )
+        .await?;
+        Ok(())
     }
 
-    pub async fn delete(cipher_uuid: &str, collection_uuid: &str, conn: &mut DbConn) -> EmptyResult {
-        Self::update_users_revision(collection_uuid, conn).await;
-
-        db_run! { conn: {
-            diesel::delete(
-                ciphers_collections::table
-                    .filter(ciphers_collections::cipher_uuid.eq(cipher_uuid))
-                    .filter(ciphers_collections::collection_uuid.eq(collection_uuid)),
-            )
-            .execute(conn)
-            .map_res("Error deleting cipher from collection")
-        }}
-    }
-
-    pub async fn delete_all_by_cipher(cipher_uuid: &str, conn: &mut DbConn) -> EmptyResult {
-        db_run! { conn: {
-            diesel::delete(ciphers_collections::table.filter(ciphers_collections::cipher_uuid.eq(cipher_uuid)))
-                .execute(conn)
-                .map_res("Error removing cipher from collections")
-        }}
-    }
-
-    pub async fn delete_all_by_collection(collection_uuid: &str, conn: &mut DbConn) -> EmptyResult {
-        db_run! { conn: {
-            diesel::delete(ciphers_collections::table.filter(ciphers_collections::collection_uuid.eq(collection_uuid)))
-                .execute(conn)
-                .map_res("Error removing ciphers from collection")
-        }}
-    }
-
-    pub async fn update_users_revision(collection_uuid: &str, conn: &mut DbConn) {
-        if let Some(collection) = Collection::find_by_uuid(collection_uuid, conn).await {
-            collection.update_users_revision(conn).await;
-        }
+    pub async fn delete(conn: &Conn, cipher_uuid: Uuid, collection_uuid: Uuid) -> ApiResult<()> {
+        conn.execute(r"DELETE FROM collection_ciphers WHERE cipher_uuid = $1 AND collection_uuid = $2", &[&cipher_uuid, &collection_uuid]).await?;
+        Ok(())
     }
 }

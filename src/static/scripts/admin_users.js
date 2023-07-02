@@ -96,15 +96,6 @@ function enableUser(event) {
     }
 }
 
-function updateRevisions(event) {
-    event.preventDefault();
-    event.stopPropagation();
-    _post(`${BASE_URL}/admin/users/update_revision`,
-        "Success, clients will sync next time they connect",
-        "Error forcing clients to sync"
-    );
-}
-
 function inviteUser(event) {
     event.preventDefault();
     event.stopPropagation();
@@ -281,10 +272,6 @@ document.addEventListener("DOMContentLoaded", (/*event*/) => {
     // Add click events for user actions
     initUserTable();
 
-    const btnUpdateRevisions = document.getElementById("updateRevisions");
-    if (btnUpdateRevisions) {
-        btnUpdateRevisions.addEventListener("click", updateRevisions);
-    }
     const btnReload = document.getElementById("reload");
     if (btnReload) {
         btnReload.addEventListener("click", reload);

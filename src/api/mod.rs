@@ -3,75 +3,118 @@ pub mod core;
 mod icons;
 mod identity;
 mod notifications;
-mod push;
 mod web;
 
-use rocket::serde::json::Json;
-use serde_json::Value;
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-pub use crate::api::{
-    admin::catchers as admin_catchers,
-    admin::routes as admin_routes,
-    core::catchers as core_catchers,
-    core::purge_sends,
-    core::purge_trashed_ciphers,
-    core::routes as core_routes,
-    core::two_factor::send_incomplete_2fa_notifications,
-    core::{emergency_notification_reminder_job, emergency_request_timeout_job},
-    core::{event_cleanup_job, events_routes as core_events_routes},
-    icons::routes as icons_routes,
-    identity::routes as identity_routes,
-    notifications::routes as notifications_routes,
-    notifications::{start_notification_server, Notify, UpdateType},
-    push::{
-        push_cipher_update, push_folder_update, push_logout, push_send_update, push_user_update, register_push_device,
-        unregister_push_device,
-    },
-    web::catchers as web_catchers,
-    web::routes as web_routes,
-    web::static_files,
+use anyhow::Result;
+use axum::{
+    headers::Header,
+    response::{IntoResponse, IntoResponseParts, ResponseParts},
+    routing, Router,
 };
-use crate::util;
+use axum_util::{
+    errors::ApiResult,
+    interceptor::InterceptorLayer,
+    logger::{LoggerConfig, LoggerLayer},
+};
+use http::HeaderValue;
+use log::{error, info, Level};
+use serde::Deserialize;
+use smallvec::SmallVec;
+pub use web::PUBLIC_NO_TRAILING_SLASH;
 
-// Type aliases for API methods results
-type ApiResult<T> = Result<T, crate::error::Error>;
-pub type JsonResult = ApiResult<Json<Value>>;
-pub type EmptyResult = ApiResult<()>;
+use crate::{
+    util::{AppHeaders, Cors},
+    CONFIG,
+};
 
-type JsonUpcase<T> = Json<util::UpCase<T>>;
-type JsonUpcaseVec<T> = Json<Vec<util::UpCase<T>>>;
-type JsonVec<T> = Json<Vec<T>>;
+pub use crate::api::notifications::{ws_users, UpdateType};
+
+fn route() -> Router {
+    let mut api = web::route(Router::new());
+    api = api.nest("/notifications", notifications::route());
+    api = api.nest("/icons", icons::route());
+    api = api.nest("/identity", identity::route());
+    api = api.nest("/admin", admin::route());
+    api = api.nest("/api", core::route()).route("/events/collect", routing::post(core::post_events_collect));
+
+    api.layer(InterceptorLayer(Arc::new(Cors))).layer(InterceptorLayer(Arc::new(AppHeaders))).layer(LoggerLayer::new(LoggerConfig {
+        log_level_filter: Arc::new(|_route| Level::Info),
+        honor_xff: true,
+        metric_name: "vw_api_call".to_string(),
+    }))
+}
+
+pub async fn run_api_server() {
+    tokio::spawn(async move {
+        async fn run() -> Result<()> {
+            info!("Listening on {}", CONFIG.settings.api_bind);
+            let server = axum::Server::bind(&CONFIG.settings.api_bind);
+            server.serve(route().into_make_service_with_connect_info::<SocketAddr>()).await?;
+            Ok(())
+        }
+        loop {
+            if let Err(e) = run().await {
+                error!("failed to start api server: {:?}", e);
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+pub struct OutHeader<T: Header>(T);
+
+impl<T: Header> IntoResponseParts for OutHeader<T> {
+    type Error = ();
+    fn into_response_parts(self, mut res: ResponseParts) -> Result<ResponseParts, ()> {
+        let mut value_out: SmallVec<[HeaderValue; 1]> = SmallVec::new();
+        self.0.encode(&mut value_out);
+        if let Some(value) = value_out.into_iter().next() {
+            res.headers_mut().insert(<T as Header>::name(), value);
+        }
+        Ok(res)
+    }
+}
+
+impl<T: Header> IntoResponse for OutHeader<T> {
+    fn into_response(self) -> axum::response::Response {
+        (self, ()).into_response()
+    }
+}
 
 // Common structs representing JSON data received
 #[derive(Deserialize)]
-#[allow(non_snake_case)]
-struct PasswordData {
-    MasterPasswordHash: String,
+#[serde(rename_all = "PascalCase")]
+pub struct PasswordData {
+    master_password_hash: String,
 }
 
-#[derive(Deserialize, Debug, Clone)]
-#[serde(untagged)]
-enum NumberOrString {
-    Number(i32),
-    String(String),
-}
+// #[derive(Deserialize, Debug, Clone)]
+// #[serde(untagged)]
+// enum NumberOrString {
+//     Number(i32),
+//     String(String),
+// }
 
-impl NumberOrString {
-    fn into_string(self) -> String {
-        match self {
-            NumberOrString::Number(n) => n.to_string(),
-            NumberOrString::String(s) => s,
-        }
-    }
+// impl NumberOrString {
+//     fn into_string(self) -> String {
+//         match self {
+//             NumberOrString::Number(n) => n.to_string(),
+//             NumberOrString::String(s) => s,
+//         }
+//     }
 
-    #[allow(clippy::wrong_self_convention)]
-    fn into_i32(&self) -> ApiResult<i32> {
-        use std::num::ParseIntError as PIE;
-        match self {
-            NumberOrString::Number(n) => Ok(*n),
-            NumberOrString::String(s) => {
-                s.parse().map_err(|e: PIE| crate::Error::new("Can't convert to number", e.to_string()))
-            }
-        }
-    }
-}
+//     #[allow(clippy::wrong_self_convention)]
+//     fn into_i32(&self) -> ApiResult<i32> {
+//         use std::num::ParseIntError as PIE;
+//         match self {
+//             NumberOrString::Number(n) => Ok(*n),
+//             NumberOrString::String(s) => {
+//                 s.parse().map_err(|e: PIE| crate::Error::new("Can't convert to number", e.to_string()))
+//             }
+//         }
+//     }
+// }

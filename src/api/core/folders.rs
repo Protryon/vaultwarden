@@ -1,117 +1,84 @@
-use rocket::serde::json::Json;
-use serde_json::Value;
+use axum::{extract::Path, Json};
+use axum_util::errors::ApiResult;
+use serde::Deserialize;
+use serde_json::{json, Value};
+use uuid::Uuid;
 
 use crate::{
-    api::{EmptyResult, JsonResult, JsonUpcase, Notify, UpdateType},
+    api::{ws_users, UpdateType},
     auth::Headers,
-    db::{models::*, DbConn},
+    db::{Folder, DB},
+    util::Upcase,
 };
 
-pub fn routes() -> Vec<rocket::Route> {
-    routes![get_folders, get_folder, post_folders, post_folder, put_folder, delete_folder_post, delete_folder,]
-}
-
-#[get("/folders")]
-async fn get_folders(headers: Headers, mut conn: DbConn) -> Json<Value> {
-    let folders = Folder::find_by_user(&headers.user.uuid, &mut conn).await;
+pub async fn get_folders(headers: Headers) -> ApiResult<Json<Value>> {
+    let conn = DB.get().await?;
+    let folders = Folder::find_by_user(&conn, headers.user.uuid).await?;
     let folders_json: Vec<Value> = folders.iter().map(Folder::to_json).collect();
 
-    Json(json!({
+    Ok(Json(json!({
       "Data": folders_json,
       "Object": "list",
       "ContinuationToken": null,
-    }))
+    })))
 }
 
-#[get("/folders/<uuid>")]
-async fn get_folder(uuid: &str, headers: Headers, mut conn: DbConn) -> JsonResult {
-    let folder = match Folder::find_by_uuid(uuid, &mut conn).await {
+pub async fn get_folder(Path(uuid): Path<Uuid>, headers: Headers) -> ApiResult<Json<Value>> {
+    let conn = DB.get().await?;
+    let folder = match Folder::get_with_user(&conn, uuid, headers.user.uuid).await? {
         Some(folder) => folder,
         _ => err!("Invalid folder"),
     };
-
-    if folder.user_uuid != headers.user.uuid {
-        err!("Folder belongs to another user")
-    }
 
     Ok(Json(folder.to_json()))
 }
 
 #[derive(Deserialize)]
-#[allow(non_snake_case)]
+#[serde(rename_all = "PascalCase")]
 pub struct FolderData {
-    pub Name: String,
+    pub name: String,
 }
 
-#[post("/folders", data = "<data>")]
-async fn post_folders(data: JsonUpcase<FolderData>, headers: Headers, mut conn: DbConn, nt: Notify<'_>) -> JsonResult {
-    let data: FolderData = data.into_inner().data;
+pub async fn post_folders(headers: Headers, data: Json<Upcase<FolderData>>) -> ApiResult<Json<Value>> {
+    let data: FolderData = data.0.data;
 
-    let mut folder = Folder::new(headers.user.uuid, data.Name);
+    let mut folder = Folder::new(headers.user.uuid, data.name);
+    let conn = DB.get().await?;
 
-    folder.save(&mut conn).await?;
-    nt.send_folder_update(UpdateType::SyncFolderCreate, &folder, &headers.device.uuid, &mut conn).await;
+    folder.save(&conn).await?;
+    ws_users().send_folder_update(UpdateType::SyncFolderCreate, &folder, headers.device.uuid, &conn).await?;
 
     Ok(Json(folder.to_json()))
 }
 
-#[post("/folders/<uuid>", data = "<data>")]
-async fn post_folder(
-    uuid: &str,
-    data: JsonUpcase<FolderData>,
-    headers: Headers,
-    conn: DbConn,
-    nt: Notify<'_>,
-) -> JsonResult {
-    put_folder(uuid, data, headers, conn, nt).await
-}
+pub async fn put_folder(Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<FolderData>>) -> ApiResult<Json<Value>> {
+    let data: FolderData = data.0.data;
+    let conn = DB.get().await?;
 
-#[put("/folders/<uuid>", data = "<data>")]
-async fn put_folder(
-    uuid: &str,
-    data: JsonUpcase<FolderData>,
-    headers: Headers,
-    mut conn: DbConn,
-    nt: Notify<'_>,
-) -> JsonResult {
-    let data: FolderData = data.into_inner().data;
-
-    let mut folder = match Folder::find_by_uuid(uuid, &mut conn).await {
+    let mut folder = match Folder::get_with_user(&conn, uuid, headers.user.uuid).await? {
         Some(folder) => folder,
         _ => err!("Invalid folder"),
     };
 
-    if folder.user_uuid != headers.user.uuid {
-        err!("Folder belongs to another user")
-    }
+    folder.name = data.name;
 
-    folder.name = data.Name;
-
-    folder.save(&mut conn).await?;
-    nt.send_folder_update(UpdateType::SyncFolderUpdate, &folder, &headers.device.uuid, &mut conn).await;
+    folder.save(&conn).await?;
+    ws_users().send_folder_update(UpdateType::SyncFolderUpdate, &folder, headers.device.uuid, &conn).await?;
 
     Ok(Json(folder.to_json()))
 }
 
-#[post("/folders/<uuid>/delete")]
-async fn delete_folder_post(uuid: &str, headers: Headers, conn: DbConn, nt: Notify<'_>) -> EmptyResult {
-    delete_folder(uuid, headers, conn, nt).await
-}
+pub async fn delete_folder(Path(uuid): Path<Uuid>, headers: Headers) -> ApiResult<()> {
+    let conn = DB.get().await?;
 
-#[delete("/folders/<uuid>")]
-async fn delete_folder(uuid: &str, headers: Headers, mut conn: DbConn, nt: Notify<'_>) -> EmptyResult {
-    let folder = match Folder::find_by_uuid(uuid, &mut conn).await {
+    let folder = match Folder::get_with_user(&conn, uuid, headers.user.uuid).await? {
         Some(folder) => folder,
         _ => err!("Invalid folder"),
     };
-
-    if folder.user_uuid != headers.user.uuid {
-        err!("Folder belongs to another user")
-    }
 
     // Delete the actual folder entry
-    folder.delete(&mut conn).await?;
+    folder.delete(&conn).await?;
 
-    nt.send_folder_update(UpdateType::SyncFolderDelete, &folder, &headers.device.uuid, &mut conn).await;
+    ws_users().send_folder_update(UpdateType::SyncFolderDelete, &folder, headers.device.uuid, &conn).await?;
     Ok(())
 }

@@ -80,20 +80,6 @@ pub fn get_random_string_alphanum(num_chars: usize) -> String {
     get_random_string(ALPHABET, num_chars)
 }
 
-pub fn generate_id<const N: usize>() -> String {
-    encode_random_bytes::<N>(HEXLOWER)
-}
-
-pub fn generate_send_id() -> String {
-    // Send IDs are globally scoped, so make them longer to avoid collisions.
-    generate_id::<32>() // 256 bits
-}
-
-pub fn generate_attachment_id() -> String {
-    // Attachment IDs are scoped to a cipher, so they can be smaller.
-    generate_id::<10>() // 80 bits
-}
-
 /// Generates a numeric token for email-based verifications.
 pub fn generate_email_token(token_size: u8) -> String {
     get_random_string_numeric(token_size as usize)

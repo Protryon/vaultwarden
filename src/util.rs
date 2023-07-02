@@ -1,42 +1,37 @@
 //
 // Web Headers and caching
 //
-use std::io::{Cursor, ErrorKind};
+use std::io::ErrorKind;
 
-use rocket::{
-    fairing::{Fairing, Info, Kind},
-    http::{ContentType, Cookie, CookieJar, Header, HeaderMap, Method, SameSite, Status},
-    request::FromParam,
-    response::{self, Responder},
-    Data, Orbit, Request, Response, Rocket,
+use axum::{
+    body::BoxBody,
+    response::{IntoResponseParts, Response},
 };
-
-use tokio::{
-    runtime::Handle,
-    time::{sleep, Duration},
+use axum_util::{
+    errors::{ApiError, ApiResult},
+    interceptor::Interception,
 };
+use log::error;
+use tokio::{fs::File, io::AsyncWriteExt, time::Duration};
 
-use crate::CONFIG;
+use crate::{config::ICON_SERVICE_CSP, CONFIG};
 
-pub struct AppHeaders();
+#[derive(Clone)]
+pub struct AppHeaders;
 
-#[rocket::async_trait]
-impl Fairing for AppHeaders {
-    fn info(&self) -> Info {
-        Info {
-            name: "Application Headers",
-            kind: Kind::Response,
-        }
+impl Interception for AppHeaders {
+    type Carryover = String;
+
+    fn on_request(&self, req: &mut http::request::Parts) -> ApiResult<String> {
+        Ok(req.headers.get(":path").and_then(|x| x.to_str().ok()).unwrap_or_default().to_string())
     }
 
-    async fn on_response<'r>(&self, req: &'r Request<'_>, res: &mut Response<'r>) {
-        res.set_raw_header("Permissions-Policy", "accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), camera=(), display-capture=(), document-domain=(), encrypted-media=(), execution-while-not-rendered=(), execution-while-out-of-viewport=(), fullscreen=(), geolocation=(), gyroscope=(), keyboard-map=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), screen-wake-lock=(), sync-xhr=(), usb=(), web-share=(), xr-spatial-tracking=()");
-        res.set_raw_header("Referrer-Policy", "same-origin");
-        res.set_raw_header("X-Content-Type-Options", "nosniff");
+    fn on_response(&self, req_uri_path: String, res: &mut http::response::Parts) -> ApiResult<()> {
+        res.headers.insert("permissions-policy", "accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), camera=(), display-capture=(), document-domain=(), encrypted-media=(), execution-while-not-rendered=(), execution-while-out-of-viewport=(), fullscreen=(), geolocation=(), gyroscope=(), keyboard-map=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), screen-wake-lock=(), sync-xhr=(), usb=(), web-share=(), xr-spatial-tracking=()".parse().unwrap());
+        res.headers.insert("referrer-policy", "same-origin".parse().unwrap());
+        res.headers.insert("x-content-type-options", "nosniff".parse().unwrap());
         // Obsolete in modern browsers, unsafe (XS-Leak), and largely replaced by CSP
-        res.set_raw_header("X-XSS-Protection", "0");
-
-        let req_uri_path = req.uri().path();
+        res.headers.insert("x-xss-protection", "0".parse().unwrap());
 
         // Do not send the Content-Security-Policy (CSP) Header and X-Frame-Options for the *-connector.html files.
         // This can cause issues when some MFA requests needs to open a popup or page within the clients like WebAuthn, or Duo.
@@ -79,295 +74,136 @@ impl Fairing for AppHeaders {
                   https://api.fastmail.com/ \
                   ;\
                 ",
-                icon_service_csp = CONFIG._icon_service_csp(),
-                allowed_iframe_ancestors = CONFIG.allowed_iframe_ancestors()
+                icon_service_csp = &*ICON_SERVICE_CSP,
+                allowed_iframe_ancestors = CONFIG.advanced.allowed_iframe_ancestors
             );
-            res.set_raw_header("Content-Security-Policy", csp);
-            res.set_raw_header("X-Frame-Options", "SAMEORIGIN");
+            res.headers.insert("content-security-policy", csp.parse().unwrap());
+            res.headers.insert("x-frame-options", "SAMEORIGIN".parse().unwrap());
         } else {
             // It looks like this header get's set somewhere else also, make sure this is not sent for these files, it will cause MFA issues.
-            res.remove_header("X-Frame-Options");
+            res.headers.remove("x-frame-options");
         }
 
         // Disable cache unless otherwise specified
-        if !res.headers().contains("cache-control") {
-            res.set_raw_header("Cache-Control", "no-cache, no-store, max-age=0");
+        if !res.headers.contains_key("cache-control") {
+            res.headers.insert("cache-control", "no-cache, no-store, max-age=0".parse().unwrap());
         }
+        Ok(())
     }
 }
 
-pub struct Cors();
+#[derive(Clone)]
+pub struct Cors;
 
-impl Cors {
-    fn get_header(headers: &HeaderMap<'_>, name: &str) -> String {
-        match headers.get_one(name) {
-            Some(h) => h.to_string(),
-            _ => String::new(),
+impl Interception for Cors {
+    type Carryover = String;
+
+    fn on_request(&self, parts: &mut http::request::Parts) -> ApiResult<Self::Carryover> {
+        if parts.method == http::Method::OPTIONS {
+            let req_allow_headers = parts.headers.get("access-control-request-headers").map(|x| x.to_str().unwrap_or_default().to_string()).unwrap_or_default();
+            let req_allow_method = parts.headers.get("access-control-request-method").map(|x| x.to_str().unwrap_or_default().to_string()).unwrap_or_default();
+
+            let mut response = Response::new(BoxBody::default());
+
+            response.headers_mut().insert("access-control-allow-methods", req_allow_method.parse().unwrap());
+            response.headers_mut().insert("access-control-allow-headers", req_allow_headers.parse().unwrap());
+            response.headers_mut().insert("access-control-allow-credentials", "true".parse().unwrap());
+            return Err(ApiError::Response(response));
         }
+
+        Ok(parts.headers.get("origin").map(|x| x.to_str().unwrap_or_default().to_string()).unwrap_or_default())
     }
 
-    // Check a request's `Origin` header against the list of allowed origins.
-    // If a match exists, return it. Otherwise, return None.
-    fn get_allowed_origin(headers: &HeaderMap<'_>) -> Option<String> {
-        let origin = Cors::get_header(headers, "Origin");
-        let domain_origin = CONFIG.domain_origin();
-        let sso_origin = CONFIG.sso_authority();
-        let safari_extension_origin = "file://";
-        if origin == domain_origin || origin == safari_extension_origin || origin == sso_origin {
-            Some(origin)
-        } else {
-            None
-        }
-    }
-}
-
-#[rocket::async_trait]
-impl Fairing for Cors {
-    fn info(&self) -> Info {
-        Info {
-            name: "Cors",
-            kind: Kind::Response,
-        }
-    }
-
-    async fn on_response<'r>(&self, request: &'r Request<'_>, response: &mut Response<'r>) {
-        let req_headers = request.headers();
-
-        if let Some(origin) = Cors::get_allowed_origin(req_headers) {
-            response.set_header(Header::new("Access-Control-Allow-Origin", origin));
+    fn on_response(&self, carryover: Self::Carryover, parts: &mut http::response::Parts) -> ApiResult<()> {
+        let domain_origin = CONFIG.settings.public.origin().ascii_serialization();
+        // TODO: ?? let sso_origin = CONFIG.sso_authority();
+        const SAFARI_EXTENSION_ORIGIN: &str = "file://";
+        if carryover == domain_origin || carryover == SAFARI_EXTENSION_ORIGIN {
+            parts.headers.insert("access-control-allow-origin", carryover.parse().unwrap());
         }
 
-        // Preflight request
-        if request.method() == Method::Options {
-            let req_allow_headers = Cors::get_header(req_headers, "Access-Control-Request-Headers");
-            let req_allow_method = Cors::get_header(req_headers, "Access-Control-Request-Method");
-
-            response.set_header(Header::new("Access-Control-Allow-Methods", req_allow_method));
-            response.set_header(Header::new("Access-Control-Allow-Headers", req_allow_headers));
-            response.set_header(Header::new("Access-Control-Allow-Credentials", "true"));
-            response.set_status(Status::Ok);
-            response.set_header(ContentType::Plain);
-            response.set_sized_body(Some(0), Cursor::new(""));
-        }
+        Ok(())
     }
 }
 
-pub struct Cached<R> {
-    response: R,
+pub struct Cached {
     is_immutable: bool,
     ttl: u64,
 }
 
-impl<R> Cached<R> {
-    pub fn long(response: R, is_immutable: bool) -> Cached<R> {
+impl Cached {
+    pub fn long(is_immutable: bool) -> Cached {
         Self {
-            response,
             is_immutable,
             ttl: 604800, // 7 days
         }
     }
 
-    pub fn short(response: R, is_immutable: bool) -> Cached<R> {
+    pub fn short(is_immutable: bool) -> Cached {
         Self {
-            response,
             is_immutable,
             ttl: 600, // 10 minutes
         }
     }
 
-    pub fn ttl(response: R, ttl: u64, is_immutable: bool) -> Cached<R> {
+    pub fn ttl(ttl: u64, is_immutable: bool) -> Cached {
         Self {
-            response,
             is_immutable,
             ttl,
         }
     }
 }
 
-impl<'r, R: 'r + Responder<'r, 'static> + Send> Responder<'r, 'static> for Cached<R> {
-    fn respond_to(self, request: &'r Request<'_>) -> response::Result<'static> {
-        let mut res = self.response.respond_to(request)?;
+impl IntoResponseParts for Cached {
+    type Error = ();
 
+    fn into_response_parts(self, mut res: axum::response::ResponseParts) -> Result<axum::response::ResponseParts, Self::Error> {
         let cache_control_header = if self.is_immutable {
             format!("public, immutable, max-age={}", self.ttl)
         } else {
             format!("public, max-age={}", self.ttl)
         };
-        res.set_raw_header("Cache-Control", cache_control_header);
+        res.headers_mut().insert("cache-control", cache_control_header.parse().unwrap());
 
         let time_now = chrono::Local::now();
         let expiry_time = time_now + chrono::Duration::seconds(self.ttl.try_into().unwrap());
-        res.set_raw_header("Expires", format_datetime_http(&expiry_time));
+        res.headers_mut().insert("expires", format_datetime_http(&expiry_time).parse().unwrap());
         Ok(res)
-    }
-}
-
-pub struct SafeString(String);
-
-impl std::fmt::Display for SafeString {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl AsRef<Path> for SafeString {
-    #[inline]
-    fn as_ref(&self) -> &Path {
-        Path::new(&self.0)
-    }
-}
-
-impl<'r> FromParam<'r> for SafeString {
-    type Error = ();
-
-    #[inline(always)]
-    fn from_param(param: &'r str) -> Result<Self, Self::Error> {
-        if param.chars().all(|c| matches!(c, 'a'..='z' | 'A'..='Z' |'0'..='9' | '-')) {
-            Ok(SafeString(param.to_string()))
-        } else {
-            Err(())
-        }
-    }
-}
-
-pub struct CustomRedirect {
-    pub url: String,
-    pub headers: Vec<(String, String)>,
-}
-
-impl<'r> rocket::response::Responder<'r, 'static> for CustomRedirect {
-    fn respond_to(self, _: &rocket::request::Request<'_>) -> rocket::response::Result<'static> {
-        let mut response = Response::build()
-            .status(rocket::http::Status {
-                code: 307,
-            })
-            .raw_header("Location", self.url)
-            .header(ContentType::HTML)
-            .finalize();
-
-        //Normal headers
-        response.set_raw_header("Referrer-Policy", "same-origin");
-        response.set_raw_header("X-XSS-Protection", "0");
-
-        for header in &self.headers {
-            response.set_raw_header(header.0.clone(), header.1.clone());
-        }
-
-        Ok(response)
-    }
-}
-
-// Log all the routes from the main paths list, and the attachments endpoint
-// Effectively ignores, any static file route, and the alive endpoint
-const LOGGED_ROUTES: [&str; 7] = ["/api", "/admin", "/identity", "/icons", "/attachments", "/events", "/notifications"];
-
-// Boolean is extra debug, when true, we ignore the whitelist above and also print the mounts
-pub struct BetterLogging(pub bool);
-#[rocket::async_trait]
-impl Fairing for BetterLogging {
-    fn info(&self) -> Info {
-        Info {
-            name: "Better Logging",
-            kind: Kind::Liftoff | Kind::Request | Kind::Response,
-        }
-    }
-
-    async fn on_liftoff(&self, rocket: &Rocket<Orbit>) {
-        if self.0 {
-            info!(target: "routes", "Routes loaded:");
-            let mut routes: Vec<_> = rocket.routes().collect();
-            routes.sort_by_key(|r| r.uri.path());
-            for route in routes {
-                if route.rank < 0 {
-                    info!(target: "routes", "{:<6} {}", route.method, route.uri);
-                } else {
-                    info!(target: "routes", "{:<6} {} [{}]", route.method, route.uri, route.rank);
-                }
-            }
-        }
-
-        let config = rocket.config();
-        let scheme = if config.tls_enabled() {
-            "https"
-        } else {
-            "http"
-        };
-        let addr = format!("{}://{}:{}", &scheme, &config.address, &config.port);
-        info!(target: "start", "Rocket has launched from {}", addr);
-    }
-
-    async fn on_request(&self, request: &mut Request<'_>, _data: &mut Data<'_>) {
-        let method = request.method();
-        if !self.0 && method == Method::Options {
-            return;
-        }
-        let uri = request.uri();
-        let uri_path = uri.path();
-        let uri_path_str = uri_path.url_decode_lossy();
-        let uri_subpath = uri_path_str.strip_prefix(&CONFIG.domain_path()).unwrap_or(&uri_path_str);
-        if self.0 || LOGGED_ROUTES.iter().any(|r| uri_subpath.starts_with(r)) {
-            match uri.query() {
-                Some(q) => info!(target: "request", "{} {}?{}", method, uri_path_str, &q[..q.len().min(30)]),
-                None => info!(target: "request", "{} {}", method, uri_path_str),
-            };
-        }
-    }
-
-    async fn on_response<'r>(&self, request: &'r Request<'_>, response: &mut Response<'r>) {
-        if !self.0 && request.method() == Method::Options {
-            return;
-        }
-        let uri_path = request.uri().path();
-        let uri_path_str = uri_path.url_decode_lossy();
-        let uri_subpath = uri_path_str.strip_prefix(&CONFIG.domain_path()).unwrap_or(&uri_path_str);
-        if self.0 || LOGGED_ROUTES.iter().any(|r| uri_subpath.starts_with(r)) {
-            let status = response.status();
-            if let Some(ref route) = request.route() {
-                info!(target: "response", "{} => {}", route, status)
-            } else {
-                info!(target: "response", "{}", status)
-            }
-        }
     }
 }
 
 //
 // File handling
 //
-use std::{
-    fs::{self, File},
-    io::Result as IOResult,
-    path::Path,
-};
+use std::{io::Result as IOResult, path::Path};
 
-pub fn file_exists(path: &str) -> bool {
-    Path::new(path).exists()
+pub async fn file_exists(path: &str) -> Result<bool, std::io::Error> {
+    tokio::fs::try_exists(path).await
 }
 
-pub fn write_file(path: &str, content: &[u8]) -> Result<(), crate::error::Error> {
-    use std::io::Write;
-    let mut f = match File::create(path) {
+pub async fn write_file(path: &str, content: &[u8]) -> Result<(), std::io::Error> {
+    let mut f = match File::create(path).await {
         Ok(file) => file,
         Err(e) => {
             if e.kind() == ErrorKind::PermissionDenied {
                 error!("Can't create '{}': Permission denied", path);
             }
-            return Err(From::from(e));
+            return Err(e);
         }
     };
 
-    f.write_all(content)?;
-    f.flush()?;
+    f.write_all(content).await?;
+    f.flush().await?;
     Ok(())
 }
 
-pub fn delete_file(path: &str) -> IOResult<()> {
-    let res = fs::remove_file(path);
+pub async fn delete_file(path: &Path) -> IOResult<()> {
+    let res = tokio::fs::remove_file(path).await;
 
     if let Some(parent) = Path::new(path).parent() {
         // If the directory isn't empty, this returns an error, which we ignore
         // We only want to delete the folder if it's empty
-        fs::remove_dir(parent).ok();
+        tokio::fs::remove_dir(parent).await.ok();
     }
 
     res
@@ -389,10 +225,6 @@ pub fn get_display_size(size: i32) -> String {
     }
 
     format!("{:.2} {}", size, UNITS[unit_counter])
-}
-
-pub fn get_uuid() -> String {
-    uuid::Uuid::new_v4().to_string()
 }
 
 //
@@ -432,58 +264,15 @@ where
 }
 
 //
-// Env methods
-//
-
-use std::env;
-
-pub fn get_env_str_value(key: &str) -> Option<String> {
-    let key_file = format!("{key}_FILE");
-    let value_from_env = env::var(key);
-    let value_file = env::var(&key_file);
-
-    match (value_from_env, value_file) {
-        (Ok(_), Ok(_)) => panic!("You should not define both {key} and {key_file}!"),
-        (Ok(v_env), Err(_)) => Some(v_env),
-        (Err(_), Ok(v_file)) => match fs::read_to_string(v_file) {
-            Ok(content) => Some(content.trim().to_string()),
-            Err(e) => panic!("Failed to load {key}: {e:?}"),
-        },
-        _ => None,
-    }
-}
-
-pub fn get_env<V>(key: &str) -> Option<V>
-where
-    V: FromStr,
-{
-    try_parse_string(get_env_str_value(key))
-}
-
-pub fn get_env_bool(key: &str) -> Option<bool> {
-    const TRUE_VALUES: &[&str] = &["true", "t", "yes", "y", "1"];
-    const FALSE_VALUES: &[&str] = &["false", "f", "no", "n", "0"];
-
-    match get_env_str_value(key) {
-        Some(val) if TRUE_VALUES.contains(&val.to_lowercase().as_ref()) => Some(true),
-        Some(val) if FALSE_VALUES.contains(&val.to_lowercase().as_ref()) => Some(false),
-        _ => None,
-    }
-}
-
-//
 // Date util methods
 //
 
-use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
-
-// Format used by Bitwarden API
-const DATETIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.6fZ";
+use chrono::{DateTime, Local, SecondsFormat, TimeZone, Utc};
 
 /// Formats a UTC-offset `NaiveDateTime` in the format used by Bitwarden API
 /// responses with "date" fields (`CreationDate`, `RevisionDate`, etc.).
-pub fn format_date(dt: &NaiveDateTime) -> String {
-    dt.format(DATETIME_FORMAT).to_string()
+pub fn format_date(dt: &DateTime<Utc>) -> String {
+    dt.to_rfc3339_opts(SecondsFormat::Micros, true)
 }
 
 /// Formats a `DateTime<Local>` using the specified format string.
@@ -495,7 +284,7 @@ pub fn format_date(dt: &NaiveDateTime) -> String {
 pub fn format_datetime_local(dt: &DateTime<Local>, fmt: &str) -> String {
     // Try parsing the `TZ` environment variable to enable formatting `%Z` as
     // a time zone abbreviation.
-    if let Ok(tz) = env::var("TZ") {
+    if let Ok(tz) = std::env::var("TZ") {
         if let Ok(tz) = tz.parse::<chrono_tz::Tz>() {
             return dt.with_timezone(&tz).format(fmt).to_string();
         }
@@ -509,8 +298,8 @@ pub fn format_datetime_local(dt: &DateTime<Local>, fmt: &str) -> String {
 ///
 /// This function basically converts the `NaiveDateTime` to a `DateTime<Local>`,
 /// and then calls [format_datetime_local](crate::util::format_datetime_local).
-pub fn format_naive_datetime_local(dt: &NaiveDateTime, fmt: &str) -> String {
-    format_datetime_local(&Local.from_utc_datetime(dt), fmt)
+pub fn format_naive_datetime_local(dt: DateTime<Utc>, fmt: &str) -> String {
+    format_datetime_local(&Local.from_utc_datetime(&dt.naive_utc()), fmt)
 }
 
 /// Formats a `DateTime<Local>` as required for HTTP
@@ -522,10 +311,6 @@ pub fn format_datetime_http(dt: &DateTime<Local>) -> String {
     // HACK: HTTP expects the date to always be GMT (UTC) rather than giving an
     // offset (which would always be 0 in UTC anyway)
     expiry_time.to_rfc2822().replace("+0000", "GMT")
-}
-
-pub fn parse_date(date: &str) -> NaiveDateTime {
-    NaiveDateTime::parse_from_str(date, DATETIME_FORMAT).unwrap()
 }
 
 //
@@ -555,13 +340,16 @@ pub fn docker_base_image() -> &'static str {
 
 use std::fmt;
 
-use serde::de::{self, DeserializeOwned, Deserializer, MapAccess, SeqAccess, Visitor};
+use serde::{
+    de::{self, DeserializeOwned, Deserializer, MapAccess, SeqAccess, Visitor},
+    Deserialize, Serialize,
+};
 use serde_json::{self, Value};
 
 pub type JsonMap = serde_json::Map<String, Value>;
 
 #[derive(Serialize, Deserialize)]
-pub struct UpCase<T: DeserializeOwned> {
+pub struct Upcase<T: DeserializeOwned> {
     #[serde(deserialize_with = "upcase_deserialize")]
     #[serde(flatten)]
     pub data: T,
@@ -573,13 +361,13 @@ where
     T: DeserializeOwned,
     D: Deserializer<'de>,
 {
-    let d = deserializer.deserialize_any(UpCaseVisitor)?;
+    let d = deserializer.deserialize_any(UpcaseVisitor)?;
     T::deserialize(d).map_err(de::Error::custom)
 }
 
-struct UpCaseVisitor;
+struct UpcaseVisitor;
 
-impl<'de> Visitor<'de> for UpCaseVisitor {
+impl<'de> Visitor<'de> for UpcaseVisitor {
     type Value = Value;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -644,56 +432,6 @@ fn _process_key(key: &str) -> String {
     }
 }
 
-//
-// Retry methods
-//
-
-pub fn retry<F, T, E>(mut func: F, max_tries: u32) -> Result<T, E>
-where
-    F: FnMut() -> Result<T, E>,
-{
-    let mut tries = 0;
-
-    loop {
-        match func() {
-            ok @ Ok(_) => return ok,
-            err @ Err(_) => {
-                tries += 1;
-
-                if tries >= max_tries {
-                    return err;
-                }
-                Handle::current().block_on(sleep(Duration::from_millis(500)));
-            }
-        }
-    }
-}
-
-pub async fn retry_db<F, T, E>(mut func: F, max_tries: u32) -> Result<T, E>
-where
-    F: FnMut() -> Result<T, E>,
-    E: std::error::Error,
-{
-    let mut tries = 0;
-
-    loop {
-        match func() {
-            ok @ Ok(_) => return ok,
-            Err(e) => {
-                tries += 1;
-
-                if tries >= max_tries && max_tries > 0 {
-                    return Err(e);
-                }
-
-                warn!("Can't connect to database, retrying: {:?}", e);
-
-                sleep(Duration::from_millis(1_000)).await;
-            }
-        }
-    }
-}
-
 use reqwest::{header, Client, ClientBuilder};
 
 pub fn get_reqwest_client() -> Client {
@@ -755,28 +493,28 @@ pub fn convert_json_key_lcase_first(src_json: Value) -> Value {
     }
 }
 
-pub struct CookieManager<'a> {
-    jar: &'a CookieJar<'a>,
-}
+// pub struct CookieManager<'a> {
+//     jar: &'a CookieJar<'a>,
+// }
 
-impl<'a> CookieManager<'a> {
-    pub fn new(jar: &'a CookieJar<'a>) -> Self {
-        Self {
-            jar,
-        }
-    }
+// impl<'a> CookieManager<'a> {
+//     pub fn new(jar: &'a CookieJar<'a>) -> Self {
+//         Self {
+//             jar,
+//         }
+//     }
 
-    pub fn set_cookie(&self, name: String, value: String) {
-        let cookie = Cookie::build(name, value).same_site(SameSite::Lax).finish();
+//     pub fn set_cookie(&self, name: String, value: String) {
+//         let cookie = Cookie::build(name, value).same_site(SameSite::Lax).finish();
 
-        self.jar.add(cookie)
-    }
+//         self.jar.add(cookie)
+//     }
 
-    pub fn get_cookie(&self, name: String) -> Option<String> {
-        self.jar.get(&name).map(|c| c.value().to_string())
-    }
+//     pub fn get_cookie(&self, name: String) -> Option<String> {
+//         self.jar.get(&name).map(|c| c.value().to_string())
+//     }
 
-    pub fn delete_cookie(&self, name: String) {
-        self.jar.remove(Cookie::named(name));
-    }
-}
+//     pub fn delete_cookie(&self, name: String) {
+//         self.jar.remove(Cookie::named(name));
+//     }
+// }

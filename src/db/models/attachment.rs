@@ -1,28 +1,39 @@
-use std::io::ErrorKind;
+use std::{io::ErrorKind, path::PathBuf};
 
-use serde_json::Value;
+use axum_util::errors::ApiResult;
+use log::debug;
+use serde_json::{json, Value};
+use tokio_postgres::{Row, Transaction};
+use url::Url;
+use uuid::Uuid;
 
-use crate::CONFIG;
+use crate::{db::Conn, CONFIG};
 
-db_object! {
-    #[derive(Identifiable, Queryable, Insertable, AsChangeset)]
-    #[diesel(table_name = attachments)]
-    #[diesel(treat_none_as_null = true)]
-    #[diesel(primary_key(id))]
-    pub struct Attachment {
-        pub id: String,
-        pub cipher_uuid: String,
-        pub file_name: String, // encrypted
-        pub file_size: i32,
-        pub akey: Option<String>,
+#[derive(Debug)]
+pub struct Attachment {
+    pub uuid: Uuid,
+    pub cipher_uuid: Uuid,
+    pub file_name: String,
+    pub file_size: i32,
+    pub akey: Option<String>,
+}
+
+impl From<Row> for Attachment {
+    fn from(row: Row) -> Self {
+        Self {
+            uuid: row.get(0),
+            cipher_uuid: row.get(1),
+            file_name: row.get(2),
+            file_size: row.get(3),
+            akey: row.get(4),
+        }
     }
 }
 
-/// Local methods
 impl Attachment {
-    pub const fn new(id: String, cipher_uuid: String, file_name: String, file_size: i32, akey: Option<String>) -> Self {
+    pub const fn new(uuid: Uuid, cipher_uuid: Uuid, file_name: String, file_size: i32, akey: Option<String>) -> Self {
         Self {
-            id,
+            uuid,
             cipher_uuid,
             file_name,
             file_size,
@@ -30,18 +41,22 @@ impl Attachment {
         }
     }
 
-    pub fn get_file_path(&self) -> String {
-        format!("{}/{}/{}", CONFIG.attachments_folder(), self.cipher_uuid, self.id)
+    pub fn get_file_path(&self) -> PathBuf {
+        CONFIG.folders.attachments().join(self.cipher_uuid.to_string()).join(self.uuid.to_string())
     }
 
-    pub fn get_url(&self, host: &str) -> String {
-        format!("{}/attachments/{}/{}", host, self.cipher_uuid, self.id)
+    pub fn get_url(&self) -> Url {
+        let mut url = CONFIG.settings.public.clone();
+        url.path_segments_mut().unwrap().push("attachments");
+        url.path_segments_mut().unwrap().push(&self.cipher_uuid.to_string());
+        url.path_segments_mut().unwrap().push(&self.uuid.to_string());
+        url
     }
 
-    pub fn to_json(&self, host: &str) -> Value {
+    pub fn to_json(&self) -> Value {
         json!({
-            "Id": self.id,
-            "Url": self.get_url(host),
+            "Id": self.uuid,
+            "Url": self.get_url(),
             "FileName": self.file_name,
             "Size": self.file_size.to_string(),
             "SizeName": crate::util::get_display_size(self.file_size),
@@ -51,155 +66,125 @@ impl Attachment {
     }
 }
 
-use crate::db::DbConn;
-
-use crate::api::EmptyResult;
-use crate::error::MapResult;
-
 /// Database methods
 impl Attachment {
-    pub async fn save(&self, conn: &mut DbConn) -> EmptyResult {
-        db_run! { conn:
-            sqlite, mysql {
-                match diesel::replace_into(attachments::table)
-                    .values(AttachmentDb::to_db(self))
-                    .execute(conn)
-                {
-                    Ok(_) => Ok(()),
-                    // Record already exists and causes a Foreign Key Violation because replace_into() wants to delete the record first.
-                    Err(diesel::result::Error::DatabaseError(diesel::result::DatabaseErrorKind::ForeignKeyViolation, _)) => {
-                        diesel::update(attachments::table)
-                            .filter(attachments::id.eq(&self.id))
-                            .set(AttachmentDb::to_db(self))
-                            .execute(conn)
-                            .map_res("Error saving attachment")
-                    }
-                    Err(e) => Err(e.into()),
-                }.map_res("Error saving attachment")
-            }
-            postgresql {
-                let value = AttachmentDb::to_db(self);
-                diesel::insert_into(attachments::table)
-                    .values(&value)
-                    .on_conflict(attachments::id)
-                    .do_update()
-                    .set(&value)
-                    .execute(conn)
-                    .map_res("Error saving attachment")
-            }
-        }
-    }
-
-    pub async fn delete(&self, conn: &mut DbConn) -> EmptyResult {
-        db_run! { conn: {
-            crate::util::retry(
-                || diesel::delete(attachments::table.filter(attachments::id.eq(&self.id))).execute(conn),
-                10,
-            )
-            .map_res("Error deleting attachment")?;
-
-            let file_path = &self.get_file_path();
-
-            match crate::util::delete_file(file_path) {
-                // Ignore "file not found" errors. This can happen when the
-                // upstream caller has already cleaned up the file as part of
-                // its own error handling.
-                Err(e) if e.kind() == ErrorKind::NotFound => {
-                    debug!("File '{}' already deleted.", file_path);
-                    Ok(())
-                }
-                Err(e) => Err(e.into()),
-                _ => Ok(()),
-            }
-        }}
-    }
-
-    pub async fn delete_all_by_cipher(cipher_uuid: &str, conn: &mut DbConn) -> EmptyResult {
-        for attachment in Attachment::find_by_cipher(cipher_uuid, conn).await {
-            attachment.delete(conn).await?;
-        }
+    pub async fn save(&self, conn: &Conn) -> ApiResult<()> {
+        conn.execute(
+            r"INSERT INTO attachments (uuid, cipher_uuid, file_name, file_size, akey) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (uuid) DO UPDATE
+        SET
+        cipher_uuid = EXCLUDED.cipher_uuid,
+        file_name = EXCLUDED.file_name,
+        file_size = EXCLUDED.file_size,
+        akey = EXCLUDED.akey",
+            &[&self.uuid, &self.cipher_uuid, &self.file_name, &self.file_size, &self.akey],
+        )
+        .await?;
         Ok(())
     }
 
-    pub async fn find_by_id(id: &str, conn: &mut DbConn) -> Option<Self> {
-        db_run! { conn: {
-            attachments::table
-                .filter(attachments::id.eq(id.to_lowercase()))
-                .first::<AttachmentDb>(conn)
-                .ok()
-                .from_db()
-        }}
+    pub async fn delete(&self, conn: &Transaction<'_>) -> ApiResult<()> {
+        conn.execute(r"DELETE FROM attachments WHERE uuid = $1", &[&self.uuid]).await?;
+
+        self.delete_file().await?;
+        Ok(())
     }
 
-    pub async fn find_by_cipher(cipher_uuid: &str, conn: &mut DbConn) -> Vec<Self> {
-        db_run! { conn: {
-            attachments::table
-                .filter(attachments::cipher_uuid.eq(cipher_uuid))
-                .load::<AttachmentDb>(conn)
-                .expect("Error loading attachments")
-                .from_db()
-        }}
+    async fn delete_file(&self) -> ApiResult<()> {
+        let file_path = self.get_file_path();
+        match crate::util::delete_file(&file_path).await {
+            // Ignore "file not found" errors. This can happen when the
+            // upstream caller has already cleaned up the file as part of
+            // its own error handling.
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                debug!("File '{}' already deleted.", file_path.display());
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+            _ => Ok(()),
+        }
     }
 
-    pub async fn size_by_user(user_uuid: &str, conn: &mut DbConn) -> i64 {
-        db_run! { conn: {
-            let result: Option<i64> = attachments::table
-                .left_join(ciphers::table.on(ciphers::uuid.eq(attachments::cipher_uuid)))
-                .filter(ciphers::user_uuid.eq(user_uuid))
-                .select(diesel::dsl::sum(attachments::file_size))
-                .first(conn)
-                .expect("Error loading user attachment total size");
-            result.unwrap_or(0)
-        }}
+    pub async fn get(conn: &Conn, uuid: Uuid) -> ApiResult<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM attachments WHERE uuid = $1", &[&uuid]).await?.map(Into::into))
     }
 
-    pub async fn count_by_user(user_uuid: &str, conn: &mut DbConn) -> i64 {
-        db_run! { conn: {
-            attachments::table
-                .left_join(ciphers::table.on(ciphers::uuid.eq(attachments::cipher_uuid)))
-                .filter(ciphers::user_uuid.eq(user_uuid))
-                .count()
-                .first(conn)
-                .unwrap_or(0)
-        }}
+    pub async fn get_with_cipher(conn: &Conn, uuid: Uuid, cipher_uuid: Uuid) -> ApiResult<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM attachments WHERE uuid = $1 AND cipher_uuid = $2", &[&uuid, &cipher_uuid]).await?.map(Into::into))
     }
 
-    pub async fn size_by_org(org_uuid: &str, conn: &mut DbConn) -> i64 {
-        db_run! { conn: {
-            let result: Option<i64> = attachments::table
-                .left_join(ciphers::table.on(ciphers::uuid.eq(attachments::cipher_uuid)))
-                .filter(ciphers::organization_uuid.eq(org_uuid))
-                .select(diesel::dsl::sum(attachments::file_size))
-                .first(conn)
-                .expect("Error loading user attachment total size");
-            result.unwrap_or(0)
-        }}
+    pub async fn get_with_cipher_and_user(conn: &Conn, uuid: Uuid, cipher_uuid: Uuid, user_uuid: Uuid) -> ApiResult<Option<Self>> {
+        Ok(conn
+            .query_opt(
+                r"
+            SELECT a.* FROM attachments a
+            INNER JOIN user_cipher_auth uca ON uca.cipher_uuid = a.cipher_uuid AND uca.user_uuid = $3
+            WHERE a.uuid = $1 AND a.cipher_uuid = $2",
+                &[&uuid, &cipher_uuid, &user_uuid],
+            )
+            .await?
+            .map(Into::into))
     }
 
-    pub async fn count_by_org(org_uuid: &str, conn: &mut DbConn) -> i64 {
-        db_run! { conn: {
-            attachments::table
-                .left_join(ciphers::table.on(ciphers::uuid.eq(attachments::cipher_uuid)))
-                .filter(ciphers::organization_uuid.eq(org_uuid))
-                .count()
-                .first(conn)
-                .unwrap_or(0)
-        }}
+    pub async fn get_with_cipher_and_user_writable(conn: &Conn, uuid: Uuid, cipher_uuid: Uuid, user_uuid: Uuid) -> ApiResult<Option<Self>> {
+        Ok(conn
+            .query_opt(
+                r"
+            SELECT a.* FROM attachments a
+            INNER JOIN user_cipher_auth uca ON uca.cipher_uuid = a.cipher_uuid AND uca.user_uuid = $3 AND NOT uca.read_only
+            WHERE a.uuid = $1 AND a.cipher_uuid = $2",
+                &[&uuid, &cipher_uuid, &user_uuid],
+            )
+            .await?
+            .map(Into::into))
     }
 
-    // This will return all attachments linked to the user or org
-    // There is no filtering done here if the user actually has access!
-    // It is used to speed up the sync process, and the matching is done in a different part.
-    pub async fn find_all_by_user_and_orgs(user_uuid: &str, org_uuids: &Vec<String>, conn: &mut DbConn) -> Vec<Self> {
-        db_run! { conn: {
-            attachments::table
-                .left_join(ciphers::table.on(ciphers::uuid.eq(attachments::cipher_uuid)))
-                .filter(ciphers::user_uuid.eq(user_uuid))
-                .or_filter(ciphers::organization_uuid.eq_any(org_uuids))
-                .select(attachments::all_columns)
-                .load::<AttachmentDb>(conn)
-                .expect("Error loading attachments")
-                .from_db()
-        }}
+    pub async fn find_by_cipher(conn: &Conn, cipher_uuid: Uuid) -> ApiResult<Vec<Self>> {
+        Ok(conn.query(r"SELECT * FROM attachments WHERE cipher_uuid = $1", &[&cipher_uuid]).await?.into_iter().map(|x| x.into()).collect())
     }
+
+    pub async fn size_count_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<(i64, i64)> {
+        let row = conn
+            .query_one(
+                r"
+            SELECT coalesce(sum(a.file_size), 0), coalesce(count(a.uuid), 0)
+            FROM attachments a
+            INNER JOIN ciphers c ON c.uuid = a.cipher_uuid
+            WHERE c.user_uuid = $1
+        ",
+                &[&user_uuid],
+            )
+            .await?;
+        Ok((row.get(0), row.get(1)))
+    }
+
+    pub async fn size_count_by_organization(conn: &Conn, organization_uuid: Uuid) -> ApiResult<(i64, i64)> {
+        let row = conn
+            .query_one(
+                r"
+            SELECT coalesce(sum(a.file_size), 0), coalesce(count(a.uuid), 0)
+            FROM attachments a
+            INNER JOIN ciphers c ON c.uuid = a.cipher_uuid
+            WHERE c.organization_uuid = $1
+        ",
+                &[&organization_uuid],
+            )
+            .await?;
+        Ok((row.get(0), row.get(1)))
+    }
+
+    // // This will return all attachments linked to the user or org
+    // // There is no filtering done here if the user actually has access!
+    // // It is used to speed up the sync process, and the matching is done in a different part.
+    // pub async fn find_all_by_user_and_orgs(user_uuid: &str, org_uuids: &Vec<String>, conn: &Conn) -> Vec<Self> {
+    //     db_run! { conn: {
+    //         attachments::table
+    //             .left_join(ciphers::table.on(ciphers::uuid.eq(attachments::cipher_uuid)))
+    //             .filter(ciphers::user_uuid.eq(user_uuid))
+    //             .or_filter(ciphers::organization_uuid.eq_any(org_uuids))
+    //             .select(attachments::all_columns)
+    //             .load::<AttachmentDb>(conn)
+    //             .expect("Error loading attachments")
+    //             .from_db()
+    //     }}
+    // }
 }

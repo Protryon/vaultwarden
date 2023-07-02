@@ -1,34 +1,36 @@
-// JWT Handling
-//
+use axum::extract::{ConnectInfo, FromRequestParts, MatchedPath, Path, Query};
+use axum::http::request::Parts;
+use axum::response::IntoResponse;
+use axum_util::errors::{ApiError, ApiResult};
 use chrono::{Duration, Utc};
-use num_traits::FromPrimitive;
+use log::{error, warn};
 use once_cell::sync::Lazy;
 
 use jsonwebtoken::{self, errors::ErrorKind, Algorithm, DecodingKey, EncodingKey, Header};
-use serde::de::DeserializeOwned;
-use serde::ser::Serialize;
+use serde::Deserialize;
+use serde::{de::DeserializeOwned, Serialize};
+use uuid::Uuid;
 
-use crate::{error::Error, CONFIG};
+use crate::db::{Collection, Conn, Device, User, UserOrgStatus, UserOrgType, UserOrganization, UserStampException, DB};
+use crate::CONFIG;
 
 const JWT_ALGORITHM: Algorithm = Algorithm::RS256;
 
 pub static DEFAULT_VALIDITY: Lazy<Duration> = Lazy::new(|| Duration::hours(2));
 static JWT_HEADER: Lazy<Header> = Lazy::new(|| Header::new(JWT_ALGORITHM));
 
-pub static JWT_LOGIN_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|login", CONFIG.domain_origin()));
-static JWT_INVITE_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|invite", CONFIG.domain_origin()));
-static JWT_EMERGENCY_ACCESS_INVITE_ISSUER: Lazy<String> =
-    Lazy::new(|| format!("{}|emergencyaccessinvite", CONFIG.domain_origin()));
-static JWT_SSOTOKEN_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|ssotoken", CONFIG.domain_origin()));
-static JWT_DELETE_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|delete", CONFIG.domain_origin()));
-static JWT_VERIFYEMAIL_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|verifyemail", CONFIG.domain_origin()));
-static JWT_ADMIN_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|admin", CONFIG.domain_origin()));
-static JWT_SEND_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|send", CONFIG.domain_origin()));
-static JWT_ORG_API_KEY_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|api.organization", CONFIG.domain_origin()));
+pub static JWT_LOGIN_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|login", CONFIG.settings.public));
+static JWT_INVITE_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|invite", CONFIG.settings.public));
+static JWT_EMERGENCY_ACCESS_INVITE_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|emergencyaccessinvite", CONFIG.settings.public));
+static JWT_SSOTOKEN_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|ssotoken", CONFIG.settings.public));
+static JWT_DELETE_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|delete", CONFIG.settings.public));
+static JWT_VERIFYEMAIL_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|verifyemail", CONFIG.settings.public));
+static JWT_ADMIN_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|admin", CONFIG.settings.public));
+static JWT_SEND_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|send", CONFIG.settings.public));
+static JWT_ORG_API_KEY_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|api.organization", CONFIG.settings.public));
 
 static PRIVATE_RSA_KEY: Lazy<EncodingKey> = Lazy::new(|| {
-    let key =
-        std::fs::read(CONFIG.private_rsa_key()).unwrap_or_else(|e| panic!("Error loading private RSA Key. \n{e}"));
+    let key = std::fs::read(CONFIG.private_rsa_key()).unwrap_or_else(|e| panic!("Error loading private RSA Key. \n{e}"));
     EncodingKey::from_rsa_pem(&key).unwrap_or_else(|e| panic!("Error decoding private RSA Key.\n{e}"))
 });
 static PUBLIC_RSA_KEY: Lazy<DecodingKey> = Lazy::new(|| {
@@ -48,7 +50,7 @@ pub fn encode_jwt<T: Serialize>(claims: &T) -> String {
     }
 }
 
-fn decode_jwt<T: DeserializeOwned>(token: &str, issuer: String) -> Result<T, Error> {
+fn decode_jwt<T: DeserializeOwned>(token: &str, issuer: String) -> ApiResult<T> {
     let mut validation = jsonwebtoken::Validation::new(JWT_ALGORITHM);
     validation.leeway = 30; // 30 seconds
     validation.validate_exp = true;
@@ -67,35 +69,35 @@ fn decode_jwt<T: DeserializeOwned>(token: &str, issuer: String) -> Result<T, Err
     }
 }
 
-pub fn decode_login(token: &str) -> Result<LoginJwtClaims, Error> {
+pub fn decode_login(token: &str) -> ApiResult<LoginJwtClaims> {
     decode_jwt(token, JWT_LOGIN_ISSUER.to_string())
 }
 
-pub fn decode_invite(token: &str) -> Result<InviteJwtClaims, Error> {
+pub fn decode_invite(token: &str) -> ApiResult<InviteJwtClaims> {
     decode_jwt(token, JWT_INVITE_ISSUER.to_string())
 }
 
-pub fn decode_emergency_access_invite(token: &str) -> Result<EmergencyAccessInviteJwtClaims, Error> {
+pub fn decode_emergency_access_invite(token: &str) -> ApiResult<EmergencyAccessInviteJwtClaims> {
     decode_jwt(token, JWT_EMERGENCY_ACCESS_INVITE_ISSUER.to_string())
 }
 
-pub fn decode_delete(token: &str) -> Result<BasicJwtClaims, Error> {
+pub fn decode_delete(token: &str) -> ApiResult<BasicJwtClaims> {
     decode_jwt(token, JWT_DELETE_ISSUER.to_string())
 }
 
-pub fn decode_verify_email(token: &str) -> Result<BasicJwtClaims, Error> {
+pub fn decode_verify_email(token: &str) -> ApiResult<BasicJwtClaims> {
     decode_jwt(token, JWT_VERIFYEMAIL_ISSUER.to_string())
 }
 
-pub fn decode_admin(token: &str) -> Result<BasicJwtClaims, Error> {
+pub fn decode_admin(token: &str) -> ApiResult<BasicJwtClaims> {
     decode_jwt(token, JWT_ADMIN_ISSUER.to_string())
 }
 
-pub fn decode_send(token: &str) -> Result<BasicJwtClaims, Error> {
+pub fn decode_send(token: &str) -> ApiResult<BasicJwtClaims> {
     decode_jwt(token, JWT_SEND_ISSUER.to_string())
 }
 
-pub fn decode_api_org(token: &str) -> Result<OrgApiKeyLoginJwtClaims, Error> {
+pub fn decode_api_org(token: &str) -> ApiResult<OrgApiKeyLoginJwtClaims> {
     decode_jwt(token, JWT_ORG_API_KEY_ISSUER.to_string())
 }
 
@@ -108,22 +110,22 @@ pub struct LoginJwtClaims {
     // Issuer
     pub iss: String,
     // Subject
-    pub sub: String,
+    pub sub: Uuid,
 
     pub premium: bool,
     pub name: String,
     pub email: String,
     pub email_verified: bool,
 
-    pub orgowner: Vec<String>,
-    pub orgadmin: Vec<String>,
-    pub orguser: Vec<String>,
-    pub orgmanager: Vec<String>,
+    pub orgowner: Vec<Uuid>,
+    pub orgadmin: Vec<Uuid>,
+    pub orguser: Vec<Uuid>,
+    pub orgmanager: Vec<Uuid>,
 
     // user security_stamp
-    pub sstamp: String,
+    pub sstamp: Uuid,
     // device uuid
-    pub device: String,
+    pub device: Uuid,
     // [ "api", "offline_access" ]
     pub scope: Vec<String>,
     // [ "Application" ]
@@ -138,32 +140,24 @@ pub struct InviteJwtClaims {
     pub exp: i64,
     // Issuer
     pub iss: String,
-    // Subject
-    pub sub: String,
+    // Subject (and user_uuid)
+    pub sub: Uuid,
 
     pub email: String,
-    pub org_id: Option<String>,
-    pub user_org_id: Option<String>,
+    pub org_uuid: Option<Uuid>,
     pub invited_by_email: Option<String>,
 }
 
-pub fn generate_invite_claims(
-    uuid: String,
-    email: String,
-    org_id: Option<String>,
-    user_org_id: Option<String>,
-    invited_by_email: Option<String>,
-) -> InviteJwtClaims {
-    let time_now = Utc::now().naive_utc();
-    let expire_hours = i64::from(CONFIG.invitation_expiration_hours());
+pub fn generate_invite_claims(user_uuid: Uuid, email: String, org_uuid: Option<Uuid>, invited_by_email: Option<String>) -> InviteJwtClaims {
+    let time_now = Utc::now();
+    let expire_hours = i64::from(CONFIG.settings.invitation_expiration_hours);
     InviteJwtClaims {
         nbf: time_now.timestamp(),
         exp: (time_now + Duration::hours(expire_hours)).timestamp(),
         iss: JWT_INVITE_ISSUER.to_string(),
-        sub: uuid,
+        sub: user_uuid,
         email,
-        org_id,
-        user_org_id,
+        org_uuid,
         invited_by_email,
     }
 }
@@ -180,7 +174,7 @@ pub struct EmergencyAccessInviteJwtClaims {
     pub sub: String,
 
     pub email: String,
-    pub emer_id: String,
+    pub emer_id: Uuid,
     pub grantor_name: String,
     pub grantor_email: String,
 }
@@ -188,12 +182,12 @@ pub struct EmergencyAccessInviteJwtClaims {
 pub fn generate_emergency_access_invite_claims(
     uuid: String,
     email: String,
-    emer_id: String,
+    emer_id: Uuid,
     grantor_name: String,
     grantor_email: String,
 ) -> EmergencyAccessInviteJwtClaims {
-    let time_now = Utc::now().naive_utc();
-    let expire_hours = i64::from(CONFIG.invitation_expiration_hours());
+    let time_now = Utc::now();
+    let expire_hours = i64::from(CONFIG.settings.invitation_expiration_hours);
     EmergencyAccessInviteJwtClaims {
         nbf: time_now.timestamp(),
         exp: (time_now + Duration::hours(expire_hours)).timestamp(),
@@ -215,15 +209,15 @@ pub struct OrgApiKeyLoginJwtClaims {
     // Issuer
     pub iss: String,
     // Subject
-    pub sub: String,
+    pub sub: Uuid,
 
     pub client_id: String,
-    pub client_sub: String,
+    pub client_sub: Uuid,
     pub scope: Vec<String>,
 }
 
-pub fn generate_organization_api_key_login_claims(uuid: String, org_id: String) -> OrgApiKeyLoginJwtClaims {
-    let time_now = Utc::now().naive_utc();
+pub fn generate_organization_api_key_login_claims(uuid: Uuid, org_id: Uuid) -> OrgApiKeyLoginJwtClaims {
+    let time_now = Utc::now();
     OrgApiKeyLoginJwtClaims {
         nbf: time_now.timestamp(),
         exp: (time_now + Duration::hours(1)).timestamp(),
@@ -248,8 +242,8 @@ pub struct BasicJwtClaims {
 }
 
 pub fn generate_delete_claims(uuid: String) -> BasicJwtClaims {
-    let time_now = Utc::now().naive_utc();
-    let expire_hours = i64::from(CONFIG.invitation_expiration_hours());
+    let time_now = Utc::now();
+    let expire_hours = i64::from(CONFIG.settings.invitation_expiration_hours);
     BasicJwtClaims {
         nbf: time_now.timestamp(),
         exp: (time_now + Duration::hours(expire_hours)).timestamp(),
@@ -267,12 +261,12 @@ pub struct SsoTokenJwtClaims {
     // Issuer
     pub iss: String,
     // Subject
-    pub sub: String,
+    pub sub: Uuid,
     pub domainhint: String,
 }
 
-pub fn generate_ssotoken_claims(org_id: String, domainhint: String) -> SsoTokenJwtClaims {
-    let time_now = Utc::now().naive_utc();
+pub fn generate_ssotoken_claims(org_id: Uuid, domainhint: String) -> SsoTokenJwtClaims {
+    let time_now = Utc::now();
     SsoTokenJwtClaims {
         nbf: time_now.timestamp(),
         exp: (time_now + Duration::minutes(2)).timestamp(),
@@ -283,8 +277,8 @@ pub fn generate_ssotoken_claims(org_id: String, domainhint: String) -> SsoTokenJ
 }
 
 pub fn generate_verify_email_claims(uuid: String) -> BasicJwtClaims {
-    let time_now = Utc::now().naive_utc();
-    let expire_hours = i64::from(CONFIG.invitation_expiration_hours());
+    let time_now = Utc::now();
+    let expire_hours = i64::from(CONFIG.settings.invitation_expiration_hours);
     BasicJwtClaims {
         nbf: time_now.timestamp(),
         exp: (time_now + Duration::hours(expire_hours)).timestamp(),
@@ -294,17 +288,17 @@ pub fn generate_verify_email_claims(uuid: String) -> BasicJwtClaims {
 }
 
 pub fn generate_admin_claims() -> BasicJwtClaims {
-    let time_now = Utc::now().naive_utc();
+    let time_now = Utc::now();
     BasicJwtClaims {
         nbf: time_now.timestamp(),
-        exp: (time_now + Duration::minutes(CONFIG.admin_session_lifetime())).timestamp(),
+        exp: (time_now + Duration::minutes(CONFIG.advanced.admin_session_lifetime)).timestamp(),
         iss: JWT_ADMIN_ISSUER.to_string(),
         sub: "admin_panel".to_string(),
     }
 }
 
-pub fn generate_send_claims(send_id: &str, file_id: &str) -> BasicJwtClaims {
-    let time_now = Utc::now().naive_utc();
+pub fn generate_send_claims(send_id: Uuid, file_id: Uuid) -> BasicJwtClaims {
+    let time_now = Utc::now();
     BasicJwtClaims {
         nbf: time_now.timestamp(),
         exp: (time_now + Duration::minutes(2)).timestamp(),
@@ -316,83 +310,22 @@ pub fn generate_send_claims(send_id: &str, file_id: &str) -> BasicJwtClaims {
 //
 // Bearer token authentication
 //
-use rocket::{
-    outcome::try_outcome,
-    request::{FromRequest, Outcome, Request},
-};
-
-use crate::db::{
-    models::{Collection, Device, User, UserOrgStatus, UserOrgType, UserOrganization, UserStampException},
-    DbConn,
-};
-
-pub struct Host {
-    pub host: String,
-}
-
-#[rocket::async_trait]
-impl<'r> FromRequest<'r> for Host {
-    type Error = &'static str;
-
-    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        let headers = request.headers();
-
-        // Get host
-        let host = if CONFIG.domain_set() {
-            CONFIG.domain()
-        } else if let Some(referer) = headers.get_one("Referer") {
-            referer.to_string()
-        } else {
-            // Try to guess from the headers
-            use std::env;
-
-            let protocol = if let Some(proto) = headers.get_one("X-Forwarded-Proto") {
-                proto
-            } else if env::var("ROCKET_TLS").is_ok() {
-                "https"
-            } else {
-                "http"
-            };
-
-            let host = if let Some(host) = headers.get_one("X-Forwarded-Host") {
-                host
-            } else if let Some(host) = headers.get_one("Host") {
-                host
-            } else {
-                ""
-            };
-
-            format!("{protocol}://{host}")
-        };
-
-        Outcome::Success(Host {
-            host,
-        })
-    }
-}
 
 pub struct ClientHeaders {
-    pub host: String,
     pub device_type: i32,
     pub ip: ClientIp,
 }
 
-#[rocket::async_trait]
-impl<'r> FromRequest<'r> for ClientHeaders {
-    type Error = &'static str;
+#[async_trait::async_trait]
+impl<S: Send + Sync> FromRequestParts<S> for ClientHeaders {
+    type Rejection = ApiError;
 
-    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        let host = try_outcome!(Host::from_request(request).await).host;
-        let ip = match ClientIp::from_request(request).await {
-            Outcome::Success(ip) => ip,
-            _ => err_handler!("Error getting Client IP"),
-        };
+    async fn from_request_parts(req: &mut Parts, state: &S) -> ApiResult<Self> {
+        let ip = ClientIp::from_request_parts(req, state).await?;
         // When unknown or unable to parse, return 14, which is 'Unknown Browser'
-        let device_type: i32 =
-            request.headers().get_one("device-type").map(|d| d.parse().unwrap_or(14)).unwrap_or_else(|| 14);
+        let device_type: i32 = req.headers.get("device-type").and_then(|x| x.to_str().ok()).map(|d| d.parse().unwrap_or(14)).unwrap_or_else(|| 14);
 
-        Outcome::Success(ClientHeaders {
-            host,
+        Ok(ClientHeaders {
             device_type,
             ip,
         })
@@ -400,91 +333,73 @@ impl<'r> FromRequest<'r> for ClientHeaders {
 }
 
 pub struct Headers {
-    pub host: String,
     pub device: Device,
     pub user: User,
-    pub ip: ClientIp,
+    pub ip: IpAddr,
 }
 
-#[rocket::async_trait]
-impl<'r> FromRequest<'r> for Headers {
-    type Error = &'static str;
+#[async_trait::async_trait]
+impl<S: Send + Sync> FromRequestParts<S> for Headers {
+    type Rejection = ApiError;
 
-    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        let headers = request.headers();
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let ip = ClientIp::from_request_parts(parts, state).await?.ip;
 
-        let host = try_outcome!(Host::from_request(request).await).host;
-        let ip = match ClientIp::from_request(request).await {
-            Outcome::Success(ip) => ip,
-            _ => err_handler!("Error getting Client IP"),
-        };
-
-        // Get access_token
-        let access_token: &str = match headers.get_one("Authorization") {
-            Some(a) => match a.rsplit("Bearer ").next() {
-                Some(split) => split,
-                None => err_handler!("No access token provided"),
-            },
-            None => err_handler!("No access token provided"),
-        };
+        let access_token = parts
+            .headers
+            .get("authorization")
+            .and_then(|x| x.to_str().ok())
+            .and_then(|x| x.strip_prefix("Bearer "))
+            .ok_or(ApiError::Unauthorized("missing authorization header".to_string()))?;
 
         // Check JWT token is valid and get device and user from it
         let claims = match decode_login(access_token) {
             Ok(claims) => claims,
-            Err(_) => err_handler!("Invalid claim"),
+            Err(_) => return Err(ApiError::Unauthorized("invalid token".to_string())),
         };
 
         let device_uuid = claims.device;
         let user_uuid = claims.sub;
 
-        let mut conn = match DbConn::from_request(request).await {
-            Outcome::Success(conn) => conn,
-            _ => err_handler!("Error getting DB"),
-        };
+        let conn = DB.get().await?;
 
-        let device = match Device::find_by_uuid_and_user(&device_uuid, &user_uuid, &mut conn).await {
+        let device = match Device::find_by_uuid_and_user(&conn, device_uuid, user_uuid).await? {
             Some(device) => device,
-            None => err_handler!("Invalid device id"),
+            None => return Err(ApiError::Unauthorized("device not found".to_string())),
         };
 
-        let user = match User::find_by_uuid(&user_uuid, &mut conn).await {
+        let user = match User::get(&conn, user_uuid).await? {
             Some(user) => user,
-            None => err_handler!("Device has no user associated"),
+            None => return Err(ApiError::Unauthorized("user not found".to_string())),
         };
 
         if user.security_stamp != claims.sstamp {
-            if let Some(stamp_exception) =
-                user.stamp_exception.as_deref().and_then(|s| serde_json::from_str::<UserStampException>(s).ok())
-            {
-                let current_route = match request.route().and_then(|r| r.name.as_deref()) {
-                    Some(name) => name,
-                    _ => err_handler!("Error getting current route for stamp exception"),
-                };
+            if let Some(stamp_exception) = user.stamp_exception.as_deref().and_then(|s| serde_json::from_str::<UserStampException>(s).ok()) {
+                let matched_path = MatchedPath::from_request_parts(parts, state).await.map_err(|e| ApiError::Response(e.into_response()))?;
 
                 // Check if the stamp exception has expired first.
                 // Then, check if the current route matches any of the allowed routes.
                 // After that check the stamp in exception matches the one in the claims.
-                if Utc::now().naive_utc().timestamp() > stamp_exception.expire {
+                if Utc::now().timestamp() > stamp_exception.expire {
                     // If the stamp exception has been expired remove it from the database.
                     // This prevents checking this stamp exception for new requests.
                     let mut user = user;
                     user.reset_stamp_exception();
-                    if let Err(e) = user.save(&mut conn).await {
+                    if let Err(e) = user.save(&conn).await {
                         error!("Error updating user: {:#?}", e);
                     }
-                    err_handler!("Stamp exception is expired")
-                } else if !stamp_exception.routes.contains(&current_route.to_string()) {
-                    err_handler!("Invalid security stamp: Current route and exception route do not match")
+                    return Err(ApiError::Unauthorized("Stamp exception is expired".to_string()));
+                } else if !stamp_exception.routes.iter().any(|x| x == matched_path.as_str()) {
+                    return Err(ApiError::Unauthorized("Invalid security stamp: Current route and exception route do not match".to_string()));
                 } else if stamp_exception.security_stamp != claims.sstamp {
-                    err_handler!("Invalid security stamp for matched stamp exception")
+                    return Err(ApiError::Unauthorized("Invalid security stamp for matched stamp exception".to_string()));
                 }
             } else {
-                err_handler!("Invalid security stamp")
+                return Err(ApiError::Unauthorized("Invalid security stamp".to_string()));
             }
         }
 
-        Outcome::Success(Headers {
-            host,
+        Ok(Headers {
             device,
             user,
             ip,
@@ -493,37 +408,44 @@ impl<'r> FromRequest<'r> for Headers {
 }
 
 pub struct OrgHeaders {
-    pub host: String,
     pub device: Device,
     pub user: User,
     pub org_user_type: UserOrgType,
     pub org_user: UserOrganization,
-    pub org_id: String,
-    pub ip: ClientIp,
+    pub org_id: Uuid,
+    pub ip: IpAddr,
 }
 
-#[rocket::async_trait]
-impl<'r> FromRequest<'r> for OrgHeaders {
-    type Error = &'static str;
+#[derive(Deserialize)]
+struct OrgIdPath {
+    org_uuid: Uuid,
+}
 
-    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        let headers = try_outcome!(Headers::from_request(request).await);
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OrgIdQuery {
+    organization_id: Uuid,
+}
+
+#[async_trait::async_trait]
+impl<S: Send + Sync> FromRequestParts<S> for OrgHeaders {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let headers = Headers::from_request_parts(parts, state).await?;
 
         // org_id is usually the second path param ("/organizations/<org_id>"),
         // but there are cases where it is a query value.
         // First check the path, if this is not a valid uuid, try the query values.
-        let url_org_id: Option<&str> = {
-            let mut url_org_id = None;
-            if let Some(Ok(org_id)) = request.param::<&str>(1) {
-                if uuid::Uuid::parse_str(org_id).is_ok() {
-                    url_org_id = Some(org_id);
-                }
-            }
 
-            if let Some(Ok(org_id)) = request.query_value::<&str>("organizationId") {
-                if uuid::Uuid::parse_str(org_id).is_ok() {
-                    url_org_id = Some(org_id);
-                }
+        //TODO: this is error prone, and should be _deleted_! REFACTOR THIS AWAY!
+        let url_org_id: Option<Uuid> = {
+            let mut url_org_id = None;
+            if let Some(path) = Path::<OrgIdPath>::from_request_parts(parts, state).await.ok() {
+                url_org_id = Some(path.org_uuid);
+            }
+            if let Some(query) = Query::<OrgIdQuery>::from_request_parts(parts, state).await.ok() {
+                url_org_id = Some(query.organization_id);
             }
 
             url_org_id
@@ -531,80 +453,67 @@ impl<'r> FromRequest<'r> for OrgHeaders {
 
         match url_org_id {
             Some(org_id) => {
-                let mut conn = match DbConn::from_request(request).await {
-                    Outcome::Success(conn) => conn,
-                    _ => err_handler!("Error getting DB"),
-                };
+                let conn = DB.get().await?;
 
                 let user = headers.user;
-                let org_user = match UserOrganization::find_by_user_and_org(&user.uuid, org_id, &mut conn).await {
+                let org_user = match UserOrganization::get(&conn, user.uuid, org_id).await? {
                     Some(user) => {
-                        if user.status == UserOrgStatus::Confirmed as i32 {
+                        if user.status() == UserOrgStatus::Confirmed {
                             user
                         } else {
-                            err_handler!("The current user isn't confirmed member of the organization")
+                            return Err(ApiError::Forbidden("The current user isn't confirmed member of the organization".to_string()));
                         }
                     }
-                    None => err_handler!("The current user isn't member of the organization"),
+                    None => {
+                        return Err(ApiError::Forbidden("The current user isn't member of the organization".to_string()));
+                    }
                 };
 
-                Outcome::Success(Self {
-                    host: headers.host,
+                Ok(Self {
                     device: headers.device,
                     user,
-                    org_user_type: {
-                        if let Some(org_usr_type) = UserOrgType::from_i32(org_user.atype) {
-                            org_usr_type
-                        } else {
-                            // This should only happen if the DB is corrupted
-                            err_handler!("Unknown user type in the database")
-                        }
-                    },
+                    org_user_type: org_user.atype,
                     org_user,
-                    org_id: String::from(org_id),
+                    org_id,
                     ip: headers.ip,
                 })
             }
-            _ => err_handler!("Error getting the organization id"),
+            _ => Err(ApiError::Other(anyhow::anyhow!("Error getting the organization id"))),
         }
     }
 }
 
-pub struct AdminHeaders {
-    pub host: String,
+pub struct OrgAdminHeaders {
     pub device: Device,
     pub user: User,
     pub org_user_type: UserOrgType,
     pub client_version: Option<String>,
-    pub ip: ClientIp,
+    pub ip: IpAddr,
 }
 
-#[rocket::async_trait]
-impl<'r> FromRequest<'r> for AdminHeaders {
-    type Error = &'static str;
+#[async_trait::async_trait]
+impl<S: Send + Sync> FromRequestParts<S> for OrgAdminHeaders {
+    type Rejection = ApiError;
 
-    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        let headers = try_outcome!(OrgHeaders::from_request(request).await);
-        let client_version = request.headers().get_one("Bitwarden-Client-Version").map(String::from);
-        if headers.org_user_type >= UserOrgType::Admin {
-            Outcome::Success(Self {
-                host: headers.host,
-                device: headers.device,
-                user: headers.user,
-                org_user_type: headers.org_user_type,
-                client_version,
-                ip: headers.ip,
-            })
-        } else {
-            err_handler!("You need to be Admin or Owner to call this endpoint")
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let headers = OrgHeaders::from_request_parts(parts, state).await?;
+        let client_version = parts.headers.get("bitwarden-client-version").and_then(|x| x.to_str().ok()).map(|x| x.to_string());
+        if headers.org_user_type < UserOrgType::Admin {
+            err!("You need to be Admin or Owner to call this endpoint");
         }
+        Ok(Self {
+            device: headers.device,
+            user: headers.user,
+            org_user_type: headers.org_user_type,
+            client_version,
+            ip: headers.ip,
+        })
     }
 }
 
-impl From<AdminHeaders> for Headers {
-    fn from(h: AdminHeaders) -> Headers {
+impl From<OrgAdminHeaders> for Headers {
+    fn from(h: OrgAdminHeaders) -> Headers {
         Headers {
-            host: h.host,
             device: h.device,
             user: h.user,
             ip: h.ip,
@@ -612,20 +521,27 @@ impl From<AdminHeaders> for Headers {
     }
 }
 
+#[derive(Deserialize)]
+struct ColIdPath {
+    col_id: Uuid,
+}
+
+#[derive(Deserialize)]
+struct ColIdQuery {
+    #[serde(rename = "collectionId")]
+    collection_id: Uuid,
+}
+
 // col_id is usually the fourth path param ("/organizations/<org_id>/collections/<col_id>"),
 // but there could be cases where it is a query value.
 // First check the path, if this is not a valid uuid, try the query values.
-fn get_col_id(request: &Request<'_>) -> Option<String> {
-    if let Some(Ok(col_id)) = request.param::<String>(3) {
-        if uuid::Uuid::parse_str(&col_id).is_ok() {
-            return Some(col_id);
-        }
+async fn get_col_id<S: Send + Sync>(parts: &mut Parts, state: &S) -> Option<Uuid> {
+    if let Ok(Path(col_id)) = Path::<ColIdPath>::from_request_parts(parts, state).await {
+        return Some(col_id.col_id);
     }
 
-    if let Some(Ok(col_id)) = request.query_value::<String>("collectionId") {
-        if uuid::Uuid::parse_str(&col_id).is_ok() {
-            return Some(col_id);
-        }
+    if let Ok(col_id) = Query::<ColIdQuery>::from_request_parts(parts, state).await {
+        return Some(col_id.collection_id);
     }
 
     None
@@ -635,51 +551,40 @@ fn get_col_id(request: &Request<'_>) -> Option<String> {
 /// and have access to the specific collection provided via the <col_id>/collections/collectionId.
 /// This does strict checking on the collection_id, ManagerHeadersLoose does not.
 pub struct ManagerHeaders {
-    pub host: String,
     pub device: Device,
     pub user: User,
     pub org_user_type: UserOrgType,
-    pub ip: ClientIp,
+    pub ip: IpAddr,
 }
 
-#[rocket::async_trait]
-impl<'r> FromRequest<'r> for ManagerHeaders {
-    type Error = &'static str;
+#[async_trait::async_trait]
+impl<S: Send + Sync> FromRequestParts<S> for ManagerHeaders {
+    type Rejection = ApiError;
 
-    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        let headers = try_outcome!(OrgHeaders::from_request(request).await);
-        if headers.org_user_type >= UserOrgType::Manager {
-            match get_col_id(request) {
-                Some(col_id) => {
-                    let mut conn = match DbConn::from_request(request).await {
-                        Outcome::Success(conn) => conn,
-                        _ => err_handler!("Error getting DB"),
-                    };
-
-                    if !can_access_collection(&headers.org_user, &col_id, &mut conn).await {
-                        err_handler!("The current user isn't a manager for this collection")
-                    }
-                }
-                _ => err_handler!("Error getting the collection id"),
-            }
-
-            Outcome::Success(Self {
-                host: headers.host,
-                device: headers.device,
-                user: headers.user,
-                org_user_type: headers.org_user_type,
-                ip: headers.ip,
-            })
-        } else {
-            err_handler!("You need to be a Manager, Admin or Owner to call this endpoint")
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let headers = OrgHeaders::from_request_parts(parts, state).await?;
+        if headers.org_user_type < UserOrgType::Manager {
+            err!("You need to be Admin or Owner or Manager with sufficient permissions to call this endpoint")
         }
+        let conn = DB.get().await?;
+        let Some(col_id) = get_col_id(parts, state).await else {
+            err!("Error getting the collection id");
+        };
+        if Collection::find_by_uuid_and_user(&conn, col_id, headers.user.uuid).await?.is_none() {
+            err!("Collection not found");
+        }
+        Ok(Self {
+            device: headers.device,
+            user: headers.user,
+            org_user_type: headers.org_user_type,
+            ip: headers.ip,
+        })
     }
 }
 
 impl From<ManagerHeaders> for Headers {
     fn from(h: ManagerHeaders) -> Headers {
         Headers {
-            host: h.host,
             device: h.device,
             user: h.user,
             ip: h.ip,
@@ -690,67 +595,51 @@ impl From<ManagerHeaders> for Headers {
 /// The ManagerHeadersLoose is used when you at least need to be a Manager,
 /// but there is no collection_id sent with the request (either in the path or as form data).
 pub struct ManagerHeadersLoose {
-    pub host: String,
     pub device: Device,
     pub user: User,
     pub org_user: UserOrganization,
     pub org_user_type: UserOrgType,
-    pub ip: ClientIp,
+    pub ip: IpAddr,
 }
 
-#[rocket::async_trait]
-impl<'r> FromRequest<'r> for ManagerHeadersLoose {
-    type Error = &'static str;
+#[async_trait::async_trait]
+impl<S: Send + Sync> FromRequestParts<S> for ManagerHeadersLoose {
+    type Rejection = ApiError;
 
-    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        let headers = try_outcome!(OrgHeaders::from_request(request).await);
-        if headers.org_user_type >= UserOrgType::Manager {
-            Outcome::Success(Self {
-                host: headers.host,
-                device: headers.device,
-                user: headers.user,
-                org_user: headers.org_user,
-                org_user_type: headers.org_user_type,
-                ip: headers.ip,
-            })
-        } else {
-            err_handler!("You need to be a Manager, Admin or Owner to call this endpoint")
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let headers = OrgHeaders::from_request_parts(parts, state).await?;
+        if headers.org_user_type < UserOrgType::Manager {
+            err!("You need to be Admin or Owner or Manager to call this endpoint")
         }
+        Ok(Self {
+            device: headers.device,
+            user: headers.user,
+            org_user: headers.org_user,
+            org_user_type: headers.org_user_type,
+            ip: headers.ip,
+        })
     }
 }
 
 impl From<ManagerHeadersLoose> for Headers {
     fn from(h: ManagerHeadersLoose) -> Headers {
         Headers {
-            host: h.host,
             device: h.device,
             user: h.user,
             ip: h.ip,
         }
     }
 }
-async fn can_access_collection(org_user: &UserOrganization, col_id: &str, conn: &mut DbConn) -> bool {
-    org_user.has_full_access()
-        || Collection::has_access_by_collection_and_user_uuid(col_id, &org_user.user_uuid, conn).await
-}
 
 impl ManagerHeaders {
-    pub async fn from_loose(
-        h: ManagerHeadersLoose,
-        collections: &Vec<String>,
-        conn: &mut DbConn,
-    ) -> Result<ManagerHeaders, Error> {
+    pub async fn from_loose(h: ManagerHeadersLoose, collections: &[Uuid], conn: &Conn) -> ApiResult<ManagerHeaders> {
         for col_id in collections {
-            if uuid::Uuid::parse_str(col_id).is_err() {
-                err!("Collection Id is malformed!");
-            }
-            if !can_access_collection(&h.org_user, col_id, conn).await {
-                err!("You don't have access to all collections!");
+            if Collection::find_by_uuid_and_user(&conn, *col_id, h.user.uuid).await?.is_none() {
+                err!("Collection not found");
             }
         }
 
         Ok(ManagerHeaders {
-            host: h.host,
             device: h.device,
             user: h.user,
             org_user_type: h.org_user_type,
@@ -759,64 +648,63 @@ impl ManagerHeaders {
     }
 }
 
-pub struct OwnerHeaders {
-    pub host: String,
+pub struct OrgOwnerHeaders {
     pub device: Device,
     pub user: User,
-    pub ip: ClientIp,
+    pub ip: IpAddr,
 }
 
-#[rocket::async_trait]
-impl<'r> FromRequest<'r> for OwnerHeaders {
-    type Error = &'static str;
+#[async_trait::async_trait]
+impl<S: Send + Sync> FromRequestParts<S> for OrgOwnerHeaders {
+    type Rejection = ApiError;
 
-    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        let headers = try_outcome!(OrgHeaders::from_request(request).await);
-        if headers.org_user_type == UserOrgType::Owner {
-            Outcome::Success(Self {
-                host: headers.host,
-                device: headers.device,
-                user: headers.user,
-                ip: headers.ip,
-            })
-        } else {
-            err_handler!("You need to be Owner to call this endpoint")
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let headers = OrgHeaders::from_request_parts(parts, state).await?;
+        if headers.org_user_type != UserOrgType::Owner {
+            err!("You need to be Owner to call this endpoint")
         }
+        Ok(Self {
+            device: headers.device,
+            user: headers.user,
+            ip: headers.ip,
+        })
     }
 }
 
 //
 // Client IP address detection
 //
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 
 pub struct ClientIp {
     pub ip: IpAddr,
 }
 
-#[rocket::async_trait]
-impl<'r> FromRequest<'r> for ClientIp {
-    type Error = ();
+#[async_trait::async_trait]
+impl<S: Send + Sync> FromRequestParts<S> for ClientIp {
+    type Rejection = ApiError;
 
-    async fn from_request(req: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        let ip = if CONFIG._ip_header_enabled() {
-            req.headers().get_one(&CONFIG.ip_header()).and_then(|ip| {
-                match ip.find(',') {
-                    Some(idx) => &ip[..idx],
-                    None => ip,
-                }
-                .parse()
-                .map_err(|_| warn!("'{}' header is malformed: {}", CONFIG.ip_header(), ip))
-                .ok()
-            })
-        } else {
-            None
-        };
+    async fn from_request_parts(req: &mut Parts, state: &S) -> ApiResult<Self> {
+        let ip = req.headers.get(&CONFIG.advanced.ip_header).and_then(|x| x.to_str().ok()).and_then(|ip| {
+            match ip.find(',') {
+                Some(idx) => &ip[..idx],
+                None => ip,
+            }
+            .parse()
+            .map_err(|_| warn!("'{}' header is malformed: {}", CONFIG.advanced.ip_header, ip))
+            .ok()
+        });
 
-        let ip = ip.or_else(|| req.remote().map(|r| r.ip())).unwrap_or_else(|| "0.0.0.0".parse().unwrap());
+        if let Some(ip) = ip {
+            return Ok(ClientIp {
+                ip,
+            });
+        }
 
-        Outcome::Success(ClientIp {
-            ip,
+        let info = ConnectInfo::<SocketAddr>::from_request_parts(req, state).await?;
+
+        Ok(ClientIp {
+            ip: info.0.ip(),
         })
     }
 }

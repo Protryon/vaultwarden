@@ -1,43 +1,65 @@
-use crate::db::DbConn;
-use serde_json::Value;
+use axum_util::errors::ApiResult;
+use serde_json::{json, Value};
+use serde_repr::{Deserialize_repr, Serialize_repr};
+use tokio_postgres::Row;
+use uuid::Uuid;
 
-use crate::{api::EmptyResult, error::MapResult, CONFIG};
+use crate::{db::Conn, CONFIG};
 
-use chrono::{Duration, NaiveDateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 
 // https://bitwarden.com/help/event-logs/
 
-db_object! {
-    // Upstream: https://github.com/bitwarden/server/blob/8a22c0479e987e756ce7412c48a732f9002f0a2d/src/Core/Services/Implementations/EventService.cs
-    // Upstream: https://github.com/bitwarden/server/blob/8a22c0479e987e756ce7412c48a732f9002f0a2d/src/Api/Models/Public/Response/EventResponseModel.cs
-    // Upstream SQL: https://github.com/bitwarden/server/blob/8a22c0479e987e756ce7412c48a732f9002f0a2d/src/Sql/dbo/Tables/Event.sql
-    #[derive(Identifiable, Queryable, Insertable, AsChangeset)]
-    #[diesel(table_name = event)]
-    #[diesel(primary_key(uuid))]
-    pub struct Event {
-        pub uuid: String,
-        pub event_type: i32, // EventType
-        pub user_uuid: Option<String>,
-        pub org_uuid: Option<String>,
-        pub cipher_uuid: Option<String>,
-        pub collection_uuid: Option<String>,
-        pub group_uuid: Option<String>,
-        pub org_user_uuid: Option<String>,
-        pub act_user_uuid: Option<String>,
-        // Upstream enum: https://github.com/bitwarden/server/blob/8a22c0479e987e756ce7412c48a732f9002f0a2d/src/Core/Enums/DeviceType.cs
-        pub device_type: Option<i32>,
-        pub ip_address: Option<String>,
-        pub event_date: NaiveDateTime,
-        pub policy_uuid: Option<String>,
-        pub provider_uuid: Option<String>,
-        pub provider_user_uuid: Option<String>,
-        pub provider_org_uuid: Option<String>,
+// Upstream: https://github.com/bitwarden/server/blob/8a22c0479e987e756ce7412c48a732f9002f0a2d/src/Core/Services/Implementations/EventService.cs
+// Upstream: https://github.com/bitwarden/server/blob/8a22c0479e987e756ce7412c48a732f9002f0a2d/src/Api/Models/Public/Response/EventResponseModel.cs
+// Upstream SQL: https://github.com/bitwarden/server/blob/8a22c0479e987e756ce7412c48a732f9002f0a2d/src/Sql/dbo/Tables/Event.sql
+#[derive(Debug)]
+pub struct Event {
+    pub uuid: Uuid,
+    pub event_type: EventType,
+    pub user_uuid: Option<Uuid>,
+    pub organization_uuid: Option<Uuid>,
+    pub cipher_uuid: Option<Uuid>,
+    pub collection_uuid: Option<Uuid>,
+    pub group_uuid: Option<Uuid>,
+    pub act_user_uuid: Option<Uuid>,
+    // Upstream enum: https://github.com/bitwarden/server/blob/8a22c0479e987e756ce7412c48a732f9002f0a2d/src/Core/Enums/DeviceType.cs
+    pub device_type: Option<i32>,
+    pub ip_address: Option<String>,
+    pub event_date: DateTime<Utc>,
+    pub policy_uuid: Option<Uuid>,
+    pub provider_uuid: Option<Uuid>,
+    pub provider_user_uuid: Option<Uuid>,
+    pub provider_organization_uuid: Option<Uuid>,
+}
+
+impl From<Row> for Event {
+    fn from(row: Row) -> Self {
+        Self {
+            uuid: row.get(0),
+            event_type: EventType::from_repr(row.get::<_, i32>(1)).unwrap_or(EventType::Unknown),
+            user_uuid: row.get(2),
+            organization_uuid: row.get(3),
+            cipher_uuid: row.get(4),
+            collection_uuid: row.get(5),
+            group_uuid: row.get(6),
+            act_user_uuid: row.get(7),
+            device_type: row.get(8),
+            ip_address: row.get(9),
+            event_date: row.get(10),
+            policy_uuid: row.get(11),
+            provider_uuid: row.get(12),
+            provider_user_uuid: row.get(13),
+            provider_organization_uuid: row.get(14),
+        }
     }
 }
 
 // Upstream enum: https://github.com/bitwarden/server/blob/8a22c0479e987e756ce7412c48a732f9002f0a2d/src/Core/Enums/EventType.cs
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, strum::FromRepr, Serialize_repr, Deserialize_repr)]
+#[repr(i32)]
 pub enum EventType {
+    Unknown = 0,
     // User
     UserLoggedIn = 1000,
     UserChangedPassword = 1001,
@@ -121,21 +143,20 @@ pub enum EventType {
 
 /// Local methods
 impl Event {
-    pub fn new(event_type: i32, event_date: Option<NaiveDateTime>) -> Self {
+    pub fn new(event_type: EventType, event_date: Option<DateTime<Utc>>) -> Self {
         let event_date = match event_date {
             Some(d) => d,
-            None => Utc::now().naive_utc(),
+            None => Utc::now(),
         };
 
         Self {
-            uuid: crate::util::get_uuid(),
+            uuid: Uuid::new_v4(),
             event_type,
             user_uuid: None,
-            org_uuid: None,
+            organization_uuid: None,
             cipher_uuid: None,
             collection_uuid: None,
             group_uuid: None,
-            org_user_uuid: None,
             act_user_uuid: None,
             device_type: None,
             ip_address: None,
@@ -143,7 +164,7 @@ impl Event {
             policy_uuid: None,
             provider_uuid: None,
             provider_user_uuid: None,
-            provider_org_uuid: None,
+            provider_organization_uuid: None,
         }
     }
 
@@ -151,13 +172,13 @@ impl Event {
         use crate::util::format_date;
 
         json!({
-            "type": self.event_type,
+            "type": self.event_type as i32,
             "userId": self.user_uuid,
-            "organizationId": self.org_uuid,
+            "organizationId": self.organization_uuid,
             "cipherId": self.cipher_uuid,
             "collectionId": self.collection_uuid,
             "groupId": self.group_uuid,
-            "organizationUserId": self.org_user_uuid,
+            "organizationUserId": self.user_uuid,
             "actingUserId": self.act_user_uuid,
             "date": format_date(&self.event_date),
             "deviceType": self.device_type,
@@ -165,165 +186,100 @@ impl Event {
             "policyId": self.policy_uuid,
             "providerId": self.provider_uuid,
             "providerUserId": self.provider_user_uuid,
-            "providerOrganizationId": self.provider_org_uuid,
+            "providerOrganizationId": self.provider_organization_uuid,
             // "installationId": null, // Not supported
         })
     }
 }
 
-/// Database methods
 /// https://github.com/bitwarden/server/blob/8a22c0479e987e756ce7412c48a732f9002f0a2d/src/Core/Services/Implementations/EventService.cs
 impl Event {
     pub const PAGE_SIZE: i64 = 30;
 
-    /// #############
-    /// Basic Queries
-    pub async fn save(&self, conn: &mut DbConn) -> EmptyResult {
-        db_run! { conn:
-            sqlite, mysql {
-                diesel::replace_into(event::table)
-                .values(EventDb::to_db(self))
-                .execute(conn)
-                .map_res("Error saving event")
-            }
-            postgresql {
-                diesel::insert_into(event::table)
-                .values(EventDb::to_db(self))
-                .on_conflict(event::uuid)
-                .do_update()
-                .set(EventDb::to_db(self))
-                .execute(conn)
-                .map_res("Error saving event")
-            }
+    pub async fn save(&self, conn: &Conn) -> ApiResult<()> {
+        conn.execute(r"INSERT INTO events (uuid, event_type, user_uuid, organization_uuid, cipher_uuid, collection_uuid, group_uuid, act_user_uuid, device_type, ip_address, event_date, policy_uuid, provider_uuid, provider_user_uuid, provider_organization_uuid) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)", &[
+            &self.uuid,
+            &(self.event_type as i32),
+            &self.user_uuid,
+            &self.organization_uuid,
+            &self.cipher_uuid,
+            &self.collection_uuid,
+            &self.group_uuid,
+            &self.act_user_uuid,
+            &self.device_type,
+            &self.ip_address,
+            &self.event_date,
+            &self.policy_uuid,
+            &self.provider_uuid,
+            &self.provider_user_uuid,
+            &self.provider_organization_uuid,
+        ]).await?;
+        Ok(())
+    }
+
+    pub async fn save_user_event(conn: &mut Conn, events: impl IntoIterator<Item = &Event>) -> ApiResult<()> {
+        let transaction = conn.transaction().await?;
+        for event in events {
+            event.save(transaction.client()).await?;
         }
+        transaction.commit().await?;
+        Ok(())
     }
 
-    pub async fn save_user_event(events: Vec<Event>, conn: &mut DbConn) -> EmptyResult {
-        // Special save function which is able to handle multiple events.
-        // SQLite doesn't support the DEFAULT argument, and does not support inserting multiple values at the same time.
-        // MySQL and PostgreSQL do.
-        // We also ignore duplicate if they ever will exists, else it could break the whole flow.
-        db_run! { conn:
-            // Unfortunately SQLite does not support inserting multiple records at the same time
-            // We loop through the events here and insert them one at a time.
-            sqlite {
-                for event in events {
-                    diesel::insert_or_ignore_into(event::table)
-                    .values(EventDb::to_db(&event))
-                    .execute(conn)
-                    .unwrap_or_default();
-                }
-                Ok(())
-            }
-            mysql {
-                let events: Vec<EventDb> = events.iter().map(EventDb::to_db).collect();
-                diesel::insert_or_ignore_into(event::table)
-                .values(&events)
-                .execute(conn)
-                .unwrap_or_default();
-                Ok(())
-            }
-            postgresql {
-                let events: Vec<EventDb> = events.iter().map(EventDb::to_db).collect();
-                diesel::insert_into(event::table)
-                .values(&events)
-                .on_conflict_do_nothing()
-                .execute(conn)
-                .unwrap_or_default();
-                Ok(())
-            }
-        }
+    pub async fn find_by_organization(conn: &Conn, organization_uuid: Uuid, start: DateTime<Utc>, end: DateTime<Utc>) -> ApiResult<Vec<Self>> {
+        Ok(conn
+            .query(
+                r"SELECT * FROM events WHERE organization_uuid = $1 AND event_date BETWEEN $2 AND $3 ORDER BY event_date DESC LIMIT $4",
+                &[&organization_uuid, &start, &end, &Self::PAGE_SIZE],
+            )
+            .await?
+            .into_iter()
+            .map(|x| x.into())
+            .collect())
     }
 
-    pub async fn delete(self, conn: &mut DbConn) -> EmptyResult {
-        db_run! { conn: {
-            diesel::delete(event::table.filter(event::uuid.eq(self.uuid)))
-                .execute(conn)
-                .map_res("Error deleting event")
-        }}
+    pub async fn count_by_organization(conn: &Conn, organization_uuid: Uuid) -> ApiResult<i64> {
+        let row = conn
+            .query_one(
+                r"
+            SELECT count(1)
+            FROM events
+            WHERE events.organization_uuid = $1
+        ",
+                &[&organization_uuid],
+            )
+            .await?;
+        Ok(row.get(0))
     }
 
-    /// ##############
-    /// Custom Queries
-    pub async fn find_by_organization_uuid(
-        org_uuid: &str,
-        start: &NaiveDateTime,
-        end: &NaiveDateTime,
-        conn: &mut DbConn,
-    ) -> Vec<Self> {
-        db_run! { conn: {
-            event::table
-                .filter(event::org_uuid.eq(org_uuid))
-                .filter(event::event_date.between(start, end))
-                .order_by(event::event_date.desc())
-                .limit(Self::PAGE_SIZE)
-                .load::<EventDb>(conn)
-                .expect("Error filtering events")
-                .from_db()
-        }}
+    pub async fn find_by_organization_and_user(
+        conn: &Conn,
+        organization_uuid: Uuid,
+        user_uuid: Uuid,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> ApiResult<Vec<Self>> {
+        Ok(conn.query(r"SELECT * FROM events WHERE organization_uuid = $1 AND event.user_uuid = $5 OR event.act_user_id = $5 AND event_date BETWEEN $2 AND $3 ORDER BY event_date DESC LIMIT $4", &[&organization_uuid, &start, &end, &Self::PAGE_SIZE, &user_uuid]).await?.into_iter().map(|x| x.into()).collect())
     }
 
-    pub async fn count_by_org(org_uuid: &str, conn: &mut DbConn) -> i64 {
-        db_run! { conn: {
-            event::table
-                .filter(event::org_uuid.eq(org_uuid))
-                .count()
-                .first::<i64>(conn)
-                .ok()
-                .unwrap_or(0)
-        }}
+    pub async fn find_by_cipher(conn: &Conn, cipher_uuid: Uuid, start: DateTime<Utc>, end: DateTime<Utc>) -> ApiResult<Vec<Self>> {
+        Ok(conn
+            .query(
+                r"SELECT * FROM events WHERE cipher_uuid = $1 AND event_date BETWEEN $2 AND $3 ORDER BY event_date DESC LIMIT $4",
+                &[&cipher_uuid, &start, &end, &Self::PAGE_SIZE],
+            )
+            .await?
+            .into_iter()
+            .map(|x| x.into())
+            .collect())
     }
 
-    pub async fn find_by_org_and_user_org(
-        org_uuid: &str,
-        user_org_uuid: &str,
-        start: &NaiveDateTime,
-        end: &NaiveDateTime,
-        conn: &mut DbConn,
-    ) -> Vec<Self> {
-        db_run! { conn: {
-            event::table
-                .inner_join(users_organizations::table.on(users_organizations::uuid.eq(user_org_uuid)))
-                .filter(event::org_uuid.eq(org_uuid))
-                .filter(event::event_date.between(start, end))
-                .filter(event::user_uuid.eq(users_organizations::user_uuid.nullable()).or(event::act_user_uuid.eq(users_organizations::user_uuid.nullable())))
-                .select(event::all_columns)
-                .order_by(event::event_date.desc())
-                .limit(Self::PAGE_SIZE)
-                .load::<EventDb>(conn)
-                .expect("Error filtering events")
-                .from_db()
-        }}
-    }
-
-    pub async fn find_by_cipher_uuid(
-        cipher_uuid: &str,
-        start: &NaiveDateTime,
-        end: &NaiveDateTime,
-        conn: &mut DbConn,
-    ) -> Vec<Self> {
-        db_run! { conn: {
-            event::table
-                .filter(event::cipher_uuid.eq(cipher_uuid))
-                .filter(event::event_date.between(start, end))
-                .order_by(event::event_date.desc())
-                .limit(Self::PAGE_SIZE)
-                .load::<EventDb>(conn)
-                .expect("Error filtering events")
-                .from_db()
-        }}
-    }
-
-    pub async fn clean_events(conn: &mut DbConn) -> EmptyResult {
-        if let Some(days_to_retain) = CONFIG.events_days_retain() {
-            let dt = Utc::now().naive_utc() - Duration::days(days_to_retain);
-            db_run! { conn: {
-                diesel::delete(event::table.filter(event::event_date.lt(dt)))
-                .execute(conn)
-                .map_res("Error cleaning old events")
-            }}
-        } else {
-            Ok(())
-        }
+    pub async fn clean_events(conn: &Conn) -> ApiResult<()> {
+        let Some(days_to_retain) = CONFIG.settings.events_days_retain else {
+            return Ok(());
+        };
+        let min_date = Utc::now() - Duration::days(days_to_retain);
+        conn.execute(r"DELETE FROM events WHERE event_date < $1", &[&min_date]).await?;
+        Ok(())
     }
 }

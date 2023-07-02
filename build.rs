@@ -2,28 +2,9 @@ use std::env;
 use std::process::Command;
 
 fn main() {
-    // This allow using #[cfg(sqlite)] instead of #[cfg(feature = "sqlite")], which helps when trying to add them through macros
-    #[cfg(feature = "sqlite")]
-    println!("cargo:rustc-cfg=sqlite");
-    #[cfg(feature = "mysql")]
-    println!("cargo:rustc-cfg=mysql");
-    #[cfg(feature = "postgresql")]
-    println!("cargo:rustc-cfg=postgresql");
-    #[cfg(feature = "query_logger")]
-    println!("cargo:rustc-cfg=query_logger");
-
-    #[cfg(not(any(feature = "sqlite", feature = "mysql", feature = "postgresql")))]
-    compile_error!(
-        "You need to enable one DB backend. To build with previous defaults do: cargo build --features sqlite"
-    );
-
-    #[cfg(all(not(debug_assertions), feature = "query_logger"))]
-    compile_error!("Query Logging is only allowed during development, it is not intented for production usage!");
-
     // Support $BWRS_VERSION for legacy compatibility, but default to $VW_VERSION.
     // If neither exist, read from git.
-    let maybe_vaultwarden_version =
-        env::var("VW_VERSION").or_else(|_| env::var("BWRS_VERSION")).or_else(|_| version_from_git_info());
+    let maybe_vaultwarden_version = env::var("VW_VERSION").or_else(|_| env::var("BWRS_VERSION")).or_else(|_| version_from_git_info());
 
     if let Ok(version) = maybe_vaultwarden_version {
         println!("cargo:rustc-env=VW_VERSION={version}");
