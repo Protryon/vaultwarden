@@ -21,7 +21,7 @@ use crate::{
     events::log_user_event,
     mail,
     push::{register_push_device, unregister_push_device},
-    util::{Upcase, AutoTxn},
+    util::{AutoTxn, Upcase},
     CONFIG,
 };
 

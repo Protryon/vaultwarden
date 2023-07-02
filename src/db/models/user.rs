@@ -251,7 +251,8 @@ impl User {
     }
 
     pub async fn flag_revision_for(conn: &Conn, uuid: Uuid) -> ApiResult<()> {
-        conn.execute(r"INSERT INTO user_revisions (uuid, updated_at) VALUES ($1, now()) ON CONFLICT (uuid) DO UPDATE SET uuid = EXCLUDED.uuid", &[&uuid]).await?;
+        conn.execute(r"INSERT INTO user_revisions (uuid, updated_at) VALUES ($1, now()) ON CONFLICT (uuid) DO UPDATE SET uuid = EXCLUDED.uuid", &[&uuid])
+            .await?;
         Ok(())
     }
 

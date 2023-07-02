@@ -5,7 +5,8 @@ use std::{io::ErrorKind, ops::Deref};
 
 use axum::{
     body::BoxBody,
-    response::{IntoResponseParts, Response}, extract::FromRequestParts,
+    extract::FromRequestParts,
+    response::{IntoResponseParts, Response},
 };
 use axum_util::{
     errors::{ApiError, ApiResult},
@@ -15,7 +16,11 @@ use http::request::Parts;
 use log::error;
 use tokio::{fs::File, io::AsyncWriteExt, time::Duration};
 
-use crate::{config::ICON_SERVICE_CSP, CONFIG, db::{Conn, DB, ConnOwned}};
+use crate::{
+    config::ICON_SERVICE_CSP,
+    db::{Conn, ConnOwned, DB},
+    CONFIG,
+};
 
 #[derive(Clone)]
 pub struct AppHeaders;

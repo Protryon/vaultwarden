@@ -21,7 +21,7 @@ use crate::{
         UserOrganization, DB,
     },
     events::log_event,
-    util::{Upcase, AutoTxn},
+    util::{AutoTxn, Upcase},
     CONFIG,
 };
 
@@ -611,9 +611,7 @@ pub async fn post_collections(conn: AutoTxn, Path(uuid): Path<Uuid>, headers: He
 
     let users = cipher.get_auth_users(&conn).await?;
 
-    ws_users()
-        .send_cipher_update(UpdateType::SyncCipherUpdate, &cipher, &users, headers.device.uuid, Some(Vec::from_iter(posted_collections)), &conn)
-        .await?;
+    ws_users().send_cipher_update(UpdateType::SyncCipherUpdate, &cipher, &users, headers.device.uuid, Some(Vec::from_iter(posted_collections)), &conn).await?;
 
     Ok(())
 }
@@ -930,7 +928,12 @@ pub async fn post_attachment(conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Hea
     Ok(out)
 }
 
-pub async fn post_attachment_share(conn: AutoTxn, Path(path): Path<AttachmentPath>, headers: Headers, data: TypedMultipart<UploadData>) -> ApiResult<Json<Value>> {
+pub async fn post_attachment_share(
+    conn: AutoTxn,
+    Path(path): Path<AttachmentPath>,
+    headers: Headers,
+    data: TypedMultipart<UploadData>,
+) -> ApiResult<Json<Value>> {
     _delete_cipher_attachment_by_id(path.uuid, path.attachment_id, &headers, &conn).await?;
     let out = do_attachment_post(&conn, path.uuid, headers, data).await?;
     conn.commit().await?;
@@ -1028,7 +1031,12 @@ pub struct OrganizationId {
     organization_id: Uuid,
 }
 
-pub async fn delete_all(conn: AutoTxn, Query(organization): Query<Option<OrganizationId>>, headers: Headers, data: Json<Upcase<PasswordData>>) -> ApiResult<()> {
+pub async fn delete_all(
+    conn: AutoTxn,
+    Query(organization): Query<Option<OrganizationId>>,
+    headers: Headers,
+    data: Json<Upcase<PasswordData>>,
+) -> ApiResult<()> {
     let data: PasswordData = data.0.data;
     let password_hash = data.master_password_hash;
 

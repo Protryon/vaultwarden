@@ -21,7 +21,7 @@ use crate::{
     api::{ws_users, ApiResult, OutHeader, UpdateType},
     auth::{ClientIp, Headers},
     db::{Attachment, Conn, OrgPolicyType, OrganizationPolicy, Send, SendType, DB},
-    util::{Upcase, AutoTxn},
+    util::{AutoTxn, Upcase},
     CONFIG,
 };
 
@@ -323,7 +323,12 @@ struct SendFilePath {
 }
 
 // https://github.com/bitwarden/server/blob/d0c793c95181dfb1b447eb450f85ba0bfd7ef643/src/Api/Controllers/SendsController.cs#L243
-async fn post_send_file_v2_data(conn: AutoTxn, Path(path): Path<SendFilePath>, headers: Headers, TypedMultipart(data): TypedMultipart<UploadDataV2>) -> ApiResult<()> {
+async fn post_send_file_v2_data(
+    conn: AutoTxn,
+    Path(path): Path<SendFilePath>,
+    headers: Headers,
+    TypedMultipart(data): TypedMultipart<UploadDataV2>,
+) -> ApiResult<()> {
     enforce_disable_send_policy(&headers, &conn).await?;
 
     //TODO: disable overwriting of already existing file? atomic file replacement?

@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::db::Conn;
 
-use super::{User, Collection};
+use super::{Collection, User};
 
 pub struct Group {
     pub uuid: Uuid,
@@ -185,7 +185,8 @@ impl Group {
     }
 
     pub async fn flag_revision(conn: &Conn, uuid: Uuid) -> ApiResult<()> {
-        conn.execute(r"UPDATE user_revisions u SET updated_at = now() FROM group_users gu WHERE gu.group_uuid = $1 AND gu.user_uuid = u.uuid", &[&uuid]).await?;
+        conn.execute(r"UPDATE user_revisions u SET updated_at = now() FROM group_users gu WHERE gu.group_uuid = $1 AND gu.user_uuid = u.uuid", &[&uuid])
+            .await?;
         Ok(())
     }
 

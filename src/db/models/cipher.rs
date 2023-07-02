@@ -272,7 +272,11 @@ impl Cipher {
     }
 
     pub async fn flag_revision(conn: &Conn, uuid: Uuid) -> ApiResult<()> {
-        conn.execute(r"UPDATE user_revisions u SET updated_at = now() FROM user_cipher_auth uca WHERE uca.cipher_uuid = $1 AND uca.user_uuid = u.uuid", &[&uuid]).await?;
+        conn.execute(
+            r"UPDATE user_revisions u SET updated_at = now() FROM user_cipher_auth uca WHERE uca.cipher_uuid = $1 AND uca.user_uuid = u.uuid",
+            &[&uuid],
+        )
+        .await?;
         Ok(())
     }
 

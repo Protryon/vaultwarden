@@ -13,7 +13,7 @@ use crate::{
     error::MapResult,
     events::log_user_event,
     mail,
-    util::{Upcase, AutoTxn},
+    util::{AutoTxn, Upcase},
     CONFIG,
 };
 

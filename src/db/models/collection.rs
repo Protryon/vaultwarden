@@ -105,7 +105,11 @@ impl Collection {
     }
 
     pub async fn flag_revision(conn: &Conn, uuid: Uuid) -> ApiResult<()> {
-        conn.execute(r"UPDATE user_revisions u SET updated_at = now() FROM user_collection_auth uca WHERE uca.collection_uuid = $1 AND uca.user_uuid = u.uuid", &[&uuid]).await?;
+        conn.execute(
+            r"UPDATE user_revisions u SET updated_at = now() FROM user_collection_auth uca WHERE uca.collection_uuid = $1 AND uca.user_uuid = u.uuid",
+            &[&uuid],
+        )
+        .await?;
         Ok(())
     }
 

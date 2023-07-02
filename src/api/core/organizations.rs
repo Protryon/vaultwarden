@@ -18,7 +18,7 @@ use crate::db::{
     Organization, OrganizationApiKey, OrganizationPolicy, TwoFactor, User, UserOrgStatus, UserOrgType, UserOrganization, DB,
 };
 use crate::events::log_event;
-use crate::util::{Upcase, AutoTxn};
+use crate::util::{AutoTxn, Upcase};
 use crate::{error::Error, mail, util::convert_json_key_lcase_first, CONFIG};
 
 pub fn route(router: Router) -> Router {
@@ -1583,7 +1583,6 @@ async fn put_policy(
     headers: OrgAdminHeaders,
     Json(data): Json<PolicyData>,
 ) -> ApiResult<Json<Value>> {
-
     // When enabling the TwoFactorAuthentication policy, remove this org's members that do have 2FA
     if pol_type == OrgPolicyType::TwoFactorAuthentication && data.enabled {
         for member in UserOrganization::find_by_org(&conn, org_uuid).await?.into_iter() {
@@ -1833,7 +1832,12 @@ async fn import(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHead
     Ok(())
 }
 
-async fn bulk_revoke_organization_user(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<Value>>) -> ApiResult<Json<Value>> {
+async fn bulk_revoke_organization_user(
+    conn: AutoTxn,
+    Path(org_uuid): Path<Uuid>,
+    headers: OrgAdminHeaders,
+    data: Json<Upcase<Value>>,
+) -> ApiResult<Json<Value>> {
     let data = data.0.data;
 
     let mut bulk_response = Vec::new();
@@ -1908,7 +1912,12 @@ async fn _revoke_organization_user(org_uuid: Uuid, user_id: Uuid, headers: &OrgA
     Ok(())
 }
 
-async fn bulk_restore_organization_user(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<Value>>) -> ApiResult<Json<Value>> {
+async fn bulk_restore_organization_user(
+    conn: AutoTxn,
+    Path(org_uuid): Path<Uuid>,
+    headers: OrgAdminHeaders,
+    data: Json<Upcase<Value>>,
+) -> ApiResult<Json<Value>> {
     let data = data.0.data;
 
     let mut bulk_response = Vec::new();

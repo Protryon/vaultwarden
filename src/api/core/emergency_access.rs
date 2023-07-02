@@ -13,7 +13,7 @@ use crate::{
         UserOrganization, DB,
     },
     mail,
-    util::{Upcase, AutoTxn},
+    util::{AutoTxn, Upcase},
     CONFIG,
 };
 
@@ -547,7 +547,12 @@ struct EmergencyAccessPasswordData {
     key: String,
 }
 
-async fn password_emergency_access(conn: AutoTxn, Path(emergency_id): Path<Uuid>, headers: Headers, data: Json<Upcase<EmergencyAccessPasswordData>>) -> ApiResult<()> {
+async fn password_emergency_access(
+    conn: AutoTxn,
+    Path(emergency_id): Path<Uuid>,
+    headers: Headers,
+    data: Json<Upcase<EmergencyAccessPasswordData>>,
+) -> ApiResult<()> {
     check_emergency_access_allowed()?;
 
     let data: EmergencyAccessPasswordData = data.0.data;

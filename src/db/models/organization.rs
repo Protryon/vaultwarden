@@ -259,7 +259,11 @@ impl Organization {
     }
 
     pub async fn flag_revision(conn: &Conn, uuid: Uuid) -> ApiResult<()> {
-        conn.execute(r"UPDATE user_revisions u SET updated_at = now() FROM user_organizations uo WHERE uo.organization_uuid = $1 AND uo.user_uuid = u.uuid", &[&uuid]).await?;
+        conn.execute(
+            r"UPDATE user_revisions u SET updated_at = now() FROM user_organizations uo WHERE uo.organization_uuid = $1 AND uo.user_uuid = u.uuid",
+            &[&uuid],
+        )
+        .await?;
         Ok(())
     }
 

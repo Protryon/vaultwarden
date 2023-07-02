@@ -12,7 +12,7 @@ use crate::{
     auth,
     db::{Group, GroupUser, Invitation, Organization, OrganizationApiKey, User, UserOrgStatus, UserOrgType, UserOrganization, DB},
     mail,
-    util::{Upcase, AutoTxn},
+    util::{AutoTxn, Upcase},
     CONFIG,
 };
 
