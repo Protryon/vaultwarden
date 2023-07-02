@@ -29,7 +29,7 @@ use crate::{
     events::log_event,
     mail,
     push::unregister_push_device,
-    util::{docker_base_image, format_naive_datetime_local, get_display_size, get_reqwest_client, is_running_in_docker},
+    util::{docker_base_image, format_naive_datetime_local, get_display_size, get_reqwest_client, is_running_in_docker, AutoTxn},
     CONFIG, VERSION,
 };
 
@@ -527,15 +527,12 @@ async fn get_user_json(Path(uuid): Path<Uuid>, _token: AdminToken) -> ApiResult<
     Ok(Json(usr))
 }
 
-async fn delete_user(Path(uuid): Path<Uuid>, token: AdminToken) -> ApiResult<()> {
-    let mut conn = DB.get().await?;
+async fn delete_user(Path(uuid): Path<Uuid>, token: AdminToken, conn: AutoTxn) -> ApiResult<()> {
     let user = get_user_or_404(uuid, &conn).await?;
 
-    let txn = conn.transaction().await?;
-
     // Get the user_org records before deleting the actual user
-    let user_orgs = UserOrganization::find_by_user(txn.client(), uuid).await?;
-    user.delete(txn.client()).await?;
+    let user_orgs = UserOrganization::find_by_user(&conn, uuid).await?;
+    user.delete(&conn).await?;
 
     for user_org in user_orgs {
         log_event(
@@ -546,11 +543,11 @@ async fn delete_user(Path(uuid): Path<Uuid>, token: AdminToken) -> ApiResult<()>
             14, // Use UnknownBrowser type
             Utc::now(),
             token.ip.ip,
-            txn.client(),
+            &conn,
         )
         .await?;
     }
-    txn.commit().await?;
+    conn.commit().await?;
 
     Ok(())
 }
@@ -599,17 +596,13 @@ async fn enable_user(Path(uuid): Path<Uuid>, _token: AdminToken) -> ApiResult<()
     user.save(&conn).await
 }
 
-async fn remove_2fa(Path(uuid): Path<Uuid>, _token: AdminToken) -> ApiResult<()> {
-    let mut conn = DB.get().await?;
-
-    let txn = conn.transaction().await?;
-
-    let mut user = get_user_or_404(uuid, txn.client()).await?;
-    TwoFactor::delete_all_by_user(txn.client(), user.uuid).await?;
+async fn remove_2fa(Path(uuid): Path<Uuid>, _token: AdminToken, conn: AutoTxn) -> ApiResult<()> {
+    let mut user = get_user_or_404(uuid, &conn).await?;
+    TwoFactor::delete_all_by_user(&conn, user.uuid).await?;
     user.totp_recover = None;
-    user.save(txn.client()).await?;
+    user.save(&conn).await?;
 
-    txn.commit().await?;
+    conn.commit().await?;
     Ok(())
 }
 

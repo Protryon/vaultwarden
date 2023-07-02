@@ -21,7 +21,7 @@ use crate::{
     api::{ws_users, ApiResult, OutHeader, UpdateType},
     auth::{ClientIp, Headers},
     db::{Attachment, Conn, OrgPolicyType, OrganizationPolicy, Send, SendType, DB},
-    util::Upcase,
+    util::{Upcase, AutoTxn},
     CONFIG,
 };
 
@@ -210,11 +210,8 @@ pub struct UploadDataV2 {
 // @deprecated Mar 25 2021: This method has been deprecated in favor of direct uploads (v2).
 // This method still exists to support older clients, probably need to remove it sometime.
 // Upstream: https://github.com/bitwarden/server/blob/d0c793c95181dfb1b447eb450f85ba0bfd7ef643/src/Api/Controllers/SendsController.cs#L164-L167
-async fn post_send_file(headers: Headers, data: TypedMultipart<UploadData>) -> ApiResult<Json<Value>> {
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
-    enforce_disable_send_policy(&headers, conn).await?;
+async fn post_send_file(conn: AutoTxn, headers: Headers, data: TypedMultipart<UploadData>) -> ApiResult<Json<Value>> {
+    enforce_disable_send_policy(&headers, &conn).await?;
 
     let UploadData {
         model,
@@ -222,12 +219,12 @@ async fn post_send_file(headers: Headers, data: TypedMultipart<UploadData>) -> A
     } = data.0;
     let model = model.0.data;
 
-    enforce_disable_hide_email_policy(&model, &headers, conn).await?;
+    enforce_disable_hide_email_policy(&model, &headers, &conn).await?;
 
     let size_limit = match CONFIG.settings.user_attachment_limit {
         Some(0) => err!("File uploads are disabled"),
         Some(limit_kb) => {
-            let left = (limit_kb * 1024) - Attachment::size_count_by_user(conn, headers.user.uuid).await?.0;
+            let left = (limit_kb * 1024) - Attachment::size_count_by_user(&conn, headers.user.uuid).await?.0;
             if left <= 0 {
                 err!("Attachment storage limit reached! Delete some attachments to free up space")
             }
@@ -261,7 +258,7 @@ async fn post_send_file(headers: Headers, data: TypedMultipart<UploadData>) -> A
 
     send.save(&conn).await?;
     ws_users().send_send_update(UpdateType::SyncSendCreate, &send, &[headers.user.uuid], headers.device.uuid, &conn).await?;
-    txn.commit().await?;
+    conn.commit().await?;
 
     Ok(Json(send.to_json()))
 }
@@ -326,16 +323,12 @@ struct SendFilePath {
 }
 
 // https://github.com/bitwarden/server/blob/d0c793c95181dfb1b447eb450f85ba0bfd7ef643/src/Api/Controllers/SendsController.cs#L243
-async fn post_send_file_v2_data(Path(path): Path<SendFilePath>, headers: Headers, TypedMultipart(data): TypedMultipart<UploadDataV2>) -> ApiResult<()> {
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
-
-    enforce_disable_send_policy(&headers, conn).await?;
+async fn post_send_file_v2_data(conn: AutoTxn, Path(path): Path<SendFilePath>, headers: Headers, TypedMultipart(data): TypedMultipart<UploadDataV2>) -> ApiResult<()> {
+    enforce_disable_send_policy(&headers, &conn).await?;
 
     //TODO: disable overwriting of already existing file? atomic file replacement?
 
-    let Some(mut send) = Send::get_for_user(conn, path.uuid, headers.user.uuid).await? else {
+    let Some(mut send) = Send::get_for_user(&conn, path.uuid, headers.user.uuid).await? else {
         err!("Send not found. Unable to save the file.");
     };
 
@@ -345,11 +338,11 @@ async fn post_send_file_v2_data(Path(path): Path<SendFilePath>, headers: Headers
 
     tokio::fs::write(&file_path, &data.data.contents).await?;
 
-    send.save(conn).await?;
+    send.save(&conn).await?;
 
     ws_users().send_send_update(UpdateType::SyncSendCreate, &send, &[send.user_uuid.unwrap()], headers.device.uuid, &conn).await?;
 
-    txn.commit().await?;
+    conn.commit().await?;
 
     Ok(())
 }

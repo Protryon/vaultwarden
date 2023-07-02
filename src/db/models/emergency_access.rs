@@ -184,6 +184,10 @@ impl EmergencyAccess {
             &self.updated_at,
             &self.created_at,
         ]).await?;
+        User::flag_revision_for(conn, self.grantor_uuid).await?;
+        if let Some(grantee) = self.grantee_uuid {
+            User::flag_revision_for(conn, grantee).await?;
+        }
         Ok(())
     }
 
@@ -191,6 +195,10 @@ impl EmergencyAccess {
         self.status = status;
         self.updated_at = date;
 
+        User::flag_revision_for(conn, self.grantor_uuid).await?;
+        if let Some(grantee) = self.grantee_uuid {
+            User::flag_revision_for(conn, grantee).await?;
+        }
         conn.execute(r"UPDATE emergency_access SET status = $1, updated_at = $2 WHERE uuid = $3", &[&(self.status as i32), &self.updated_at, &self.uuid])
             .await?;
         Ok(())
@@ -200,6 +208,10 @@ impl EmergencyAccess {
         self.last_notification_at = Some(date);
         self.updated_at = date;
 
+        User::flag_revision_for(conn, self.grantor_uuid).await?;
+        if let Some(grantee) = self.grantee_uuid {
+            User::flag_revision_for(conn, grantee).await?;
+        }
         conn.execute(
             r"UPDATE emergency_access SET last_notification_at = $1, updated_at = $2 WHERE uuid = $3",
             &[&self.last_notification_at, &self.updated_at, &self.uuid],
@@ -209,6 +221,10 @@ impl EmergencyAccess {
     }
 
     pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
+        User::flag_revision_for(conn, self.grantor_uuid).await?;
+        if let Some(grantee) = self.grantee_uuid {
+            User::flag_revision_for(conn, grantee).await?;
+        }
         conn.execute(r"DELETE FROM emergency_access WHERE uuid = $1", &[&self.uuid]).await?;
         Ok(())
     }

@@ -18,7 +18,7 @@ use crate::db::{
     Organization, OrganizationApiKey, OrganizationPolicy, TwoFactor, User, UserOrgStatus, UserOrgType, UserOrganization, DB,
 };
 use crate::events::log_event;
-use crate::util::Upcase;
+use crate::util::{Upcase, AutoTxn};
 use crate::{error::Error, mail, util::convert_json_key_lcase_first, CONFIG};
 
 pub fn route(router: Router) -> Router {
@@ -154,13 +154,10 @@ struct OrgBulkIds {
     ids: Vec<Uuid>,
 }
 
-async fn create_organization(headers: Headers, data: Json<Upcase<OrgData>>) -> ApiResult<Json<Value>> {
+async fn create_organization(conn: AutoTxn, headers: Headers, data: Json<Upcase<OrgData>>) -> ApiResult<Json<Value>> {
     if !CONFIG.is_org_creation_allowed(&headers.user.email) {
         err!("User not allowed to create organizations")
     }
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
 
     if OrganizationPolicy::is_applicable_to_user(&conn, headers.user.uuid, OrgPolicyType::SingleOrg, None).await? {
         err!(
@@ -189,7 +186,7 @@ async fn create_organization(headers: Headers, data: Json<Upcase<OrgData>>) -> A
     user_org.save(&conn).await?;
     collection.save(&conn).await?;
 
-    txn.commit().await?;
+    conn.commit().await?;
 
     Ok(Json(org.to_json()))
 }
@@ -358,14 +355,12 @@ async fn _get_org_collections(conn: &Conn, org_uuid: Uuid) -> ApiResult<Value> {
 }
 
 async fn post_organization_collections(
+    conn: AutoTxn,
     Path(org_uuid): Path<Uuid>,
     headers: ManagerHeadersLoose,
     data: Json<Upcase<NewCollectionData>>,
 ) -> ApiResult<Json<Value>> {
     let data: NewCollectionData = data.0.data;
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
 
     let org = match Organization::get(&conn, org_uuid).await? {
         Some(organization) => organization,
@@ -402,7 +397,7 @@ async fn post_organization_collections(
         .await?;
     }
 
-    txn.commit().await?;
+    conn.commit().await?;
 
     Ok(Json(collection.to_json()))
 }
@@ -427,6 +422,7 @@ struct OrgColUserId {
 }
 
 async fn post_organization_collection_update(
+    conn: AutoTxn,
     Path(OrgColId {
         org_uuid,
         col_id,
@@ -435,9 +431,6 @@ async fn post_organization_collection_update(
     data: Json<Upcase<NewCollectionData>>,
 ) -> ApiResult<Json<Value>> {
     let data: NewCollectionData = data.0.data;
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
 
     let org = match Organization::get(&conn, org_uuid).await? {
         Some(organization) => organization,
@@ -454,13 +447,13 @@ async fn post_organization_collection_update(
 
     log_event(EventType::CollectionUpdated, collection.uuid, org_uuid, headers.user.uuid, headers.device.atype, Utc::now(), headers.ip, &conn).await?;
 
-    CollectionGroup::delete_all_by_collection(conn, col_id).await?;
+    CollectionGroup::delete_all_by_collection(&conn, col_id).await?;
 
     for group in data.groups {
         CollectionGroup::new(col_id, group.id, group.read_only, group.hide_passwords).save(&conn).await?;
     }
 
-    CollectionUser::delete_all_by_collection(conn, col_id).await?;
+    CollectionUser::delete_all_by_collection(&conn, col_id).await?;
 
     for user in data.users {
         //todo
@@ -483,7 +476,7 @@ async fn post_organization_collection_update(
         .await?;
     }
 
-    txn.commit().await?;
+    conn.commit().await?;
 
     Ok(Json(collection.to_json()))
 }
@@ -681,6 +674,7 @@ async fn get_collection_users(
 }
 
 async fn put_collection_users(
+    conn: AutoTxn,
     Path(OrgColId {
         org_uuid,
         col_id,
@@ -688,9 +682,6 @@ async fn put_collection_users(
     _headers: ManagerHeaders,
     data: Json<Vec<Upcase<CollectionData>>>,
 ) -> ApiResult<()> {
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
     // Get org and collection, check that collection is from org
     if Collection::find_by_uuid_and_org(&conn, col_id, org_uuid).await?.is_none() {
         err!("Collection not found in Organization")
@@ -720,7 +711,7 @@ async fn put_collection_users(
         .await?;
     }
 
-    txn.commit().await?;
+    conn.commit().await?;
 
     Ok(())
 }
@@ -819,15 +810,12 @@ struct InviteData {
     access_all: Option<bool>,
 }
 
-async fn send_invite(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<InviteData>>) -> ApiResult<()> {
+async fn send_invite(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<InviteData>>) -> ApiResult<()> {
     let data: InviteData = data.0.data;
 
     if data.r#type != UserOrgType::User && headers.org_user_type != UserOrgType::Owner {
         err!("Only Owners can invite Managers, Admins or Owners")
     }
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
 
     for email in data.emails.iter() {
         let email = email.to_lowercase();
@@ -1219,6 +1207,7 @@ struct EditUserData {
 }
 
 async fn edit_user(
+    conn: AutoTxn,
     Path(OrgUserId {
         org_uuid,
         user_id,
@@ -1227,10 +1216,6 @@ async fn edit_user(
     data: Json<Upcase<EditUserData>>,
 ) -> ApiResult<()> {
     let data: EditUserData = data.0.data;
-
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
 
     let mut user_to_edit = match UserOrganization::get(&conn, user_id, org_uuid).await? {
         Some(user) => user,
@@ -1274,7 +1259,7 @@ async fn edit_user(
 
     // Delete all the odd collections
     //TODO: fix this N+1
-    for c in CollectionUser::find_by_organization_and_user_uuid(conn, org_uuid, user_to_edit.user_uuid).await? {
+    for c in CollectionUser::find_by_organization_and_user_uuid(&conn, org_uuid, user_to_edit.user_uuid).await? {
         c.delete(&conn).await?;
     }
 
@@ -1297,7 +1282,7 @@ async fn edit_user(
         }
     }
 
-    GroupUser::delete_all_by_user(conn, user_to_edit.user_uuid, user_to_edit.organization_uuid).await?;
+    GroupUser::delete_all_by_user(&conn, user_to_edit.user_uuid, user_to_edit.organization_uuid).await?;
 
     for group in data.groups.iter().flatten() {
         let group_entry = GroupUser::new(*group, user_to_edit.user_uuid);
@@ -1309,7 +1294,7 @@ async fn edit_user(
 
     user_to_edit.save(&conn).await?;
 
-    txn.commit().await?;
+    conn.commit().await?;
     Ok(())
 }
 
@@ -1389,11 +1374,8 @@ async fn _delete_user(
     user_to_delete.delete(&conn).await
 }
 
-async fn bulk_public_keys(Path(org_uuid): Path<Uuid>, _headers: OrgAdminHeaders, data: Json<Upcase<OrgBulkIds>>) -> ApiResult<Json<Value>> {
+async fn bulk_public_keys(conn: AutoTxn, Path(org_uuid): Path<Uuid>, _headers: OrgAdminHeaders, data: Json<Upcase<OrgBulkIds>>) -> ApiResult<Json<Value>> {
     let data: OrgBulkIds = data.0.data;
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
 
     let mut bulk_response = Vec::new();
     // Check all received UserOrg UUID's and find the matching User to retreive the public-key.
@@ -1402,7 +1384,7 @@ async fn bulk_public_keys(Path(org_uuid): Path<Uuid>, _headers: OrgAdminHeaders,
     //TODO: N+1 query
     for user_id in data.ids {
         match UserOrganization::get(&conn, user_id, org_uuid).await? {
-            Some(user_org) => match User::get(conn, user_org.user_uuid).await? {
+            Some(user_org) => match User::get(&conn, user_org.user_uuid).await? {
                 Some(user) => bulk_response.push(json!(
                     {
                         "Object": "organizationUserpublic_keyResponseModel",
@@ -1417,7 +1399,7 @@ async fn bulk_public_keys(Path(org_uuid): Path<Uuid>, _headers: OrgAdminHeaders,
         }
     }
 
-    txn.commit().await?;
+    conn.commit().await?;
 
     Ok(Json(json!({
         "Data": bulk_response,
@@ -1446,7 +1428,7 @@ struct RelationsData {
     value: usize,
 }
 
-async fn post_org_import(Query(query): Query<OrgIdData>, headers: OrgAdminHeaders, data: Json<Upcase<ImportData>>) -> ApiResult<()> {
+async fn post_org_import(conn: AutoTxn, Query(query): Query<OrgIdData>, headers: OrgAdminHeaders, data: Json<Upcase<ImportData>>) -> ApiResult<()> {
     let data: ImportData = data.0.data;
     let org_uuid = query.organization_id;
 
@@ -1455,10 +1437,6 @@ async fn post_org_import(Query(query): Query<OrgIdData>, headers: OrgAdminHeader
     // Since we check for the size of the encrypted note length, we need to do that here to pre-validate it.
     // TODO: See if we can optimize the whole cipher adding/importing and prevent duplicate code and checks.
     Cipher::validate_notes(&data.ciphers)?;
-
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
 
     let mut collections = Vec::new();
     for coll in data.collections {
@@ -1481,7 +1459,7 @@ async fn post_org_import(Query(query): Query<OrgIdData>, headers: OrgAdminHeader
     let mut ciphers = Vec::new();
     for cipher_data in data.ciphers {
         let mut cipher = Cipher::new(cipher_data.r#type, cipher_data.name.clone());
-        update_cipher_from_data(&mut cipher, cipher_data, &headers, false, &txn, UpdateType::None).await.ok();
+        update_cipher_from_data(&mut cipher, cipher_data, &headers, false, &conn, UpdateType::None).await.ok();
         ciphers.push(cipher);
     }
 
@@ -1494,10 +1472,10 @@ async fn post_org_import(Query(query): Query<OrgIdData>, headers: OrgAdminHeader
             Err(_) => err!("Failed to assign to collection"),
         };
 
-        CollectionCipher::save(conn, cipher_id, coll_id).await?;
+        CollectionCipher::save(&conn, cipher_id, coll_id).await?;
     }
 
-    txn.commit().await?;
+    conn.commit().await?;
     Ok(())
 }
 
@@ -1597,6 +1575,7 @@ struct PolicyData {
 }
 
 async fn put_policy(
+    conn: AutoTxn,
     Path(OrgPolicy {
         org_uuid,
         pol_type,
@@ -1604,9 +1583,6 @@ async fn put_policy(
     headers: OrgAdminHeaders,
     Json(data): Json<PolicyData>,
 ) -> ApiResult<Json<Value>> {
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
 
     // When enabling the TwoFactorAuthentication policy, remove this org's members that do have 2FA
     if pol_type == OrgPolicyType::TwoFactorAuthentication && data.enabled {
@@ -1690,7 +1666,7 @@ async fn put_policy(
 
     log_event(EventType::PolicyUpdated, policy.uuid, org_uuid, headers.user.uuid, headers.device.atype, Utc::now(), headers.ip, &conn).await?;
 
-    txn.commit().await?;
+    conn.commit().await?;
 
     Ok(Json(policy.to_json()))
 }
@@ -1761,17 +1737,13 @@ struct OrgImportData {
 }
 
 //TODO: remove all data.0.data stuff
-async fn import(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<OrgImportData>>) -> ApiResult<()> {
+async fn import(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<OrgImportData>>) -> ApiResult<()> {
     let data = data.0.data;
 
     // TODO: Currently we aren't storing the externalId's anywhere, so we also don't have a way
     // to differentiate between auto-imported users and manually added ones.
     // This means that this endpoint can end up removing users that were added manually by an admin,
     // as opposed to upstream which only removes auto-imported users.
-
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
 
     for user_data in &data.users {
         if user_data.deleted {
@@ -1856,17 +1828,13 @@ async fn import(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json
         }
     }
 
-    txn.commit().await?;
+    conn.commit().await?;
 
     Ok(())
 }
 
-async fn bulk_revoke_organization_user(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<Value>>) -> ApiResult<Json<Value>> {
+async fn bulk_revoke_organization_user(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<Value>>) -> ApiResult<Json<Value>> {
     let data = data.0.data;
-
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
 
     let mut bulk_response = Vec::new();
     match data["Ids"].as_array() {
@@ -1876,7 +1844,7 @@ async fn bulk_revoke_organization_user(Path(org_uuid): Path<Uuid>, headers: OrgA
                     err!("Malformed user_id");
                 };
 
-                let err_msg = match _revoke_organization_user(org_uuid, user_id, &headers, conn).await {
+                let err_msg = match _revoke_organization_user(org_uuid, user_id, &headers, &conn).await {
                     Ok(_) => String::new(),
                     Err(e @ ApiError::Other(_)) => return Err(e),
                     Err(e) => format!("{e:?}"),
@@ -1894,7 +1862,7 @@ async fn bulk_revoke_organization_user(Path(org_uuid): Path<Uuid>, headers: OrgA
         None => error!("No users to revoke"),
     }
 
-    txn.commit().await?;
+    conn.commit().await?;
 
     Ok(Json(json!({
         "Data": bulk_response,
@@ -1940,12 +1908,8 @@ async fn _revoke_organization_user(org_uuid: Uuid, user_id: Uuid, headers: &OrgA
     Ok(())
 }
 
-async fn bulk_restore_organization_user(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<Value>>) -> ApiResult<Json<Value>> {
+async fn bulk_restore_organization_user(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<Value>>) -> ApiResult<Json<Value>> {
     let data = data.0.data;
-
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
 
     let mut bulk_response = Vec::new();
     match data["Ids"].as_array() {
@@ -1955,7 +1919,7 @@ async fn bulk_restore_organization_user(Path(org_uuid): Path<Uuid>, headers: Org
                     err!("Malformed user_id");
                 };
 
-                let err_msg = match _restore_organization_user(org_uuid, user_id, &headers, conn).await {
+                let err_msg = match _restore_organization_user(org_uuid, user_id, &headers, &conn).await {
                     Ok(_) => String::new(),
                     Err(e @ ApiError::Other(_)) => return Err(e),
                     Err(e) => format!("{e:?}"),
@@ -1973,7 +1937,7 @@ async fn bulk_restore_organization_user(Path(org_uuid): Path<Uuid>, headers: Org
         None => error!("No users to restore"),
     }
 
-    txn.commit().await?;
+    conn.commit().await?;
 
     Ok(Json(json!({
         "Data": bulk_response,
@@ -2118,7 +2082,7 @@ impl SelectionReadOnly {
     }
 }
 
-async fn post_groups(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<GroupRequest>>) -> ApiResult<Json<Value>> {
+async fn post_groups(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<GroupRequest>>) -> ApiResult<Json<Value>> {
     if !CONFIG.advanced.org_groups_enabled {
         err!("Group support is disabled");
     }
@@ -2126,16 +2090,12 @@ async fn post_groups(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data:
     let group_request = data.0.data;
     let group = group_request.to_group(org_uuid)?;
 
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
-
     let group_uuid = group.uuid;
     let out = add_update_group(group, group_request.collections, group_request.users, org_uuid, &headers, &conn).await?;
 
     log_event(EventType::GroupCreated, group_uuid, org_uuid, headers.user.uuid, headers.device.atype, Utc::now(), headers.ip, &conn).await?;
 
-    txn.commit().await?;
+    conn.commit().await?;
     Ok(out)
 }
 
@@ -2153,6 +2113,7 @@ struct OrgGroupUserId {
 }
 
 async fn put_group(
+    conn: AutoTxn,
     Path(OrgGroupId {
         org_uuid,
         group_id,
@@ -2163,9 +2124,6 @@ async fn put_group(
     if !CONFIG.advanced.org_groups_enabled {
         err!("Group support is disabled");
     }
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
 
     let group = match Group::get(&conn, group_id).await? {
         Some(group) => group,
@@ -2175,13 +2133,13 @@ async fn put_group(
     let group_request = data.0.data;
     let updated_group = group_request.update_group(group)?;
 
-    CollectionGroup::delete_all_by_group(conn, group_id).await?;
-    GroupUser::delete_all_by_group(conn, group_id).await?;
+    CollectionGroup::delete_all_by_group(&conn, group_id).await?;
+    GroupUser::delete_all_by_group(&conn, group_id).await?;
 
     log_event(EventType::GroupUpdated, updated_group.uuid, org_uuid, headers.user.uuid, headers.device.atype, Utc::now(), headers.ip, &conn).await?;
 
     let out = add_update_group(updated_group, group_request.collections, group_request.users, org_uuid, &headers, &conn).await?;
-    txn.commit().await?;
+    conn.commit().await?;
     Ok(out)
 }
 
@@ -2272,21 +2230,17 @@ async fn delete_group(
     Ok(())
 }
 
-async fn bulk_delete_groups(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<OrgBulkIds>>) -> ApiResult<()> {
+async fn bulk_delete_groups(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<OrgBulkIds>>) -> ApiResult<()> {
     if !CONFIG.advanced.org_groups_enabled {
         err!("Group support is disabled");
     }
 
     let data: OrgBulkIds = data.0.data;
 
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
-
     for group_id in data.ids {
         _delete_group(org_uuid, group_id, &headers, &conn).await?
     }
-    txn.commit().await?;
+    conn.commit().await?;
     Ok(())
 }
 
@@ -2333,6 +2287,7 @@ async fn get_group_users(
 }
 
 async fn put_group_users(
+    conn: AutoTxn,
     Path(OrgGroupId {
         org_uuid,
         group_id,
@@ -2343,9 +2298,6 @@ async fn put_group_users(
     if !CONFIG.advanced.org_groups_enabled {
         err!("Group support is disabled");
     }
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
 
     match Group::get_for_org(&conn, group_id, org_uuid).await? {
         Some(_) => { /* Do nothing */ }
@@ -2372,7 +2324,7 @@ async fn put_group_users(
         .await?;
     }
 
-    txn.commit().await?;
+    conn.commit().await?;
 
     Ok(())
 }
@@ -2406,6 +2358,7 @@ struct OrganizationUserUpdateGroupsRequest {
 }
 
 async fn put_user_groups(
+    conn: AutoTxn,
     Path(OrgUserId {
         org_uuid,
         user_id,
@@ -2416,11 +2369,8 @@ async fn put_user_groups(
     if !CONFIG.advanced.org_groups_enabled {
         err!("Group support is disabled");
     }
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
 
-    match UserOrganization::get(conn, user_id, org_uuid).await? {
+    match UserOrganization::get(&conn, user_id, org_uuid).await? {
         Some(_) => { /* Do nothing */ }
         _ => err!("User could not be found!"),
     };
@@ -2433,7 +2383,7 @@ async fn put_user_groups(
         }
     }
 
-    GroupUser::delete_all_by_user(conn, user_id, org_uuid).await?;
+    GroupUser::delete_all_by_user(&conn, user_id, org_uuid).await?;
 
     let assigned_group_ids = data.0.data;
     for assigned_group_id in assigned_group_ids.group_ids {
@@ -2443,7 +2393,7 @@ async fn put_user_groups(
 
     log_event(EventType::OrganizationUserUpdatedGroups, user_id, org_uuid, headers.user.uuid, headers.device.atype, Utc::now(), headers.ip, &conn).await?;
 
-    txn.commit().await?;
+    conn.commit().await?;
 
     Ok(())
 }

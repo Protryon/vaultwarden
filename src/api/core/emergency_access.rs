@@ -13,7 +13,7 @@ use crate::{
         UserOrganization, DB,
     },
     mail,
-    util::Upcase,
+    util::{Upcase, AutoTxn},
     CONFIG,
 };
 
@@ -142,7 +142,7 @@ struct EmergencyAccessInviteData {
     wait_time_days: i32,
 }
 
-async fn send_invite(headers: Headers, data: Json<Upcase<EmergencyAccessInviteData>>) -> ApiResult<()> {
+async fn send_invite(conn: AutoTxn, headers: Headers, data: Json<Upcase<EmergencyAccessInviteData>>) -> ApiResult<()> {
     check_emergency_access_allowed()?;
 
     let data: EmergencyAccessInviteData = data.0.data;
@@ -157,9 +157,6 @@ async fn send_invite(headers: Headers, data: Json<Upcase<EmergencyAccessInviteDa
     if email == grantor_user.email {
         err!("You can not set yourself as an emergency contact.")
     }
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
 
     let grantee_user = match User::find_by_email(&conn, &email).await? {
         None => {
@@ -201,13 +198,13 @@ async fn send_invite(headers: Headers, data: Json<Upcase<EmergencyAccessInviteDa
         .await?;
     } else {
         // Automatically mark user as accepted if no email invites
-        match User::find_by_email(conn, &email).await? {
+        match User::find_by_email(&conn, &email).await? {
             Some(user) => accept_invite_process(user.uuid, &mut new_emergency_access, &email, &conn).await?,
             None => err!("Grantee user not found."),
         }
     }
 
-    txn.commit().await?;
+    conn.commit().await?;
 
     Ok(())
 }
@@ -550,15 +547,11 @@ struct EmergencyAccessPasswordData {
     key: String,
 }
 
-async fn password_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers, data: Json<Upcase<EmergencyAccessPasswordData>>) -> ApiResult<()> {
+async fn password_emergency_access(conn: AutoTxn, Path(emergency_id): Path<Uuid>, headers: Headers, data: Json<Upcase<EmergencyAccessPasswordData>>) -> ApiResult<()> {
     check_emergency_access_allowed()?;
 
     let data: EmergencyAccessPasswordData = data.0.data;
     let new_master_password_hash = &data.new_master_password_hash;
-    //let key = &data.Key;
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
 
     let requesting_user = headers.user;
     let emergency_access = match EmergencyAccess::get_with_grantee(&conn, emergency_id, requesting_user.uuid).await? {
@@ -580,7 +573,7 @@ async fn password_emergency_access(Path(emergency_id): Path<Uuid>, headers: Head
     grantor_user.save(&conn).await?;
 
     // Disable TwoFactor providers since they will otherwise block logins
-    TwoFactor::delete_all_by_user(conn, grantor_user.uuid).await?;
+    TwoFactor::delete_all_by_user(&conn, grantor_user.uuid).await?;
 
     // Remove grantor from all organisations unless Owner
     for user_org in UserOrganization::find_by_user(&conn, grantor_user.uuid).await? {
@@ -588,7 +581,7 @@ async fn password_emergency_access(Path(emergency_id): Path<Uuid>, headers: Head
             user_org.delete(&conn).await?;
         }
     }
-    txn.commit().await?;
+    conn.commit().await?;
     Ok(())
 }
 

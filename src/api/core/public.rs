@@ -12,7 +12,7 @@ use crate::{
     auth,
     db::{Group, GroupUser, Invitation, Organization, OrganizationApiKey, User, UserOrgStatus, UserOrgType, UserOrganization, DB},
     mail,
-    util::Upcase,
+    util::{Upcase, AutoTxn},
     CONFIG,
 };
 
@@ -41,15 +41,12 @@ pub struct OrgImportData {
     // LargeImport: bool, // For now this will not be used, upstream uses this to prevent syncs of more then 2000 users or groups without the flag set.
 }
 
-pub async fn ldap_import(token: PublicToken, data: Json<Upcase<OrgImportData>>) -> ApiResult<()> {
+pub async fn ldap_import(conn: AutoTxn, token: PublicToken, data: Json<Upcase<OrgImportData>>) -> ApiResult<()> {
     // Most of the logic for this function can be found here
     // https://github.com/bitwarden/server/blob/fd892b2ff4547648a276734fb2b14a8abae2c6f5/src/Core/Services/Implementations/OrganizationService.cs#L1797
 
     let org_id = token.0;
     let data = data.0.data;
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
 
     for user_data in &data.members {
         if user_data.deleted {
@@ -60,14 +57,14 @@ pub async fn ldap_import(token: PublicToken, data: Json<Upcase<OrgImportData>>) 
             }
 
         // If user is part of the organization, restore it
-        } else if let Some(mut user_org) = UserOrganization::find_by_email_and_organization(conn, &user_data.email, org_id).await? {
+        } else if let Some(mut user_org) = UserOrganization::find_by_email_and_organization(&conn, &user_data.email, org_id).await? {
             if user_org.revoked {
                 user_org.restore();
                 user_org.save(&conn).await?;
             }
         } else {
             // If user is not part of the organization
-            let user = match User::find_by_email(conn, &user_data.email).await? {
+            let user = match User::find_by_email(&conn, &user_data.email).await? {
                 Some(user) => user, // exists in vaultwarden
                 None => {
                     // doesn't exist in vaultwarden
@@ -108,7 +105,7 @@ pub async fn ldap_import(token: PublicToken, data: Json<Upcase<OrgImportData>>) 
 
     if CONFIG.advanced.org_groups_enabled {
         for group_data in &data.groups {
-            let group_uuid = match Group::find_by_external_id(conn, &group_data.external_id).await? {
+            let group_uuid = match Group::find_by_external_id(&conn, &group_data.external_id).await? {
                 Some(group) => group.uuid,
                 None => {
                     let mut group = Group::new(org_id, group_data.name.clone(), false, Some(group_data.external_id.clone()));
@@ -117,11 +114,11 @@ pub async fn ldap_import(token: PublicToken, data: Json<Upcase<OrgImportData>>) 
                 }
             };
 
-            GroupUser::delete_all_by_group(conn, group_uuid).await?;
+            GroupUser::delete_all_by_group(&conn, group_uuid).await?;
 
             for ext_id in &group_data.member_external_ds {
-                if let Some(user) = User::find_by_external_id(conn, ext_id).await? {
-                    if let Some(user_org) = UserOrganization::get(conn, user.uuid, org_id).await? {
+                if let Some(user) = User::find_by_external_id(&conn, ext_id).await? {
+                    if let Some(user_org) = UserOrganization::get(&conn, user.uuid, org_id).await? {
                         let group_user = GroupUser::new(group_uuid.clone(), user_org.user_uuid);
                         group_user.save(&conn).await?;
                     }
@@ -136,8 +133,8 @@ pub async fn ldap_import(token: PublicToken, data: Json<Upcase<OrgImportData>>) 
     if data.overwrite_existing {
         // Generate a HashSet to quickly verify if a member is listed or not.
         let sync_members: HashSet<String> = data.members.into_iter().map(|m| m.external_id).collect();
-        for user_org in UserOrganization::find_by_org(conn, org_id).await? {
-            let Some(user_external_id) = User::get(conn, user_org.user_uuid).await?.and_then(|u| u.external_id) else {
+        for user_org in UserOrganization::find_by_org(&conn, org_id).await? {
+            let Some(user_external_id) = User::get(&conn, user_org.user_uuid).await?.and_then(|u| u.external_id) else {
                 continue;
             };
             if sync_members.contains(&user_external_id) {
@@ -145,7 +142,7 @@ pub async fn ldap_import(token: PublicToken, data: Json<Upcase<OrgImportData>>) 
             }
             if user_org.atype == UserOrgType::Owner && user_org.status == UserOrgStatus::Confirmed {
                 // Removing owner, check that there is at least one other confirmed owner
-                if UserOrganization::count_confirmed_by_org_and_type(conn, org_id, UserOrgType::Owner).await? <= 1 {
+                if UserOrganization::count_confirmed_by_org_and_type(&conn, org_id, UserOrgType::Owner).await? <= 1 {
                     warn!("Can't delete the last owner");
                     continue;
                 }

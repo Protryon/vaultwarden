@@ -254,10 +254,17 @@ impl Organization {
             &[&self.uuid, &self.name, &self.billing_email, &self.private_key, &self.public_key],
         )
         .await?;
+        Self::flag_revision(conn, self.uuid).await?;
+        Ok(())
+    }
+
+    pub async fn flag_revision(conn: &Conn, uuid: Uuid) -> ApiResult<()> {
+        conn.execute(r"UPDATE user_revisions u SET updated_at = now() FROM user_organizations uo WHERE uo.organization_uuid = $1 AND uo.user_uuid = u.uuid", &[&uuid]).await?;
         Ok(())
     }
 
     pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
+        Self::flag_revision(conn, self.uuid).await?;
         conn.execute(r"DELETE FROM organizations WHERE uuid = $1", &[&self.uuid]).await?;
         Ok(())
     }
@@ -453,11 +460,13 @@ impl UserOrganization {
             &self.reset_password_key,
             &self.revoked,
         ]).await?;
+        User::flag_revision_for(conn, self.user_uuid).await?;
         Ok(())
     }
 
     pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
         conn.execute(r"DELETE FROM user_organizations WHERE user_uuid = $1 AND organization_uuid = $2", &[&self.user_uuid, &self.organization_uuid]).await?;
+        User::flag_revision_for(conn, self.user_uuid).await?;
         Ok(())
     }
 

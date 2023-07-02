@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use always_cell::AlwaysCell;
-use bb8::Pool;
+use bb8::{Pool, PooledConnection};
 use bb8_postgres::PostgresConnectionManager;
 use log::info;
 use tokio_postgres::{Client, Config, NoTls};
@@ -21,6 +21,7 @@ mod models;
 pub use models::*;
 
 pub type Conn = Client;
+pub type ConnOwned = PooledConnection<'static, PostgresConnectionManager<NoTls>>;
 
 pub static DB: AlwaysCell<Pool<PostgresConnectionManager<NoTls>>> = AlwaysCell::new();
 

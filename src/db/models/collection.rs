@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::db::Conn;
 
-use super::cipher::AccessRestrictions;
+use super::{cipher::AccessRestrictions, User};
 
 #[derive(Debug)]
 pub struct Collection {
@@ -100,10 +100,17 @@ impl Collection {
             &[&self.uuid, &self.organization_uuid, &self.name],
         )
         .await?;
+        Self::flag_revision(conn, self.uuid).await?;
+        Ok(())
+    }
+
+    pub async fn flag_revision(conn: &Conn, uuid: Uuid) -> ApiResult<()> {
+        conn.execute(r"UPDATE user_revisions u SET updated_at = now() FROM user_collection_auth uca WHERE uca.collection_uuid = $1 AND uca.user_uuid = u.uuid", &[&uuid]).await?;
         Ok(())
     }
 
     pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
+        Self::flag_revision(conn, self.uuid).await?;
         conn.execute(r"DELETE FROM collections WHERE uuid = $1", &[&self.uuid]).await?;
         Ok(())
     }
@@ -248,10 +255,12 @@ impl CollectionUser {
             &self.read_only,
             &self.hide_passwords,
         ]).await?;
+        User::flag_revision_for(conn, self.user_uuid).await?;
         Ok(())
     }
 
     pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
+        User::flag_revision_for(conn, self.user_uuid).await?;
         conn.execute(r"DELETE FROM collection_users WHERE user_uuid = $1 AND collection_uuid = $2", &[&self.user_uuid, &self.collection_uuid]).await?;
         Ok(())
     }
@@ -273,6 +282,7 @@ impl CollectionUser {
     }
 
     pub async fn delete_all_by_collection(conn: &Conn, collection_uuid: Uuid) -> ApiResult<()> {
+        Collection::flag_revision(conn, collection_uuid).await?;
         conn.execute(r"DELETE FROM collection_users WHERE collection_uuid = $1", &[&collection_uuid]).await?;
         Ok(())
     }
@@ -286,10 +296,12 @@ impl CollectionCipher {
             &[&cipher_uuid, &collection_uuid],
         )
         .await?;
+        Collection::flag_revision(conn, collection_uuid).await?;
         Ok(())
     }
 
     pub async fn delete(conn: &Conn, cipher_uuid: Uuid, collection_uuid: Uuid) -> ApiResult<()> {
+        Collection::flag_revision(conn, collection_uuid).await?;
         conn.execute(r"DELETE FROM collection_ciphers WHERE cipher_uuid = $1 AND collection_uuid = $2", &[&cipher_uuid, &collection_uuid]).await?;
         Ok(())
     }

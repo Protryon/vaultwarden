@@ -6,7 +6,7 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio_postgres::{types::Json, Row};
 use uuid::Uuid;
 
-use super::{Attachment, Favorite, FolderCipher};
+use super::{Attachment, Favorite, FolderCipher, Organization, User};
 
 #[derive(Debug)]
 pub struct Cipher {
@@ -267,15 +267,23 @@ impl Cipher {
             &self.deleted_at,
             &self.reprompt.map(|x| x as i32),
         ]).await?;
+        Self::flag_revision(conn, self.uuid).await?;
+        Ok(())
+    }
+
+    pub async fn flag_revision(conn: &Conn, uuid: Uuid) -> ApiResult<()> {
+        conn.execute(r"UPDATE user_revisions u SET updated_at = now() FROM user_cipher_auth uca WHERE uca.cipher_uuid = $1 AND uca.user_uuid = u.uuid", &[&uuid]).await?;
         Ok(())
     }
 
     pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
+        Self::flag_revision(conn, self.uuid).await?;
         conn.execute(r"DELETE FROM ciphers WHERE uuid = $1", &[&self.uuid]).await?;
         Ok(())
     }
 
     pub async fn delete_all_by_organization(conn: &Conn, organization_uuid: Uuid) -> ApiResult<()> {
+        Organization::flag_revision(conn, organization_uuid).await?;
         conn.execute(r"DELETE FROM ciphers WHERE organization_uuid = $1", &[&organization_uuid]).await?;
         Ok(())
     }
@@ -422,6 +430,7 @@ impl Cipher {
     }
 
     pub async fn delete_owned_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<()> {
+        User::flag_revision_for(conn, user_uuid).await?;
         conn.execute(r"DELETE FROM ciphers WHERE user_uuid = $1 AND organization_uuid IS NULL", &[&user_uuid]).await?;
         Ok(())
     }

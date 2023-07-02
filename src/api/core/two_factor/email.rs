@@ -13,7 +13,7 @@ use crate::{
     error::MapResult,
     events::log_user_event,
     mail,
-    util::Upcase,
+    util::{Upcase, AutoTxn},
     CONFIG,
 };
 
@@ -102,7 +102,7 @@ pub struct SendEmailData {
 }
 
 /// Send a verification email to the specified email address to check whether it exists/belongs to user.
-pub async fn send_email(headers: Headers, data: Json<Upcase<SendEmailData>>) -> ApiResult<()> {
+pub async fn send_email(conn: AutoTxn, headers: Headers, data: Json<Upcase<SendEmailData>>) -> ApiResult<()> {
     let data: SendEmailData = data.0.data;
     let user = headers.user;
 
@@ -113,11 +113,9 @@ pub async fn send_email(headers: Headers, data: Json<Upcase<SendEmailData>>) -> 
     if CONFIG.email_2fa.is_none() {
         err!("Email 2FA is disabled")
     }
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
 
-    if let Some(tf) = TwoFactor::find_by_user_and_type(txn.client(), user.uuid, TwoFactorType::Email).await? {
-        tf.delete(txn.client()).await?;
+    if let Some(tf) = TwoFactor::find_by_user_and_type(&conn, user.uuid, TwoFactorType::Email).await? {
+        tf.delete(&conn).await?;
     }
 
     let generated_token = crypto::generate_email_token(CONFIG.email_2fa.as_ref().map(|x| x.email_token_size).unwrap_or_default());
@@ -125,11 +123,11 @@ pub async fn send_email(headers: Headers, data: Json<Upcase<SendEmailData>>) -> 
 
     // Uses EmailVerificationChallenge as type to show that it's not verified yet.
     let twofactor = TwoFactor::new(user.uuid, TwoFactorType::EmailVerificationChallenge, serde_json::to_value(twofactor_data.clone())?);
-    twofactor.save(txn.client()).await?;
+    twofactor.save(&conn).await?;
 
     mail::send_token(&twofactor_data.email, &twofactor_data.last_token.map_res("Token is empty")?).await?;
 
-    txn.commit().await?;
+    conn.commit().await?;
 
     Ok(())
 }

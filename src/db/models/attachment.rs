@@ -3,11 +3,13 @@ use std::{io::ErrorKind, path::PathBuf};
 use axum_util::errors::ApiResult;
 use log::debug;
 use serde_json::{json, Value};
-use tokio_postgres::{Row, Transaction};
+use tokio_postgres::Row;
 use url::Url;
 use uuid::Uuid;
 
 use crate::{db::Conn, CONFIG};
+
+use super::Cipher;
 
 #[derive(Debug)]
 pub struct Attachment {
@@ -79,12 +81,13 @@ impl Attachment {
             &[&self.uuid, &self.cipher_uuid, &self.file_name, &self.file_size, &self.akey],
         )
         .await?;
+        Cipher::flag_revision(conn, self.cipher_uuid).await?;
         Ok(())
     }
 
-    pub async fn delete(&self, conn: &Transaction<'_>) -> ApiResult<()> {
+    pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
         conn.execute(r"DELETE FROM attachments WHERE uuid = $1", &[&self.uuid]).await?;
-
+        Cipher::flag_revision(conn, self.cipher_uuid).await?;
         self.delete_file().await?;
         Ok(())
     }
@@ -171,20 +174,4 @@ impl Attachment {
             .await?;
         Ok((row.get(0), row.get(1)))
     }
-
-    // // This will return all attachments linked to the user or org
-    // // There is no filtering done here if the user actually has access!
-    // // It is used to speed up the sync process, and the matching is done in a different part.
-    // pub async fn find_all_by_user_and_orgs(user_uuid: &str, org_uuids: &Vec<String>, conn: &Conn) -> Vec<Self> {
-    //     db_run! { conn: {
-    //         attachments::table
-    //             .left_join(ciphers::table.on(ciphers::uuid.eq(attachments::cipher_uuid)))
-    //             .filter(ciphers::user_uuid.eq(user_uuid))
-    //             .or_filter(ciphers::organization_uuid.eq_any(org_uuids))
-    //             .select(attachments::all_columns)
-    //             .load::<AttachmentDb>(conn)
-    //             .expect("Error loading attachments")
-    //             .from_db()
-    //     }}
-    // }
 }

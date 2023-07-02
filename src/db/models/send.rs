@@ -244,6 +244,9 @@ impl Send {
             &self.disabled,
             &self.hide_email,
         ]).await?;
+        if let Some(uuid) = self.user_uuid {
+            User::flag_revision_for(conn, uuid).await?;
+        }
         Ok(())
     }
 
@@ -252,6 +255,9 @@ impl Send {
         txn.execute(r"DELETE FROM sends WHERE uuid = $1", &[&self.uuid]).await?;
         if self.atype == SendType::File {
             tokio::fs::remove_dir_all(CONFIG.folders.sends().join(self.uuid.to_string())).await?;
+        }
+        if let Some(uuid) = self.user_uuid {
+            User::flag_revision_for(txn.client(), uuid).await?;
         }
         txn.commit().await?;
         Ok(())

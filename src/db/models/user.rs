@@ -250,6 +250,15 @@ impl User {
         Ok(conn.query_one(r"SELECT coalesce(updated_at, now()) FROM user_revisions WHERE uuid = $1", &[&self.uuid]).await?.get(0))
     }
 
+    pub async fn flag_revision_for(conn: &Conn, uuid: Uuid) -> ApiResult<()> {
+        conn.execute(r"INSERT INTO user_revisions (uuid, updated_at) VALUES ($1, now()) ON CONFLICT (uuid) DO UPDATE SET uuid = EXCLUDED.uuid", &[&uuid]).await?;
+        Ok(())
+    }
+
+    pub async fn flag_revision(&self, conn: &Conn) -> ApiResult<()> {
+        Self::flag_revision_for(conn, self.uuid).await
+    }
+
     pub async fn to_json(&self, conn: &Conn) -> ApiResult<Value> {
         let mut orgs_json = Vec::new();
         for c in UserOrganization::find_by_user_with_status(conn, self.uuid, UserOrgStatus::Confirmed).await? {
@@ -354,6 +363,7 @@ impl User {
             &self.avatar_color,
             &self.external_id,
         ]).await?;
+        self.flag_revision(conn).await?;
         Ok(())
     }
 

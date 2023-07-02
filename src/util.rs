@@ -1,20 +1,21 @@
 //
 // Web Headers and caching
 //
-use std::io::ErrorKind;
+use std::{io::ErrorKind, ops::Deref};
 
 use axum::{
     body::BoxBody,
-    response::{IntoResponseParts, Response},
+    response::{IntoResponseParts, Response}, extract::FromRequestParts,
 };
 use axum_util::{
     errors::{ApiError, ApiResult},
     interceptor::Interception,
 };
+use http::request::Parts;
 use log::error;
 use tokio::{fs::File, io::AsyncWriteExt, time::Duration};
 
-use crate::{config::ICON_SERVICE_CSP, CONFIG};
+use crate::{config::ICON_SERVICE_CSP, CONFIG, db::{Conn, DB, ConnOwned}};
 
 #[derive(Clone)]
 pub struct AppHeaders;
@@ -169,6 +170,52 @@ impl IntoResponseParts for Cached {
         let expiry_time = time_now + chrono::Duration::seconds(self.ttl.try_into().unwrap());
         res.headers_mut().insert("expires", format_datetime_http(&expiry_time).parse().unwrap());
         Ok(res)
+    }
+}
+
+pub struct AutoTxn(Option<ConnOwned>);
+
+#[async_trait::async_trait]
+impl<S: Send + Sync> FromRequestParts<S> for AutoTxn {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(_req: &mut Parts, _state: &S) -> ApiResult<Self> {
+        let conn = DB.get().await?;
+        conn.batch_execute("BEGIN").await?;
+        Ok(Self(Some(conn)))
+    }
+}
+
+impl Deref for AutoTxn {
+    type Target = Conn;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().unwrap()
+    }
+}
+
+impl AutoTxn {
+    pub async fn commit(mut self) -> ApiResult<ConnOwned> {
+        self.batch_execute("COMMIT").await?;
+        Ok(self.0.take().unwrap())
+    }
+
+    #[allow(dead_code)]
+    pub async fn rollback(mut self) -> ApiResult<ConnOwned> {
+        self.batch_execute("ROLLBACK").await?;
+        Ok(self.0.take().unwrap())
+    }
+}
+
+impl Drop for AutoTxn {
+    fn drop(&mut self) {
+        if let Some(conn) = self.0.take() {
+            tokio::spawn(async move {
+                if let Err(e) = conn.batch_execute("ROLLBACK").await {
+                    error!("failed to dispatch rollback to dropped txn: {e}");
+                }
+            });
+        }
     }
 }
 

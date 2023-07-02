@@ -6,6 +6,8 @@ use uuid::Uuid;
 
 use crate::db::Conn;
 
+use super::{User, Collection};
+
 pub struct Group {
     pub uuid: Uuid,
     pub organization_uuid: Uuid,
@@ -178,6 +180,12 @@ impl Group {
             &self.creation_date,
             &self.revision_date,
         ]).await?;
+        Self::flag_revision(conn, self.uuid).await?;
+        Ok(())
+    }
+
+    pub async fn flag_revision(conn: &Conn, uuid: Uuid) -> ApiResult<()> {
+        conn.execute(r"UPDATE user_revisions u SET updated_at = now() FROM group_users gu WHERE gu.group_uuid = $1 AND gu.user_uuid = u.uuid", &[&uuid]).await?;
         Ok(())
     }
 
@@ -201,26 +209,8 @@ impl Group {
         Ok(conn.query_opt(r"SELECT * FROM groups WHERE external_id = $1", &[&id]).await?.map(Into::into))
     }
 
-    // //Returns all organizations the user has full access to
-    // pub async fn gather_user_organizations_full_access(conn: &Conn, user_uuid: Uuid) -> Vec<String> {
-    //     db_run! { conn: {
-    //         groups_users::table
-    //             .inner_join(users_organizations::table.on(
-    //                 users_organizations::uuid.eq(groups_users::users_organization_uuid)
-    //             ))
-    //             .inner_join(groups::table.on(
-    //                 groups::uuid.eq(groups_users::group_uuid)
-    //             ))
-    //             .filter(users_organizations::user_uuid.eq(user_uuid))
-    //             .filter(groups::access_all.eq(true))
-    //             .select(groups::organization_uuid)
-    //             .distinct()
-    //             .load::<String>(conn)
-    //             .expect("Error loading organization group full access information for user")
-    //     }}
-    // }
-
     pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
+        Self::flag_revision(conn, self.uuid).await?;
         conn.execute(r"DELETE FROM groups WHERE uuid = $1", &[&self.uuid]).await?;
         Ok(())
     }
@@ -237,6 +227,7 @@ impl CollectionGroup {
             &self.read_only,
             &self.hide_passwords,
         ]).await?;
+        Group::flag_revision(conn, self.group_uuid).await?;
         Ok(())
     }
 
@@ -249,11 +240,13 @@ impl CollectionGroup {
     }
 
     pub async fn delete_all_by_group(conn: &Conn, group_uuid: Uuid) -> ApiResult<()> {
+        Group::flag_revision(conn, group_uuid).await?;
         conn.execute(r"DELETE FROM collection_groups WHERE group_uuid = $1", &[&group_uuid]).await?;
         Ok(())
     }
 
     pub async fn delete_all_by_collection(conn: &Conn, collection_uuid: Uuid) -> ApiResult<()> {
+        Collection::flag_revision(conn, collection_uuid).await?;
         conn.execute(r"DELETE FROM collection_groups WHERE collection_uuid = $1", &[&collection_uuid]).await?;
         Ok(())
     }
@@ -266,6 +259,7 @@ impl GroupUser {
             &[&self.group_uuid, &self.user_uuid],
         )
         .await?;
+        User::flag_revision_for(conn, self.user_uuid).await?;
         Ok(())
     }
 
@@ -286,16 +280,19 @@ impl GroupUser {
     }
 
     pub async fn delete_by_group_uuid_and_user_id(conn: &Conn, group_uuid: Uuid, user_uuid: Uuid) -> ApiResult<()> {
+        User::flag_revision_for(conn, user_uuid).await?;
         conn.execute(r"DELETE FROM group_users WHERE user_uuid = $1 AND group_uuid = $2", &[&user_uuid, &group_uuid]).await?;
         Ok(())
     }
 
     pub async fn delete_all_by_group(conn: &Conn, group_uuid: Uuid) -> ApiResult<()> {
+        Group::flag_revision(conn, group_uuid).await?;
         conn.execute(r"DELETE FROM group_users WHERE group_uuid = $1", &[&group_uuid]).await?;
         Ok(())
     }
 
     pub async fn delete_all_by_user(conn: &Conn, user_uuid: Uuid, organization_uuid: Uuid) -> ApiResult<()> {
+        User::flag_revision_for(conn, user_uuid).await?;
         conn.execute(
             r"DELETE FROM group_users gu INNER JOIN groups g ON g.uuid = gu.group_uuid WHERE gu.user_uuid = $1 AND g.organization_uuid = $2",
             &[&user_uuid, &organization_uuid],

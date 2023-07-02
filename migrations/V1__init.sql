@@ -270,7 +270,7 @@ CREATE TABLE collection_users (
     PRIMARY KEY (user_uuid, collection_uuid)
 );
 
-CREATE MATERIALIZED VIEW user_collection_auth AS 
+CREATE VIEW user_collection_auth AS 
     SELECT co.uuid AS collection_uuid, sub.user_uuid, bool_and(sub.read_only) AS read_only, bool_and(sub.hide_passwords) AS hide_passwords
     FROM collections co
     INNER JOIN LATERAL (
@@ -290,10 +290,7 @@ CREATE MATERIALIZED VIEW user_collection_auth AS
     ) sub ON 1=1
     GROUP BY co.uuid, sub.user_uuid;
 
--- TODO: this index is propably counterproductive
-CREATE UNIQUE INDEX user_collection_auth_idx ON user_collection_auth(user_uuid, collection_uuid);
-
-CREATE MATERIALIZED VIEW user_cipher_auth AS 
+CREATE VIEW user_cipher_auth AS 
     SELECT sub.cipher_uuid, sub.user_uuid, bool_and(sub.read_only) AS read_only, bool_and(sub.hide_passwords) AS hide_passwords
     FROM (
         SELECT c.uuid AS cipher_uuid, c.user_uuid, false AS read_only, false AS hide_passwords FROM ciphers c WHERE c.user_uuid IS NOT NULL AND c.organization_uuid IS NULL
@@ -306,226 +303,9 @@ CREATE MATERIALIZED VIEW user_cipher_auth AS
     ) sub
     GROUP BY sub.cipher_uuid, sub.user_uuid;
 
--- TODO: this index is propably counterproductive
-CREATE UNIQUE INDEX user_cipher_auth_idx ON user_cipher_auth(user_uuid, cipher_uuid);
-
 CREATE TABLE sso_nonces (
   nonce CHAR(36) NOT NULL PRIMARY KEY,
   created_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE INDEX sso_nonce_creation ON sso_nonces(created_at);
-
--- this extremely aggressive rematerialization is not going to scale
--- will need a debounce, but UI doesnt handle lagged perf updates well
--- might end up being a non-materialized view?
-
-CREATE FUNCTION resync_views() RETURNS trigger AS $trgr$
-    BEGIN
-        REFRESH MATERIALIZED VIEW user_collection_auth;
-        REFRESH MATERIALIZED VIEW user_cipher_auth;
-        RETURN NULL;
-    END;
-$trgr$ LANGUAGE plpgsql;
-
--- requires a total rematerialization
-CREATE TRIGGER collection_users_update AFTER INSERT OR UPDATE OR DELETE ON collection_users FOR EACH STATEMENT EXECUTE FUNCTION resync_views();
-CREATE TRIGGER collection_groups_update AFTER INSERT OR UPDATE OR DELETE ON collection_groups FOR EACH STATEMENT EXECUTE FUNCTION resync_views();
-CREATE TRIGGER group_users_update AFTER INSERT OR UPDATE OR DELETE ON group_users FOR EACH STATEMENT EXECUTE FUNCTION resync_views();
-CREATE TRIGGER groups_update AFTER INSERT OR UPDATE OR DELETE ON groups FOR EACH STATEMENT EXECUTE FUNCTION resync_views();
-CREATE TRIGGER user_organizations_update AFTER INSERT OR UPDATE OR DELETE ON user_organizations FOR EACH STATEMENT EXECUTE FUNCTION resync_views();
-
--- requires a partial rematerialization
-CREATE TRIGGER ciphers_owned_update AFTER INSERT OR UPDATE OF user_uuid, organization_uuid OR DELETE ON ciphers FOR EACH STATEMENT EXECUTE FUNCTION resync_views();
-CREATE TRIGGER collection_ciphers_update AFTER INSERT OR UPDATE OR DELETE ON collection_ciphers FOR EACH STATEMENT EXECUTE FUNCTION resync_views();
-
---- trigger to create user_revisions table entries
-
---- so we dont have to do upserts everywhere
-CREATE FUNCTION user_created() RETURNS trigger AS $trgr$
-    BEGIN
-        INSERT INTO user_revisions (uuid, updated_at) VALUES (NEW.uuid, now());
-        RETURN NEW;
-    END;
-$trgr$ LANGUAGE plpgsql;
-
-CREATE TRIGGER user_created AFTER INSERT ON users FOR EACH ROW EXECUTE FUNCTION user_created();
-
--- triggers for user revision updates
-
-CREATE FUNCTION user_uuid_changed() RETURNS trigger AS $trgr$
-    BEGIN
-        IF (TG_OP = 'DELETE') THEN
-            UPDATE user_revisions u SET updated_at = now() WHERE u.uuid = OLD.user_uuid;
-            RETURN OLD;
-        ELSIF (TG_OP = 'UPDATE') THEN
-            UPDATE user_revisions u SET updated_at = now() WHERE u.uuid = OLD.user_uuid OR u.uuid = NEW.user_uuid;
-            RETURN NEW;
-        ELSIF (TG_OP = 'INSERT') THEN
-            UPDATE user_revisions u SET updated_at = now() WHERE u.uuid = NEW.user_uuid;
-            RETURN NEW;
-        END IF;
-    END;
-$trgr$ LANGUAGE plpgsql;
-
-CREATE TRIGGER send_changed BEFORE INSERT OR UPDATE OR DELETE ON sends FOR EACH ROW EXECUTE FUNCTION user_uuid_changed();
-CREATE TRIGGER user_organization_changed BEFORE INSERT OR UPDATE OR DELETE ON user_organizations FOR EACH ROW EXECUTE FUNCTION user_uuid_changed();
-CREATE TRIGGER favorite_changed BEFORE INSERT OR UPDATE OR DELETE ON favorites FOR EACH ROW EXECUTE FUNCTION user_uuid_changed();
-CREATE TRIGGER folder_changed BEFORE INSERT OR UPDATE OR DELETE ON folders FOR EACH ROW EXECUTE FUNCTION user_uuid_changed();
-CREATE TRIGGER group_user_changed BEFORE INSERT OR UPDATE OR DELETE ON group_users FOR EACH ROW EXECUTE FUNCTION user_uuid_changed();
-CREATE TRIGGER collection_user_changed BEFORE INSERT OR UPDATE OR DELETE ON collection_users FOR EACH ROW EXECUTE FUNCTION user_uuid_changed();
-
-CREATE FUNCTION user_changed() RETURNS trigger AS $trgr$
-    BEGIN
-        UPDATE user_revisions u SET updated_at = now() WHERE u.uuid = NEW.uuid;
-        RETURN NEW;
-    END;
-$trgr$ LANGUAGE plpgsql;
-CREATE TRIGGER user_changed BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION user_changed();
-
-CREATE FUNCTION org_updated() RETURNS trigger AS $trgr$
-    BEGIN
-        IF (TG_OP = 'DELETE') THEN
-            UPDATE user_revisions u SET updated_at = now() FROM user_organizations uo WHERE uo.organization_uuid = OLD.uuid AND u.uuid = uo.user_uuid;
-            return OLD;
-        ELSE
-            UPDATE user_revisions u SET updated_at = now() FROM user_organizations uo WHERE uo.organization_uuid = NEW.uuid AND u.uuid = uo.user_uuid;
-            RETURN NEW;
-        END IF;
-    END;
-$trgr$ LANGUAGE plpgsql;
-
-CREATE TRIGGER org_changed BEFORE INSERT OR UPDATE OR DELETE ON organizations FOR EACH ROW EXECUTE FUNCTION org_updated();
-
-CREATE FUNCTION cipher_changed() RETURNS trigger AS $trgr$
-    BEGIN
-        IF (TG_OP = 'DELETE') THEN
-            UPDATE user_revisions u SET updated_at = now() FROM user_cipher_auth uca WHERE uca.user_uuid = u.uuid AND uca.cipher_uuid = OLD.uuid;
-            RETURN OLD;
-        ELSIF (TG_OP = 'UPDATE') THEN
-            UPDATE user_revisions u SET updated_at = now() FROM user_cipher_auth uca WHERE uca.user_uuid = u.uuid AND (uca.cipher_uuid = OLD.uuid OR uca.cipher_uuid = NEW.uuid);
-            RETURN NEW;
-        ELSIF (TG_OP = 'INSERT') THEN
-            UPDATE user_revisions u SET updated_at = now() FROM user_cipher_auth uca WHERE uca.user_uuid = u.uuid AND uca.cipher_uuid = NEW.uuid;
-            RETURN NEW;
-        END IF;
-    END;
-$trgr$ LANGUAGE plpgsql;
-CREATE TRIGGER cipher_changed BEFORE UPDATE OR DELETE ON ciphers FOR EACH ROW EXECUTE FUNCTION cipher_changed();
--- because of conflict with user_cipher_auth rematerialization (TODO: make sure this runs after the view changes)
--- or just dont join on user_cipher_auth here
-CREATE TRIGGER cipher_changed_post AFTER INSERT OR UPDATE ON ciphers FOR EACH ROW EXECUTE FUNCTION cipher_changed();
-
-CREATE FUNCTION folder_cipher_changed() RETURNS trigger AS $trgr$
-    BEGIN
-        IF (TG_OP = 'DELETE') THEN
-            UPDATE user_revisions u SET updated_at = now() FROM folders f WHERE f.uuid = OLD.folder_uuid AND u.uuid = f.user_uuid;
-            RETURN OLD;
-        ELSIF (TG_OP = 'UPDATE') THEN
-            UPDATE user_revisions u SET updated_at = now() FROM folders f WHERE (f.uuid = OLD.folder_uuid OR f.uuid = NEW.folder_uuid) AND u.uuid = f.user_uuid;
-            RETURN NEW;
-        ELSIF (TG_OP = 'INSERT') THEN
-            UPDATE user_revisions u SET updated_at = now() FROM folders f WHERE f.uuid = NEW.folder_uuid AND u.uuid = f.user_uuid;
-            RETURN NEW;
-        END IF;
-    END;
-$trgr$ LANGUAGE plpgsql;
-CREATE TRIGGER folder_ciphers_changed BEFORE INSERT OR UPDATE OR DELETE ON folder_ciphers FOR EACH ROW EXECUTE FUNCTION folder_cipher_changed();
-
-CREATE FUNCTION emergency_access_changed() RETURNS trigger AS $trgr$
-    BEGIN
-        IF (TG_OP = 'DELETE') THEN
-            UPDATE user_revisions u SET updated_at = now() WHERE u.uuid = OLD.grantee_uuid OR u.uuid = OLD.grantor_uuid;
-            RETURN OLD;
-        ELSIF (TG_OP = 'UPDATE') THEN
-            UPDATE user_revisions u SET updated_at = now() WHERE u.uuid = OLD.grantee_uuid OR u.uuid = OLD.grantor_uuid OR NEW.grantee_uuid OR u.uuid = NEW.grantor_uuid;
-            RETURN NEW;
-        ELSIF (TG_OP = 'INSERT') THEN
-            UPDATE user_revisions u SET updated_at = now() WHERE u.uuid = NEW.grantee_uuid OR u.uuid = NEW.grantor_uuid;
-            RETURN NEW;
-        END IF;
-    END;
-$trgr$ LANGUAGE plpgsql;
-
-CREATE TRIGGER emergency_access_changed BEFORE INSERT OR UPDATE OR DELETE ON emergency_access FOR EACH ROW EXECUTE FUNCTION emergency_access_changed();
-
-
-
-CREATE FUNCTION group_changed() RETURNS trigger AS $trgr$
-    BEGIN
-        IF (TG_OP = 'DELETE') THEN
-            UPDATE user_revisions u SET updated_at = now() FROM group_users gu WHERE gu.group_uuid = OLD.uuid AND gu.user_uuid = u.uuid;
-            RETURN OLD;
-        ELSIF (TG_OP = 'UPDATE' OR TG_OP = 'INSERT') THEN
-            UPDATE user_revisions u SET updated_at = now() FROM group_users gu WHERE gu.group_uuid = NEW.uuid AND gu.user_uuid = u.uuid;
-            RETURN NEW;
-        END IF;
-    END;
-$trgr$ LANGUAGE plpgsql;
-
-CREATE TRIGGER group_changed BEFORE INSERT OR UPDATE OR DELETE ON groups FOR EACH ROW EXECUTE FUNCTION group_changed();
-
-CREATE FUNCTION collection_group_changed() RETURNS trigger AS $trgr$
-    BEGIN
-        IF (TG_OP = 'DELETE') THEN
-            UPDATE user_revisions u SET updated_at = now() FROM group_users gu WHERE gu.group_uuid = OLD.group_uuid AND gu.user_uuid = u.uuid;
-            RETURN OLD;
-        ELSIF (TG_OP = 'UPDATE') THEN
-            UPDATE user_revisions u SET updated_at = now() FROM group_users gu WHERE (gu.group_uuid = NEW.group_uuid OR gu.group_uuid = OLD.group_uuid) AND gu.user_uuid = u.uuid;
-            RETURN NEW;
-        ELSIF (TG_OP = 'INSERT') THEN
-            UPDATE user_revisions u SET updated_at = now() FROM group_users gu WHERE gu.group_uuid = NEW.group_uuid AND gu.user_uuid = u.uuid;
-            RETURN NEW;
-        END IF;
-    END;
-$trgr$ LANGUAGE plpgsql;
-CREATE TRIGGER collection_group_changed BEFORE INSERT OR UPDATE OR DELETE ON collection_groups FOR EACH ROW EXECUTE FUNCTION collection_group_changed();
-
-
-
-CREATE FUNCTION attachment_changed() RETURNS trigger AS $trgr$
-    BEGIN
-        IF (TG_OP = 'DELETE') THEN
-            UPDATE user_revisions u SET updated_at = now() FROM user_cipher_auth uca WHERE uca.user_uuid = u.uuid AND uca.cipher_uuid = OLD.cipher_uuid;
-            RETURN OLD;
-        ELSIF (TG_OP = 'UPDATE') THEN
-            UPDATE user_revisions u SET updated_at = now() FROM user_cipher_auth uca WHERE uca.user_uuid = u.uuid AND (uca.cipher_uuid = OLD.cipher_uuid OR uca.cipher_uuid = NEW.cipher_uuid);
-            RETURN NEW;
-        ELSIF (TG_OP = 'INSERT') THEN
-            UPDATE user_revisions u SET updated_at = now() FROM user_cipher_auth uca WHERE uca.user_uuid = u.uuid AND uca.cipher_uuid = NEW.cipher_uuid;
-            RETURN NEW;
-        END IF;
-    END;
-$trgr$ LANGUAGE plpgsql;
-CREATE TRIGGER attachment_changed BEFORE INSERT OR UPDATE OR DELETE ON attachments FOR EACH ROW EXECUTE FUNCTION attachment_changed();
-
-
-
-CREATE FUNCTION collection_cipher_changed() RETURNS trigger AS $trgr$
-    BEGIN
-        IF (TG_OP = 'DELETE') THEN
-            UPDATE user_revisions u SET updated_at = now() FROM user_collection_auth uca WHERE uca.user_uuid = u.uuid AND uca.collection_uuid = OLD.collection_uuid;
-            RETURN OLD;
-        ELSIF (TG_OP = 'UPDATE') THEN
-            UPDATE user_revisions u SET updated_at = now() FROM user_collection_auth uca WHERE uca.user_uuid = u.uuid AND (uca.collection_uuid = OLD.collection_uuid OR uca.collection_uuid = NEW.collection_uuid);
-            RETURN NEW;
-        ELSIF (TG_OP = 'INSERT') THEN
-            UPDATE user_revisions u SET updated_at = now() FROM user_collection_auth uca WHERE uca.user_uuid = u.uuid AND uca.collection_uuid = NEW.collection_uuid;
-            RETURN NEW;
-        END IF;
-    END;
-$trgr$ LANGUAGE plpgsql;
-CREATE TRIGGER collection_cipher_changed BEFORE INSERT OR UPDATE OR DELETE ON collection_ciphers FOR EACH ROW EXECUTE FUNCTION collection_cipher_changed();
-
-CREATE FUNCTION collection_changed() RETURNS trigger AS $trgr$
-    BEGIN
-        IF (TG_OP = 'DELETE') THEN
-            UPDATE user_revisions u SET updated_at = now() FROM user_collection_auth uca WHERE uca.user_uuid = u.uuid AND uca.collection_uuid = OLD.uuid;
-            RETURN OLD;
-        ELSIF (TG_OP = 'INSERT' OR TG_OP = 'UPDATE') THEN
-            UPDATE user_revisions u SET updated_at = now() FROM user_collection_auth uca WHERE uca.user_uuid = u.uuid AND uca.collection_uuid = NEW.uuid;
-            RETURN NEW;
-        END IF;
-    END;
-$trgr$ LANGUAGE plpgsql;
-CREATE TRIGGER collection_changed BEFORE INSERT OR UPDATE OR DELETE ON collections FOR EACH ROW EXECUTE FUNCTION collection_changed();

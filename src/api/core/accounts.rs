@@ -21,7 +21,7 @@ use crate::{
     events::log_user_event,
     mail,
     push::{register_push_device, unregister_push_device},
-    util::Upcase,
+    util::{Upcase, AutoTxn},
     CONFIG,
 };
 
@@ -120,12 +120,9 @@ fn enforce_password_hint_setting(password_hint: &Option<String>) -> ApiResult<()
     Ok(())
 }
 
-pub async fn register(data: Json<Upcase<RegisterData>>) -> ApiResult<Json<Value>> {
+pub async fn register(conn: AutoTxn, data: Json<Upcase<RegisterData>>) -> ApiResult<Json<Value>> {
     let data: RegisterData = data.0.data;
     let email = data.email.to_lowercase();
-    let mut conn = DB.get().await?;
-    let tx = conn.transaction().await?;
-    let conn = tx.client();
 
     // Check if the length of the username exceeds 50 characters (Same is Upstream Bitwarden)
     // This also prevents issues with very long usernames causing to large JWT's. See #2419
@@ -142,7 +139,7 @@ pub async fn register(data: Json<Upcase<RegisterData>>) -> ApiResult<Json<Value>
 
     let mut verified_by_invite = false;
 
-    let mut user = match User::find_by_email(conn, &email).await? {
+    let mut user = match User::find_by_email(&conn, &email).await? {
         Some(mut user) => {
             if !user.password_hash.is_empty() {
                 err!("Registration not allowed or user already exists")
@@ -159,7 +156,7 @@ pub async fn register(data: Json<Upcase<RegisterData>>) -> ApiResult<Json<Value>
                     err!("Registration email does not match invite email")
                 }
             } else if Invitation::take(&conn, &email).await? {
-                for user_org in UserOrganization::find_by_user_with_status(conn, user.uuid, UserOrgStatus::Invited).await?.iter_mut() {
+                for user_org in UserOrganization::find_by_user_with_status(&conn, user.uuid, UserOrgStatus::Invited).await?.iter_mut() {
                     user_org.status = UserOrgStatus::Accepted;
                     user_org.save(&conn).await?;
                 }
@@ -222,7 +219,7 @@ pub async fn register(data: Json<Upcase<RegisterData>>) -> ApiResult<Json<Value>
     }
 
     user.save(&conn).await?;
-    tx.commit().await?;
+    conn.commit().await?;
     Ok(Json(json!({
       "Object": "register",
       "CaptchaBypassToken": "",
@@ -482,7 +479,7 @@ pub struct KeyData {
     master_password_hash: String,
 }
 
-pub async fn post_rotatekey(headers: Headers, data: Json<Upcase<KeyData>>) -> ApiResult<()> {
+pub async fn post_rotatekey(conn: AutoTxn, headers: Headers, data: Json<Upcase<KeyData>>) -> ApiResult<()> {
     let data: KeyData = data.0.data;
 
     if !headers.user.check_valid_password(&data.master_password_hash) {
@@ -496,13 +493,10 @@ pub async fn post_rotatekey(headers: Headers, data: Json<Upcase<KeyData>>) -> Ap
     Cipher::validate_notes(&data.ciphers)?;
 
     let user_uuid = headers.user.uuid;
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
 
     // Update folder data
     for folder_data in data.folders {
-        let mut saved_folder = match Folder::get_with_user(conn, folder_data.id, user_uuid).await? {
+        let mut saved_folder = match Folder::get_with_user(&conn, folder_data.id, user_uuid).await? {
             Some(folder) => folder,
             None => err!("Folder doesn't exist"),
         };
@@ -515,7 +509,7 @@ pub async fn post_rotatekey(headers: Headers, data: Json<Upcase<KeyData>>) -> Ap
     use super::ciphers::update_cipher_from_data;
 
     for cipher_data in data.ciphers {
-        let mut saved_cipher = match Cipher::get_for_user_writable(conn, user_uuid, cipher_data.id.ok_or(ApiError::NotFound)?).await? {
+        let mut saved_cipher = match Cipher::get_for_user_writable(&conn, user_uuid, cipher_data.id.ok_or(ApiError::NotFound)?).await? {
             Some(cipher) => cipher,
             None => err!("Cipher doesn't exist"),
         };
@@ -523,7 +517,7 @@ pub async fn post_rotatekey(headers: Headers, data: Json<Upcase<KeyData>>) -> Ap
         // Prevent triggering cipher updates via WebSockets by settings UpdateType::None
         // The user sessions are invalidated because all the ciphers were re-encrypted and thus triggering an update could cause issues.
         // We force the users to logout after the user has been saved to try and prevent these issues.
-        update_cipher_from_data(&mut saved_cipher, cipher_data, &headers, false, &txn, UpdateType::None).await?
+        update_cipher_from_data(&mut saved_cipher, cipher_data, &headers, false, &conn, UpdateType::None).await?
     }
 
     // Update user data
@@ -533,35 +527,32 @@ pub async fn post_rotatekey(headers: Headers, data: Json<Upcase<KeyData>>) -> Ap
     user.private_key = Some(data.private_key);
     user.reset_security_stamp();
 
-    user.save(conn).await?;
+    user.save(&conn).await?;
 
     // Prevent loging out the client where the user requested this endpoint from.
     // If you do logout the user it will causes issues at the client side.
     // Adding the device uuid will prevent this.
-    ws_users().send_logout(&user, conn, Some(headers.device.uuid)).await?;
+    ws_users().send_logout(&user, &conn, Some(headers.device.uuid)).await?;
 
-    txn.commit().await?;
+    conn.commit().await?;
     Ok(())
 }
 
-pub async fn post_sstamp(headers: Headers, data: Json<Upcase<PasswordData>>) -> ApiResult<()> {
+pub async fn post_sstamp(headers: Headers, conn: AutoTxn, data: Json<Upcase<PasswordData>>) -> ApiResult<()> {
     let data: PasswordData = data.0.data;
     let mut user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
         err!("Invalid password")
     }
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
-    let conn = txn.client();
 
-    Device::delete_all_by_user(conn, user.uuid).await?;
+    Device::delete_all_by_user(&conn, user.uuid).await?;
     user.reset_security_stamp();
-    user.save(conn).await?;
+    user.save(&conn).await?;
 
-    ws_users().send_logout(&user, conn, None).await?;
+    ws_users().send_logout(&user, &conn, None).await?;
 
-    txn.commit().await?;
+    conn.commit().await?;
 
     Ok(())
 }

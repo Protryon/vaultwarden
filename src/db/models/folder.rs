@@ -6,6 +6,8 @@ use uuid::Uuid;
 
 use crate::db::Conn;
 
+use super::User;
+
 #[derive(Debug)]
 pub struct Folder {
     pub uuid: Uuid,
@@ -90,16 +92,14 @@ impl Folder {
             &[&self.uuid, &self.created_at, &self.updated_at, &self.user_uuid, &self.name],
         )
         .await?;
+        User::flag_revision_for(conn, self.user_uuid).await?;
         Ok(())
     }
 
     pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
         conn.execute(r"DELETE FROM folders WHERE uuid = $1", &[&self.uuid]).await?;
+        User::flag_revision_for(conn, self.user_uuid).await?;
         Ok(())
-    }
-
-    pub async fn get(conn: &Conn, uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM folders WHERE uuid = $1", &[&uuid]).await?.map(Into::into))
     }
 
     pub async fn get_with_user(conn: &Conn, uuid: Uuid, user_uuid: Uuid) -> ApiResult<Option<Self>> {
@@ -111,6 +111,7 @@ impl Folder {
     }
 
     pub async fn delete_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<()> {
+        User::flag_revision_for(conn, user_uuid).await?;
         conn.execute(r"DELETE FROM folders WHERE user_uuid = $1", &[&user_uuid]).await?;
         Ok(())
     }
@@ -123,10 +124,17 @@ impl FolderCipher {
             &[&self.cipher_uuid, &self.folder_uuid],
         )
         .await?;
+        self.flag_revision(conn).await?;
+        Ok(())
+    }
+
+    pub async fn flag_revision(&self, conn: &Conn) -> ApiResult<()> {
+        conn.execute(r"UPDATE user_revisions u SET updated_at = now() FROM folders f WHERE f.folder_uuid = $1 AND f.user_uuid = u.uuid", &[&self.folder_uuid]).await?;
         Ok(())
     }
 
     pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
+        self.flag_revision(conn).await?;
         conn.execute(r"DELETE FROM folder_ciphers WHERE cipher_uuid = $1 AND folder_uuid = $2", &[&self.cipher_uuid, &self.folder_uuid]).await?;
         Ok(())
     }

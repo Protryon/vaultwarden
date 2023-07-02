@@ -3,6 +3,8 @@ use uuid::Uuid;
 
 use crate::db::Conn;
 
+use super::User;
+
 #[derive(Debug)]
 pub struct Favorite {
     pub user_uuid: Uuid,
@@ -27,6 +29,7 @@ impl Favorite {
         } else {
             conn.execute(r"DELETE FROM favorites WHERE cipher_uuid = $1 AND user_uuid = $2", &[&cipher_uuid, &user_uuid]).await?;
         }
+        User::flag_revision_for(conn, user_uuid).await?;
         Ok(())
     }
 }
