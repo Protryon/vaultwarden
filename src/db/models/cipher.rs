@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use super::{Attachment, Favorite, FolderCipher, Organization, User};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Cipher {
     pub uuid: Uuid,
     pub created_at: DateTime<Utc>,

@@ -1,5 +1,6 @@
 use std::{net::IpAddr, sync::Arc, time::Duration};
 
+use anyhow::Result;
 use axum::{
     extract::{
         ws::{Message, WebSocket},
@@ -13,10 +14,12 @@ use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use http::StatusCode;
 use log::{debug, error, info};
-use rmpv::Value;
+use rmpv::encode::write_value;
+use rmpv::{decode::read_value, Value};
 use serde::Deserialize;
 use tokio::sync::mpsc::{self, Sender};
 use uuid::Uuid;
+use varint_rs::{VarintReader, VarintWriter};
 
 use crate::{
     auth::ClientIp,
@@ -84,7 +87,7 @@ async fn start_websocket(Query(data): Query<WsAccessToken>, ip: ClientIp, ws: We
 
 async fn init_websocket(ws: WebSocket, data: WsAccessToken, ip: ClientIp) -> ApiResult<()> {
     let addr = ip.ip;
-    info!("Accepting Rocket WS connection from {addr}");
+    info!("Accepting WS connection from {addr}");
 
     let Some(token) = data.access_token else { err_code!("Invalid claim", StatusCode::UNAUTHORIZED) };
     let Ok(claims) = crate::auth::decode_login(&token) else { err_code!("Invalid token", StatusCode::UNAUTHORIZED) };
@@ -124,6 +127,26 @@ async fn run_websocket(mut ws: WebSocket, ip: IpAddr, mut rx: mpsc::Receiver<Mes
                             Message::Pong(_) => {
                                 debug!("[{}] received Pong message", ip);
                             },
+                            Message::Binary(message) => {
+                                debug!("[{}] received Binary message: {}", ip, hex::encode(&message));
+                                let msg = match deserialize(&message) {
+                                    Ok(x) => x,
+                                    Err(e) => {
+                                        error!("failed to decode inbound message: {e:#}");
+                                        continue;
+                                    }
+                                };
+                                let Value::Array(msg) = msg else {
+                                    error!("invalid inbound message, not an array");
+                                    continue;
+                                };
+                                if msg.get(0).and_then(|x| x.as_u64()) == Some(6) {
+                                    // binary ping
+                                    ws.send(Message::Binary(message)).await?;
+                                } else {
+                                    error!("unknown message Invokation");
+                                }
+                            },
 
                             // We should receive an initial message with the protocol and version, and we will reply to it
                             Message::Text(message) => {
@@ -131,6 +154,7 @@ async fn run_websocket(mut ws: WebSocket, ip: IpAddr, mut rx: mpsc::Receiver<Mes
                                 let msg = message.strip_suffix(RECORD_SEPARATOR as char).unwrap_or(&message);
 
                                 if serde_json::from_str(msg).ok() == Some(INITIAL_MESSAGE) {
+                                    debug!("responding with initial_response");
                                     ws.send(Message::Binary(INITIAL_RESPONSE.to_vec())).await?;
                                     continue;
                                 }
@@ -138,9 +162,6 @@ async fn run_websocket(mut ws: WebSocket, ip: IpAddr, mut rx: mpsc::Receiver<Mes
                             Message::Close(_) => {
                                 debug!("[{}] received Close message", ip);
                                 break;
-                            },
-                            _ => {
-                                debug!("[{}] received unknown message: {message:?}", ip);
                             },
                         }
                     }
@@ -150,12 +171,20 @@ async fn run_websocket(mut ws: WebSocket, ip: IpAddr, mut rx: mpsc::Receiver<Mes
 
             res = rx.recv() => {
                 match res {
-                    Some(res) => ws.send(res).await?,
+                    Some(res) => {
+                        if let Message::Binary(x) = &res {
+                            debug!("[{ip}] sending message: {}", hex::encode(x));
+                        }
+                        ws.send(res).await?;
+                    },
                     None => break,
                 }
             }
 
-            _ = interval.tick() => ws.send(Message::Ping(create_ping())).await?,
+            _ = interval.tick() => {
+                debug!("[{}] sending Ping message", ip);
+                ws.send(Message::Ping(create_ping())).await?
+            },
         }
     }
     Ok(())
@@ -166,33 +195,21 @@ async fn run_websocket(mut ws: WebSocket, ip: IpAddr, mut rx: mpsc::Receiver<Mes
 //
 
 fn serialize(val: Value) -> Vec<u8> {
-    use rmpv::encode::write_value;
-
-    let mut buf = Vec::new();
+    // reserve space for length
+    let mut buf = vec![];
     write_value(&mut buf, &val).expect("Error encoding MsgPack");
 
-    // Add size bytes at the start
-    // Extracted from BinaryMessageFormat.js
-    let mut size: usize = buf.len();
-    let mut len_buf: Vec<u8> = Vec::new();
+    let mut lenbuf: Vec<u8> = Vec::with_capacity(buf.len() + 5);
+    lenbuf.write_u32_varint(buf.len() as u32).unwrap();
 
-    loop {
-        let mut size_part = size & 0x7f;
-        size >>= 7;
+    lenbuf.append(&mut buf);
+    lenbuf
+}
 
-        if size > 0 {
-            size_part |= 0x80;
-        }
-
-        len_buf.push(size_part as u8);
-
-        if size == 0 {
-            break;
-        }
-    }
-
-    len_buf.append(&mut buf);
-    len_buf
+fn deserialize(mut val: &[u8]) -> Result<Value> {
+    let len = val.read_u32_varint()?;
+    let out = read_value(&mut &val[..len as usize])?;
+    Ok(out)
 }
 
 fn serialize_date(date: DateTime<Utc>) -> Value {
@@ -291,6 +308,19 @@ impl WebSocketUsers {
             push_folder_update(ut, folder, acting_device_uuid, conn).await?;
         }
         Ok(())
+    }
+
+    pub async fn send_cipher_update_all(&self, ut: UpdateType, cipher: &Cipher, acting_device_uuid: Uuid, collection_uuids: Option<Vec<Uuid>>, conn: &Conn) {
+        let users = match cipher.get_auth_users(conn).await {
+            Ok(x) => x,
+            Err(e) => {
+                error!("failed to load users for cipher_update: {e}");
+                return;
+            }
+        };
+        if let Err(e) = self.send_cipher_update(ut, cipher, &users, acting_device_uuid, collection_uuids, conn).await {
+            error!("failed to dispatch cipher_update: {e}");
+        }
     }
 
     pub async fn send_cipher_update(

@@ -627,7 +627,7 @@ async fn resend_user_invite(Path(uuid): Path<Uuid>, _token: AdminToken) -> ApiRe
 #[serde_as]
 #[derive(Deserialize, Debug)]
 struct UserOrgTypeData {
-    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[serde_as(as = "serde_with::PickFirst<(_, serde_with::DisplayFromStr)>")]
     user_type: UserOrgType,
     user_uuid: Uuid,
     org_uuid: Uuid,

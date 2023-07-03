@@ -479,7 +479,7 @@ pub struct KeyData {
     master_password_hash: String,
 }
 
-pub async fn post_rotatekey(conn: AutoTxn, headers: Headers, data: Json<Upcase<KeyData>>) -> ApiResult<()> {
+pub async fn post_rotatekey(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<KeyData>>) -> ApiResult<()> {
     let data: KeyData = data.0.data;
 
     if !headers.user.check_valid_password(&data.master_password_hash) {
@@ -517,7 +517,7 @@ pub async fn post_rotatekey(conn: AutoTxn, headers: Headers, data: Json<Upcase<K
         // Prevent triggering cipher updates via WebSockets by settings UpdateType::None
         // The user sessions are invalidated because all the ciphers were re-encrypted and thus triggering an update could cause issues.
         // We force the users to logout after the user has been saved to try and prevent these issues.
-        update_cipher_from_data(&mut saved_cipher, cipher_data, &headers, false, &conn, UpdateType::None).await?
+        update_cipher_from_data(&mut saved_cipher, cipher_data, &headers, false, &mut conn, UpdateType::None).await?
     }
 
     // Update user data

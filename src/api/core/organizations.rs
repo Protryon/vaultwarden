@@ -8,7 +8,7 @@ use chrono::Utc;
 use log::{debug, error};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use serde_with::{serde_as, DisplayFromStr};
+use serde_with::serde_as;
 use uuid::Uuid;
 
 use crate::api::{ws_users, PasswordData, UpdateType};
@@ -804,7 +804,7 @@ struct CollectionData {
 struct InviteData {
     emails: Vec<String>,
     groups: Vec<Uuid>,
-    #[serde_as(as = "DisplayFromStr")]
+    #[serde_as(as = "serde_with::PickFirst<(_, serde_with::DisplayFromStr)>")]
     r#type: UserOrgType,
     collections: Option<Vec<CollectionData>>,
     access_all: Option<bool>,
@@ -896,6 +896,8 @@ async fn send_invite(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdmi
             mail::send_invite(&email, user.uuid, Some(org_uuid), &org_name, Some(headers.user.email.clone())).await?;
         }
     }
+
+    conn.commit().await?;
 
     Ok(())
 }
@@ -1199,7 +1201,7 @@ async fn get_user(
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct EditUserData {
-    #[serde_as(as = "DisplayFromStr")]
+    #[serde_as(as = "serde_with::PickFirst<(_, serde_with::DisplayFromStr)>")]
     r#type: UserOrgType,
     collections: Option<Vec<CollectionData>>,
     groups: Option<Vec<Uuid>>,
@@ -1428,7 +1430,7 @@ struct RelationsData {
     value: usize,
 }
 
-async fn post_org_import(conn: AutoTxn, Query(query): Query<OrgIdData>, headers: OrgAdminHeaders, data: Json<Upcase<ImportData>>) -> ApiResult<()> {
+async fn post_org_import(mut conn: AutoTxn, Query(query): Query<OrgIdData>, headers: OrgAdminHeaders, data: Json<Upcase<ImportData>>) -> ApiResult<()> {
     let data: ImportData = data.0.data;
     let org_uuid = query.organization_id;
 
@@ -1459,7 +1461,7 @@ async fn post_org_import(conn: AutoTxn, Query(query): Query<OrgIdData>, headers:
     let mut ciphers = Vec::new();
     for cipher_data in data.ciphers {
         let mut cipher = Cipher::new(cipher_data.r#type, cipher_data.name.clone());
-        update_cipher_from_data(&mut cipher, cipher_data, &headers, false, &conn, UpdateType::None).await.ok();
+        update_cipher_from_data(&mut cipher, cipher_data, &headers, false, &mut conn, UpdateType::None).await.ok();
         ciphers.push(cipher);
     }
 

@@ -1,6 +1,7 @@
 use axum_util::errors::{ApiError, ApiResult};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
+use serde_repr::{Deserialize_repr, Serialize_repr};
 use std::{cmp::Ordering, str::FromStr};
 use tokio_postgres::Row;
 use uuid::Uuid;
@@ -50,7 +51,7 @@ pub enum UserOrgStatus {
     Unknown = i32::MAX,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::FromRepr)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::FromRepr, Serialize_repr, Deserialize_repr)]
 #[repr(i32)]
 pub enum UserOrgType {
     Owner = 0,

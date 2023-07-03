@@ -234,7 +234,7 @@ pub struct Attachments2Data {
 /// Called when creating a new org-owned cipher, or cloning a cipher (whether
 /// user- or org-owned). When cloning a cipher to a user-owned cipher,
 /// `organizationId` is null.
-pub async fn post_ciphers_create(conn: AutoTxn, headers: Headers, data: Json<Upcase<ShareCipherData>>) -> ApiResult<Json<Value>> {
+pub async fn post_ciphers_create(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<ShareCipherData>>) -> ApiResult<Json<Value>> {
     let mut data: ShareCipherData = data.0.data;
 
     // Check if there are one more more collections selected when this cipher is part of an organization.
@@ -260,14 +260,14 @@ pub async fn post_ciphers_create(conn: AutoTxn, headers: Headers, data: Json<Upc
     // or otherwise), we can just ignore this field entirely.
     data.cipher.last_known_revision_date = None;
 
-    let out = share_cipher_by_uuid(cipher.uuid, data, &headers, &conn).await?;
+    let out = share_cipher_by_uuid(cipher.uuid, data, &headers, &mut conn).await?;
     conn.commit().await?;
 
     Ok(out)
 }
 
 /// Called when creating a new user-owned cipher.
-pub async fn post_ciphers(conn: AutoTxn, headers: Headers, data: Json<Upcase<CipherData>>) -> ApiResult<Json<Value>> {
+pub async fn post_ciphers(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<CipherData>>) -> ApiResult<Json<Value>> {
     let mut data: CipherData = data.0.data;
 
     // The web/browser clients set this field to null as expected, but the
@@ -277,7 +277,7 @@ pub async fn post_ciphers(conn: AutoTxn, headers: Headers, data: Json<Upcase<Cip
     data.last_known_revision_date = None;
 
     let mut cipher = Cipher::new(data.r#type, data.name.clone());
-    update_cipher_from_data(&mut cipher, data, &headers, false, &conn, UpdateType::SyncCipherCreate).await?;
+    update_cipher_from_data(&mut cipher, data, &headers, false, &mut conn, UpdateType::SyncCipherCreate).await?;
 
     let out = Json(cipher.to_json(&conn, headers.user.uuid, true).await?);
     conn.commit().await?;
@@ -307,7 +307,7 @@ pub async fn update_cipher_from_data(
     data: CipherData,
     headers: &Headers,
     shared_to_collection: bool,
-    conn: &Conn,
+    conn: &mut AutoTxn,
     ut: UpdateType,
 ) -> ApiResult<()> {
     enforce_personal_ownership_policy(Some(&data), headers, conn).await?;
@@ -449,8 +449,16 @@ pub async fn update_cipher_from_data(
 
             log_event(event_type, cipher.uuid, org_uuid, headers.user.uuid, headers.device.atype, Utc::now(), headers.ip, conn).await?;
         }
-        let users = cipher.get_auth_users(conn).await?;
-        ws_users().send_cipher_update(ut, cipher, &users, headers.device.uuid, None, conn).await?;
+        let cipher = cipher.clone();
+        let acting_device_uuid = headers.device.uuid;
+        conn.defer(move || {
+            tokio::spawn(async move {
+                let Ok(conn) = DB.get().await else {
+                    return;
+                };
+                ws_users().send_cipher_update_all(ut, &cipher, acting_device_uuid, None, &conn).await;
+            });
+        });
     }
     Ok(())
 }
@@ -472,7 +480,7 @@ pub struct RelationsData {
     value: usize,
 }
 
-pub async fn post_ciphers_import(conn: AutoTxn, headers: Headers, data: Json<Upcase<ImportData>>) -> ApiResult<()> {
+pub async fn post_ciphers_import(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<ImportData>>) -> ApiResult<()> {
     enforce_personal_ownership_policy(None, &headers, &conn).await?;
 
     let data: ImportData = data.0.data;
@@ -501,18 +509,20 @@ pub async fn post_ciphers_import(conn: AutoTxn, headers: Headers, data: Json<Upc
         cipher_data.folder_id = folder_uuid;
 
         let mut cipher = Cipher::new(cipher_data.r#type, cipher_data.name.clone());
-        update_cipher_from_data(&mut cipher, cipher_data, &headers, false, &conn, UpdateType::None).await?;
+        update_cipher_from_data(&mut cipher, cipher_data, &headers, false, &mut conn, UpdateType::None).await?;
     }
 
     let user = headers.user;
-    ws_users().send_user_update(UpdateType::SyncVault, &conn, &user).await?;
 
-    conn.commit().await?;
+    let conn = conn.commit().await?;
+
+    //TODO: can user_update be affected by active txn?
+    ws_users().send_user_update(UpdateType::SyncVault, &conn, &user).await?;
 
     Ok(())
 }
 
-pub async fn put_cipher(conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<CipherData>>) -> ApiResult<Json<Value>> {
+pub async fn put_cipher(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<CipherData>>) -> ApiResult<Json<Value>> {
     let data: CipherData = data.0.data;
 
     let mut cipher = match Cipher::get_for_user_writable(&conn, headers.user.uuid, uuid).await? {
@@ -525,7 +535,7 @@ pub async fn put_cipher(conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers,
     // cipher itself, so the user shouldn't need write access to change these.
     // Interestingly, upstream Bitwarden doesn't properly handle this either.
 
-    update_cipher_from_data(&mut cipher, data, &headers, false, &conn, UpdateType::SyncCipherUpdate).await?;
+    update_cipher_from_data(&mut cipher, data, &headers, false, &mut conn, UpdateType::SyncCipherUpdate).await?;
 
     let conn = conn.commit().await?;
 
@@ -623,10 +633,10 @@ pub struct ShareCipherData {
     collection_ids: Vec<Uuid>,
 }
 
-pub async fn put_cipher_share(conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<ShareCipherData>>) -> ApiResult<Json<Value>> {
+pub async fn put_cipher_share(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<ShareCipherData>>) -> ApiResult<Json<Value>> {
     let data: ShareCipherData = data.0.data;
 
-    let out = share_cipher_by_uuid(uuid, data, &headers, &conn).await?;
+    let out = share_cipher_by_uuid(uuid, data, &headers, &mut conn).await?;
     conn.commit().await?;
     Ok(out)
 }
@@ -638,7 +648,7 @@ pub struct ShareSelectedCipherData {
     collection_ids: Vec<Uuid>,
 }
 
-pub async fn put_cipher_share_selected(conn: AutoTxn, headers: Headers, data: Json<Upcase<ShareSelectedCipherData>>) -> ApiResult<()> {
+pub async fn put_cipher_share_selected(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<ShareSelectedCipherData>>) -> ApiResult<()> {
     let mut data: ShareSelectedCipherData = data.0.data;
     let mut cipher_ids: Vec<Uuid> = Vec::new();
 
@@ -664,7 +674,7 @@ pub async fn put_cipher_share_selected(conn: AutoTxn, headers: Headers, data: Js
         };
 
         match shared_cipher_data.cipher.id.take() {
-            Some(id) => share_cipher_by_uuid(id, shared_cipher_data, &headers, &conn).await?.0,
+            Some(id) => share_cipher_by_uuid(id, shared_cipher_data, &headers, &mut conn).await?.0,
             None => err!("Request missing ids field"),
         };
     }
@@ -673,7 +683,7 @@ pub async fn put_cipher_share_selected(conn: AutoTxn, headers: Headers, data: Js
     Ok(())
 }
 
-async fn share_cipher_by_uuid(uuid: Uuid, data: ShareCipherData, headers: &Headers, conn: &Conn) -> ApiResult<Json<Value>> {
+async fn share_cipher_by_uuid(uuid: Uuid, data: ShareCipherData, headers: &Headers, conn: &mut AutoTxn) -> ApiResult<Json<Value>> {
     let mut cipher = match Cipher::get_for_user_writable(conn, headers.user.uuid, uuid).await? {
         Some(cipher) => cipher,
         None => err!("Cipher doesn't exist"),
@@ -789,7 +799,7 @@ async fn save_attachment(
     cipher_uuid: Uuid,
     TypedMultipart(data): TypedMultipart<UploadData>,
     headers: &Headers,
-    conn: &Conn,
+    conn: &mut AutoTxn,
 ) -> ApiResult<Cipher> {
     let cipher = match Cipher::get_for_user_writable(conn, headers.user.uuid, cipher_uuid).await? {
         Some(cipher) => cipher,
@@ -884,9 +894,16 @@ async fn save_attachment(
 
     tokio::fs::write(&file_path, &data.data.contents).await?;
 
-    let users = cipher.get_auth_users(&conn).await?;
-
-    ws_users().send_cipher_update(UpdateType::SyncCipherUpdate, &cipher, &users, headers.device.uuid, None, &conn).await?;
+    let cipher2 = cipher.clone();
+    let acting_device_uuid = headers.device.uuid;
+    conn.defer(move || {
+        tokio::spawn(async move {
+            let Ok(conn) = DB.get().await else {
+                return;
+            };
+            ws_users().send_cipher_update_all(UpdateType::SyncCipherUpdate, &cipher2, acting_device_uuid, None, &conn).await;
+        });
+    });
 
     if let Some(org_uuid) = cipher.organization_uuid {
         log_event(EventType::CipherAttachmentCreated, cipher.uuid, org_uuid, headers.user.uuid, headers.device.atype, Utc::now(), headers.ip, &conn).await?;
@@ -899,19 +916,19 @@ async fn save_attachment(
 /// This route needs a rank specified so that Rocket prioritizes the
 /// /ciphers/<uuid>/attachment/v2 route, which would otherwise conflict
 /// with this one.
-pub async fn post_attachment_v2_data(conn: AutoTxn, Path(path): Path<AttachmentPath>, headers: Headers, data: TypedMultipart<UploadData>) -> ApiResult<()> {
+pub async fn post_attachment_v2_data(mut conn: AutoTxn, Path(path): Path<AttachmentPath>, headers: Headers, data: TypedMultipart<UploadData>) -> ApiResult<()> {
     let attachment = match Attachment::get_with_cipher_and_user(&conn, path.attachment_id, path.uuid, headers.user.uuid).await? {
         Some(attachment) => Some(attachment),
         None => err!("Attachment doesn't exist"),
     };
 
-    save_attachment(attachment, path.uuid, data, &headers, &conn).await?;
+    save_attachment(attachment, path.uuid, data, &headers, &mut conn).await?;
     conn.commit().await?;
 
     Ok(())
 }
 
-async fn do_attachment_post(conn: &Conn, uuid: Uuid, headers: Headers, data: TypedMultipart<UploadData>) -> ApiResult<Json<Value>> {
+async fn do_attachment_post(conn: &mut AutoTxn, uuid: Uuid, headers: Headers, data: TypedMultipart<UploadData>) -> ApiResult<Json<Value>> {
     // Setting this as None signifies to save_attachment() that it should create
     // the attachment database record as well as saving the data to disk.
     let attachment = None;
@@ -922,38 +939,40 @@ async fn do_attachment_post(conn: &Conn, uuid: Uuid, headers: Headers, data: Typ
 }
 
 /// Legacy API for creating an attachment associated with a cipher.
-pub async fn post_attachment(conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: TypedMultipart<UploadData>) -> ApiResult<Json<Value>> {
-    let out = do_attachment_post(&conn, uuid, headers, data).await?;
+pub async fn post_attachment(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: TypedMultipart<UploadData>) -> ApiResult<Json<Value>> {
+    let out = do_attachment_post(&mut conn, uuid, headers, data).await?;
     conn.commit().await?;
     Ok(out)
 }
 
 pub async fn post_attachment_share(
-    conn: AutoTxn,
+    mut conn: AutoTxn,
     Path(path): Path<AttachmentPath>,
     headers: Headers,
     data: TypedMultipart<UploadData>,
 ) -> ApiResult<Json<Value>> {
-    _delete_cipher_attachment_by_id(path.uuid, path.attachment_id, &headers, &conn).await?;
-    let out = do_attachment_post(&conn, path.uuid, headers, data).await?;
+    _delete_cipher_attachment_by_id(path.uuid, path.attachment_id, &headers, &mut conn).await?;
+    let out = do_attachment_post(&mut conn, path.uuid, headers, data).await?;
     conn.commit().await?;
     Ok(out)
 }
 
-pub async fn delete_attachment(conn: AutoTxn, Path(path): Path<AttachmentPath>, headers: Headers) -> ApiResult<()> {
-    _delete_cipher_attachment_by_id(path.uuid, path.attachment_id, &headers, &conn).await?;
+pub async fn delete_attachment(mut conn: AutoTxn, Path(path): Path<AttachmentPath>, headers: Headers) -> ApiResult<()> {
+    _delete_cipher_attachment_by_id(path.uuid, path.attachment_id, &headers, &mut conn).await?;
     conn.commit().await?;
     Ok(())
 }
 
-pub async fn delete_cipher_soft(Path(uuid): Path<Uuid>, headers: Headers) -> ApiResult<()> {
-    let conn = DB.get().await?;
-    _delete_cipher_by_uuid(uuid, &headers, &conn, true).await
+pub async fn delete_cipher_soft(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers) -> ApiResult<()> {
+    _delete_cipher_by_uuid(uuid, &headers, &mut conn, true).await?;
+    conn.commit().await?;
+    Ok(())
 }
 
-pub async fn delete_cipher_hard(Path(uuid): Path<Uuid>, headers: Headers) -> ApiResult<()> {
-    let conn = DB.get().await?;
-    _delete_cipher_by_uuid(uuid, &headers, &conn, false).await
+pub async fn delete_cipher_hard(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers) -> ApiResult<()> {
+    _delete_cipher_by_uuid(uuid, &headers, &mut conn, false).await?;
+    conn.commit().await?;
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -970,17 +989,18 @@ pub async fn delete_cipher_selected_soft(conn: AutoTxn, headers: Headers, data: 
     _delete_multiple_ciphers(conn, headers, true, data).await
 }
 
-pub async fn restore_cipher_put(Path(uuid): Path<Uuid>, headers: Headers) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
-    _restore_cipher_by_uuid(uuid, &headers, &conn).await
+pub async fn restore_cipher_put(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers) -> ApiResult<Json<Value>> {
+    let out = _restore_cipher_by_uuid(uuid, &headers, &mut conn).await?;
+    conn.commit().await?;
+    Ok(out)
 }
 
-pub async fn restore_cipher_selected(conn: AutoTxn, headers: Headers, data: Json<Upcase<IdData>>) -> ApiResult<Json<Value>> {
+pub async fn restore_cipher_selected(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<IdData>>) -> ApiResult<Json<Value>> {
     let uuids = data.0.data.ids;
 
     let mut ciphers: Vec<Value> = Vec::new();
     for uuid in uuids {
-        ciphers.push(_restore_cipher_by_uuid(uuid, &headers, &conn).await?.0);
+        ciphers.push(_restore_cipher_by_uuid(uuid, &headers, &mut conn).await?.0);
     }
 
     conn.commit().await?;
@@ -1010,6 +1030,7 @@ pub async fn move_cipher_selected(conn: AutoTxn, headers: Headers, data: Json<Up
         }
     }
 
+    let mut to_update = vec![];
     for uuid in data.ids {
         let cipher = match Cipher::get_for_user_writable(&conn, headers.user.uuid, uuid).await? {
             Some(cipher) => cipher,
@@ -1018,9 +1039,12 @@ pub async fn move_cipher_selected(conn: AutoTxn, headers: Headers, data: Json<Up
 
         cipher.move_to_folder(&conn, data.folder_id, user_uuid).await?;
 
+        to_update.push(cipher);
+    }
+    let conn = conn.commit().await?;
+    for cipher in to_update {
         ws_users().send_cipher_update(UpdateType::SyncCipherUpdate, &cipher, &[user_uuid], headers.device.uuid, None, &conn).await?;
     }
-    conn.commit().await?;
 
     Ok(())
 }
@@ -1088,21 +1112,31 @@ pub async fn delete_all(
     Ok(())
 }
 
-async fn _delete_cipher_by_uuid(uuid: Uuid, headers: &Headers, conn: &Conn, soft_delete: bool) -> ApiResult<()> {
+async fn _delete_cipher_by_uuid(uuid: Uuid, headers: &Headers, conn: &mut AutoTxn, soft_delete: bool) -> ApiResult<()> {
     let mut cipher = match Cipher::get_for_user_writable(conn, headers.user.uuid, uuid).await? {
         Some(cipher) => cipher,
         None => err!("Cipher doesn't exist"),
     };
 
-    let users = cipher.get_auth_users(conn).await?;
-    if soft_delete {
+    let update_type = if soft_delete {
         cipher.deleted_at = Some(Utc::now());
         cipher.save(conn).await?;
-        ws_users().send_cipher_update(UpdateType::SyncCipherUpdate, &cipher, &users, headers.device.uuid, None, conn).await?;
+        UpdateType::SyncCipherUpdate
     } else {
         cipher.delete(conn).await?;
-        ws_users().send_cipher_update(UpdateType::SyncCipherDelete, &cipher, &users, headers.device.uuid, None, conn).await?;
-    }
+        UpdateType::SyncCipherDelete
+    };
+
+    let cipher2 = cipher.clone();
+    let acting_device_uuid = headers.device.uuid;
+    conn.defer(move || {
+        tokio::spawn(async move {
+            let Ok(conn) = DB.get().await else {
+                return;
+            };
+            ws_users().send_cipher_update_all(update_type, &cipher2, acting_device_uuid, None, &conn).await;
+        });
+    });
 
     if let Some(org_uuid) = cipher.organization_uuid {
         let event_type = match soft_delete {
@@ -1116,18 +1150,18 @@ async fn _delete_cipher_by_uuid(uuid: Uuid, headers: &Headers, conn: &Conn, soft
     Ok(())
 }
 
-async fn _delete_multiple_ciphers(conn: AutoTxn, headers: Headers, soft_delete: bool, data: Json<Upcase<IdData>>) -> ApiResult<()> {
+async fn _delete_multiple_ciphers(mut conn: AutoTxn, headers: Headers, soft_delete: bool, data: Json<Upcase<IdData>>) -> ApiResult<()> {
     let uuids = data.0.data.ids;
 
     for uuid in uuids {
-        _delete_cipher_by_uuid(uuid, &headers, &conn, soft_delete).await?;
+        _delete_cipher_by_uuid(uuid, &headers, &mut conn, soft_delete).await?;
     }
     conn.commit().await?;
 
     Ok(())
 }
 
-async fn _restore_cipher_by_uuid(uuid: Uuid, headers: &Headers, conn: &Conn) -> ApiResult<Json<Value>> {
+async fn _restore_cipher_by_uuid(uuid: Uuid, headers: &Headers, conn: &mut AutoTxn) -> ApiResult<Json<Value>> {
     let mut cipher = match Cipher::get_for_user_writable(conn, headers.user.uuid, uuid).await? {
         Some(cipher) => cipher,
         None => err!("Cipher doesn't exist"),
@@ -1135,9 +1169,17 @@ async fn _restore_cipher_by_uuid(uuid: Uuid, headers: &Headers, conn: &Conn) -> 
 
     cipher.deleted_at = None;
     cipher.save(conn).await?;
-    let users = cipher.get_auth_users(conn).await?;
 
-    ws_users().send_cipher_update(UpdateType::SyncCipherUpdate, &cipher, &users, headers.device.uuid, None, conn).await?;
+    let cipher2 = cipher.clone();
+    let acting_device_uuid = headers.device.uuid;
+    conn.defer(move || {
+        tokio::spawn(async move {
+            let Ok(conn) = DB.get().await else {
+                return;
+            };
+            ws_users().send_cipher_update_all(UpdateType::SyncCipherUpdate, &cipher2, acting_device_uuid, None, &conn).await;
+        });
+    });
 
     if let Some(org_uuid) = cipher.organization_uuid {
         log_event(EventType::CipherRestored, cipher.uuid, org_uuid, headers.user.uuid, headers.device.atype, Utc::now(), headers.ip, conn).await?;
@@ -1146,7 +1188,7 @@ async fn _restore_cipher_by_uuid(uuid: Uuid, headers: &Headers, conn: &Conn) -> 
     Ok(Json(cipher.to_json(conn, headers.user.uuid, true).await?))
 }
 
-async fn _delete_cipher_attachment_by_id(uuid: Uuid, attachment_id: Uuid, headers: &Headers, conn: &Conn) -> ApiResult<()> {
+async fn _delete_cipher_attachment_by_id(uuid: Uuid, attachment_id: Uuid, headers: &Headers, conn: &mut AutoTxn) -> ApiResult<()> {
     let attachment = match Attachment::get_with_cipher_and_user_writable(conn, attachment_id, uuid, headers.user.uuid).await? {
         Some(attachment) => attachment,
         None => err!("Attachment doesn't exist"),
@@ -1159,12 +1201,18 @@ async fn _delete_cipher_attachment_by_id(uuid: Uuid, attachment_id: Uuid, header
 
     // Delete attachment
     attachment.delete(conn).await?;
-    let users = cipher.get_auth_users(conn).await?;
-
-    ws_users().send_cipher_update(UpdateType::SyncCipherUpdate, &cipher, &users, headers.device.uuid, None, conn).await?;
-
     if let Some(org_uuid) = cipher.organization_uuid {
         log_event(EventType::CipherAttachmentDeleted, cipher.uuid, org_uuid, headers.user.uuid, headers.device.atype, Utc::now(), headers.ip, conn).await?;
     }
+
+    let acting_device_uuid = headers.device.uuid;
+    conn.defer(move || {
+        tokio::spawn(async move {
+            let Ok(conn) = DB.get().await else {
+                return;
+            };
+            ws_users().send_cipher_update_all(UpdateType::SyncCipherUpdate, &cipher, acting_device_uuid, None, &conn).await;
+        });
+    });
     Ok(())
 }

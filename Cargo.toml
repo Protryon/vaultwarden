@@ -41,11 +41,13 @@ lazy_static = "1.4"
 strum = { version = "0.25", features = ["derive"] }
 mime_guess = "2.0.4"
 mime = "0.3.17"
-smallvec = "1.10"
+smallvec = { version = "1.10", features = ["write"] }
 axum-extra = { version = "0.7", features = ["cookie"] }
 serde_repr = "0.1"
 serde-aux = "4.2"
 axum_typed_multipart = "0.5.0"
+hex = "0.4"
+varint-rs = "2.2.0"
 
 jsonwebtoken = "8.3.0"
 

@@ -178,7 +178,10 @@ impl IntoResponseParts for Cached {
     }
 }
 
-pub struct AutoTxn(Option<ConnOwned>);
+pub struct AutoTxn {
+    conn: Option<ConnOwned>,
+    deferred: Vec<Box<dyn FnOnce() + Send + Sync + 'static>>,
+}
 
 #[async_trait::async_trait]
 impl<S: Send + Sync> FromRequestParts<S> for AutoTxn {
@@ -187,7 +190,10 @@ impl<S: Send + Sync> FromRequestParts<S> for AutoTxn {
     async fn from_request_parts(_req: &mut Parts, _state: &S) -> ApiResult<Self> {
         let conn = DB.get().await?;
         conn.batch_execute("BEGIN").await?;
-        Ok(Self(Some(conn)))
+        Ok(Self {
+            conn: Some(conn),
+            deferred: vec![],
+        })
     }
 }
 
@@ -195,26 +201,33 @@ impl Deref for AutoTxn {
     type Target = Conn;
 
     fn deref(&self) -> &Self::Target {
-        self.0.as_ref().unwrap()
+        self.conn.as_ref().unwrap()
     }
 }
 
 impl AutoTxn {
     pub async fn commit(mut self) -> ApiResult<ConnOwned> {
         self.batch_execute("COMMIT").await?;
-        Ok(self.0.take().unwrap())
+        for deferred in std::mem::take(&mut self.deferred) {
+            deferred();
+        }
+        Ok(self.conn.take().unwrap())
     }
 
     #[allow(dead_code)]
     pub async fn rollback(mut self) -> ApiResult<ConnOwned> {
         self.batch_execute("ROLLBACK").await?;
-        Ok(self.0.take().unwrap())
+        Ok(self.conn.take().unwrap())
+    }
+
+    pub fn defer(&mut self, func: impl FnOnce() + Send + Sync + 'static) {
+        self.deferred.push(Box::new(func));
     }
 }
 
 impl Drop for AutoTxn {
     fn drop(&mut self) {
-        if let Some(conn) = self.0.take() {
+        if let Some(conn) = self.conn.take() {
             tokio::spawn(async move {
                 if let Err(e) = conn.batch_execute("ROLLBACK").await {
                     error!("failed to dispatch rollback to dropped txn: {e}");
