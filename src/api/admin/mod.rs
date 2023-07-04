@@ -20,8 +20,9 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::{
-    api::{ApiResult, PUBLIC_NO_TRAILING_SLASH},
+    api::ApiResult,
     auth::{decode_admin, encode_jwt, generate_admin_claims, ClientIp},
+    config::PUBLIC_NO_TRAILING_SLASH,
     db::{
         Attachment, Cipher, Collection, Conn, Device, Event, EventType, Group, Invitation, OrgPolicyErr, Organization, OrganizationPolicy, TwoFactor, User,
         UserOrgType, UserOrganization, DB,

@@ -5,7 +5,7 @@ CREATE TABLE users (
     name TEXT NOT NULL,
     password_hash bytea NOT NULL,
     salt bytea NOT NULL,
-    password_iterations INTEGER NOT NULL,
+    password_iterations INT4 NOT NULL,
     password_hint TEXT,
     akey TEXT NOT NULL,
     private_key TEXT,
@@ -15,19 +15,19 @@ CREATE TABLE users (
     security_stamp UUID NOT NULL,
     equivalent_domains TEXT NOT NULL,
     excluded_globals TEXT NOT NULL,
-    client_kdf_type INTEGER DEFAULT 0 NOT NULL,
-    client_kdf_iter INTEGER DEFAULT 100000 NOT NULL,
+    client_kdf_type INT4 DEFAULT 0 NOT NULL,
+    client_kdf_iter INT4 DEFAULT 100000 NOT NULL,
     verified_at TIMESTAMPTZ,
     last_verifying_at TIMESTAMPTZ,
-    login_verify_count INTEGER DEFAULT 0 NOT NULL,
+    login_verify_count INT4 DEFAULT 0 NOT NULL,
     email_new TEXT DEFAULT NULL::VARCHAR,
     email_new_token TEXT DEFAULT NULL::VARCHAR,
     enabled BOOLEAN DEFAULT true NOT NULL,
     stamp_exception TEXT,
     api_key TEXT,
     avatar_color TEXT,
-    client_kdf_memory INTEGER,
-    client_kdf_parallelism INTEGER,
+    client_kdf_memory INT4,
+    client_kdf_parallelism INT4,
     external_id TEXT
 );
 
@@ -52,8 +52,8 @@ CREATE TABLE user_organizations (
     organization_uuid UUID NOT NULL REFERENCES organizations(uuid) ON DELETE CASCADE,
     access_all BOOLEAN NOT NULL,
     akey TEXT NOT NULL,
-    status INTEGER NOT NULL,
-    atype INTEGER NOT NULL,
+    status INT4 NOT NULL,
+    atype INT4 NOT NULL,
     reset_password_key TEXT,
     revoked BOOLEAN NOT NULL DEFAULT false,
     PRIMARY KEY (user_uuid, organization_uuid)
@@ -65,14 +65,14 @@ CREATE TABLE ciphers (
     updated_at TIMESTAMPTZ NOT NULL,
     user_uuid UUID REFERENCES users(uuid) ON DELETE CASCADE,
     organization_uuid UUID REFERENCES organizations(uuid) ON DELETE CASCADE,
-    atype INTEGER NOT NULL,
+    atype INT4 NOT NULL,
     name TEXT NOT NULL,
     notes TEXT,
     fields JSONB,
     data JSONB NOT NULL,
     password_history JSONB,
     deleted_at TIMESTAMPTZ,
-    reprompt INTEGER
+    reprompt INT4
 );
 
 CREATE INDEX cipher_user ON ciphers(user_uuid);
@@ -82,7 +82,7 @@ CREATE TABLE attachments (
     uuid UUID NOT NULL PRIMARY KEY,
     cipher_uuid UUID NOT NULL REFERENCES ciphers(uuid) ON DELETE CASCADE,
     file_name TEXT NOT NULL,
-    file_size INTEGER NOT NULL,
+    file_size INT4 NOT NULL,
     akey TEXT
 );
 
@@ -124,7 +124,7 @@ CREATE TABLE devices (
     updated_at TIMESTAMPTZ NOT NULL,
     user_uuid UUID NOT NULL REFERENCES users(uuid) ON DELETE CASCADE,
     name TEXT NOT NULL,
-    atype INTEGER NOT NULL,
+    atype INT4 NOT NULL,
     push_token TEXT,
     refresh_token TEXT NOT NULL,
     twofactor_remember TEXT,
@@ -140,9 +140,9 @@ CREATE TABLE emergency_access (
     grantee_uuid UUID REFERENCES users(uuid) ON DELETE CASCADE,
     email TEXT,
     key_encrypted TEXT,
-    atype INTEGER NOT NULL,
-    status INTEGER NOT NULL,
-    wait_time_days INTEGER NOT NULL,
+    atype INT4 NOT NULL,
+    status INT4 NOT NULL,
+    wait_time_days INT4 NOT NULL,
     recovery_initiated_at TIMESTAMPTZ,
     last_notification_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ NOT NULL,
@@ -152,7 +152,7 @@ CREATE TABLE emergency_access (
 CREATE TABLE organization_policies (
     uuid UUID NOT NULL PRIMARY KEY,
     organization_uuid UUID NOT NULL REFERENCES organizations(uuid) ON DELETE CASCADE,
-    atype INTEGER NOT NULL,
+    atype INT4 NOT NULL,
     enabled BOOLEAN NOT NULL,
     data JSONB NOT NULL
 );
@@ -161,14 +161,14 @@ CREATE INDEX organization_policies_org ON organization_policies(organization_uui
 
 CREATE TABLE events (
     uuid UUID NOT NULL PRIMARY KEY,
-    event_type INTEGER NOT NULL,
+    event_type INT4 NOT NULL,
     user_uuid UUID REFERENCES users(uuid) ON DELETE CASCADE,
     organization_uuid UUID REFERENCES organizations(uuid) ON DELETE CASCADE,
     cipher_uuid UUID REFERENCES ciphers(uuid) ON DELETE CASCADE,
     collection_uuid UUID REFERENCES collections(uuid) ON DELETE CASCADE,
     group_uuid UUID REFERENCES groups(uuid) ON DELETE CASCADE,
     act_user_uuid UUID REFERENCES users(uuid) ON DELETE CASCADE,
-    device_type INTEGER,
+    device_type INT4,
     ip_address TEXT,
     event_date TIMESTAMPTZ NOT NULL,
     policy_uuid UUID REFERENCES organization_policies(uuid) ON DELETE CASCADE,
@@ -212,7 +212,7 @@ CREATE TABLE invitations (
 CREATE TABLE organization_api_key (
     uuid UUID NOT NULL PRIMARY KEY,
     organization_uuid UUID NOT NULL REFERENCES organizations(uuid) ON DELETE CASCADE,
-    atype INTEGER NOT NULL,
+    atype INT4 NOT NULL,
     api_key TEXT,
     revision_date TIMESTAMPTZ NOT NULL
 );
@@ -225,14 +225,14 @@ CREATE TABLE sends (
     organization_uuid UUID REFERENCES organizations(uuid) ON DELETE CASCADE,
     name TEXT NOT NULL,
     notes TEXT,
-    atype INTEGER NOT NULL,
+    atype INT4 NOT NULL,
     data JSONB NOT NULL,
     akey TEXT NOT NULL,
     password_hash bytea,
     password_salt bytea,
-    password_iter INTEGER,
-    max_access_count INTEGER,
-    access_count INTEGER NOT NULL,
+    password_iter INT4,
+    max_access_count INT4,
+    access_count INT4 NOT NULL,
     creation_date TIMESTAMPTZ NOT NULL,
     revision_date TIMESTAMPTZ NOT NULL,
     expiration_date TIMESTAMPTZ,
@@ -244,7 +244,7 @@ CREATE TABLE sends (
 
 CREATE TABLE twofactor (
     user_uuid UUID NOT NULL REFERENCES users(uuid) ON DELETE CASCADE,
-    atype INTEGER NOT NULL,
+    atype INT4 NOT NULL,
     enabled BOOLEAN NOT NULL,
     data TEXT NOT NULL,
     last_used TIMESTAMPTZ,
@@ -263,7 +263,7 @@ CREATE TABLE twofactor_incomplete (
 CREATE INDEX twofactor_incomplete_idx ON twofactor_incomplete(user_uuid, device_uuid);
 
 CREATE TABLE collection_users (
-    user_uuid UUID NOT NULL REFERENCES collections(uuid) ON DELETE CASCADE,
+    user_uuid UUID NOT NULL REFERENCES users(uuid) ON DELETE CASCADE,
     collection_uuid UUID NOT NULL REFERENCES collections(uuid) ON DELETE CASCADE,
     read_only BOOLEAN DEFAULT false NOT NULL,
     hide_passwords BOOLEAN DEFAULT false NOT NULL,

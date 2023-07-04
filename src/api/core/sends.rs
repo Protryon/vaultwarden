@@ -257,8 +257,8 @@ async fn post_send_file(conn: AutoTxn, headers: Headers, data: TypedMultipart<Up
     }
 
     send.save(&conn).await?;
+    let conn = conn.commit().await?;
     ws_users().send_send_update(UpdateType::SyncSendCreate, &send, &[headers.user.uuid], headers.device.uuid, &conn).await?;
-    conn.commit().await?;
 
     Ok(Json(send.to_json()))
 }
@@ -345,9 +345,8 @@ async fn post_send_file_v2_data(
 
     send.save(&conn).await?;
 
+    let conn = conn.commit().await?;
     ws_users().send_send_update(UpdateType::SyncSendCreate, &send, &[send.user_uuid.unwrap()], headers.device.uuid, &conn).await?;
-
-    conn.commit().await?;
 
     Ok(())
 }

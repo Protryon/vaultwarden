@@ -17,8 +17,8 @@ use crate::{
     api::{self, ws_users, PasswordData, UpdateType},
     auth::Headers,
     db::{
-        Attachment, Cipher, CipherType, Collection, CollectionCipher, Conn, EventType, Folder, OrgPolicyType, OrganizationPolicy, RepromptType, UserOrgType,
-        UserOrganization, DB,
+        Attachment, Cipher, CipherType, Collection, CollectionCipher, CollectionWithAccess, Conn, EventType, Folder, FullCipher, OrgPolicyType,
+        OrganizationPolicy, RepromptType, UserOrgType, UserOrganization, DB,
     },
     events::log_event,
     util::{AutoTxn, Upcase},
@@ -83,7 +83,7 @@ pub fn route(router: Router) -> Router {
 
 #[derive(Deserialize, Default)]
 pub struct SyncData {
-    #[serde(rename = "excludeDomains")]
+    #[serde(rename = "excludeDomains", default)]
     exclude_domains: bool,
 }
 
@@ -91,21 +91,10 @@ pub async fn sync(Query(data): Query<SyncData>, headers: Headers) -> ApiResult<J
     let conn = DB.get().await?;
     let user_json = headers.user.to_json(&conn).await?;
 
-    // Get all ciphers which are visible by the user
-    let ciphers = Cipher::find_by_user_visible(&conn, headers.user.uuid).await?;
+    let ciphers_json = FullCipher::find_by_user(&conn, headers.user.uuid).await?.iter().map(|x| x.to_json(true)).collect::<Vec<_>>();
 
-    // Lets generate the ciphers_json using all the gathered info
-    let mut ciphers_json = Vec::with_capacity(ciphers.len());
-    //TODO: N+1 query
-    for c in ciphers {
-        ciphers_json.push(c.to_json(&conn, headers.user.uuid, true).await?);
-    }
-
-    let collections = Collection::find_by_user(&conn, headers.user.uuid, false).await?;
-    let mut collections_json = Vec::with_capacity(collections.len());
-    for c in collections {
-        collections_json.push(c.to_json_details(&conn, headers.user.uuid).await?);
-    }
+    let collections_json =
+        CollectionWithAccess::find_by_user(&conn, headers.user.uuid).await?.iter().map(CollectionWithAccess::to_json_details).collect::<Vec<_>>();
 
     let folders_json: Vec<Value> = Folder::find_by_user(&conn, headers.user.uuid).await?.iter().map(Folder::to_json).collect();
 
@@ -143,13 +132,7 @@ pub async fn sync(Query(data): Query<SyncData>, headers: Headers) -> ApiResult<J
 pub async fn get_ciphers(headers: Headers) -> ApiResult<Json<Value>> {
     let conn = DB.get().await?;
 
-    let ciphers = Cipher::find_by_user_visible(&conn, headers.user.uuid).await?;
-
-    let mut ciphers_json = Vec::with_capacity(ciphers.len());
-    //TODO: N+1 query
-    for c in ciphers {
-        ciphers_json.push(c.to_json(&conn, headers.user.uuid, true).await?);
-    }
+    let ciphers_json = FullCipher::find_by_user(&conn, headers.user.uuid).await?.iter().map(|x| x.to_json(true)).collect::<Vec<_>>();
 
     Ok(Json(json!({
       "Data": ciphers_json,

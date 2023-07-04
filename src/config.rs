@@ -641,6 +641,7 @@ fn generate_icon_service_csp(icon_service: IconService) -> String {
 pub static ICON_SERVICE_CSP: AlwaysCell<String> = AlwaysCell::new();
 pub static SMTP_IMAGE_SRC: AlwaysCell<String> = AlwaysCell::new();
 pub static SSO_CALLBACK_URL: AlwaysCell<Url> = AlwaysCell::new();
+pub static PUBLIC_NO_TRAILING_SLASH: AlwaysCell<String> = AlwaysCell::new();
 
 pub async fn load() -> Result<()> {
     let path = std::env::var("VAULTWARDEN_CONF").unwrap_or_default();
@@ -652,8 +653,13 @@ pub async fn load() -> Result<()> {
     let config: Config = serde_yaml::from_str(&tokio::fs::read_to_string(&path).await?)?;
     validate_config(&config)?;
 
+    let mut public = config.settings.public.to_string();
+    while public.ends_with('/') {
+        public.truncate(public.len() - 1);
+    }
+    AlwaysCell::set(&PUBLIC_NO_TRAILING_SLASH, public);
     AlwaysCell::set(&ICON_SERVICE_CSP, generate_icon_service_csp(config.advanced.icon_service));
-    AlwaysCell::set(&SMTP_IMAGE_SRC, generate_smtp_img_src(config.smtp.as_ref().map(|x| x.embed_images).unwrap_or_default(), &config.settings.public.as_str()));
+    AlwaysCell::set(&SMTP_IMAGE_SRC, generate_smtp_img_src(config.smtp.as_ref().map(|x| x.embed_images).unwrap_or_default(), &PUBLIC_NO_TRAILING_SLASH));
     AlwaysCell::set(
         &SSO_CALLBACK_URL,
         config.sso.as_ref().and_then(|x| x.sso_callback_url.clone()).unwrap_or_else(|| generate_sso_callback_url(config.settings.public.clone())),

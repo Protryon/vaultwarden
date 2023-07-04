@@ -129,8 +129,7 @@ impl FolderCipher {
     }
 
     pub async fn flag_revision(&self, conn: &Conn) -> ApiResult<()> {
-        conn.execute(r"UPDATE user_revisions u SET updated_at = now() FROM folders f WHERE f.folder_uuid = $1 AND f.user_uuid = u.uuid", &[&self.folder_uuid])
-            .await?;
+        conn.execute(r"UPDATE user_revisions u SET updated_at = now() FROM folders f WHERE f.uuid = $1 AND f.user_uuid = u.uuid", &[&self.folder_uuid]).await?;
         Ok(())
     }
 

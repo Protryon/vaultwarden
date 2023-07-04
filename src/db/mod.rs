@@ -6,7 +6,7 @@ use always_cell::AlwaysCell;
 use bb8::{Pool, PooledConnection};
 use bb8_postgres::PostgresConnectionManager;
 use log::info;
-use tokio_postgres::{Client, Config, NoTls};
+use tokio_postgres::{config::SslMode, Client, Config, NoTls};
 
 use anyhow::Result;
 
@@ -27,7 +27,15 @@ pub static DB: AlwaysCell<Pool<PostgresConnectionManager<NoTls>>> = AlwaysCell::
 
 pub(super) async fn init() -> Result<()> {
     let mut config = Config::new();
-    config.host(&CONFIG.db.host).port(CONFIG.db.port).user(&CONFIG.db.username).password(&*CONFIG.db.password).dbname(&CONFIG.db.database);
+    config
+        .host(&CONFIG.db.host)
+        .port(CONFIG.db.port)
+        .user(&CONFIG.db.username)
+        .password(&*CONFIG.db.password)
+        .dbname(&CONFIG.db.database)
+        .connect_timeout(Duration::from_secs(CONFIG.advanced.database_timeout))
+        .ssl_mode(SslMode::Disable);
+    let _ = config.connect(NoTls).await?;
     let manager = bb8_postgres::PostgresConnectionManager::new(config, NoTls);
     let pool = bb8::Pool::builder()
         .max_size(CONFIG.advanced.database_max_conns)

@@ -1,4 +1,6 @@
-use crate::{api::core::CipherData, db::Conn, CONFIG};
+use std::collections::HashMap;
+
+use crate::{api::core::CipherData, db::Conn, util::RowSlice, CONFIG};
 use axum_util::errors::{ApiError, ApiResult};
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{json, Value};
@@ -29,6 +31,16 @@ pub struct Cipher {
     pub reprompt: Option<RepromptType>,
 }
 
+#[derive(Clone, Debug)]
+pub struct FullCipher {
+    pub cipher: Cipher,
+    pub attachments: Vec<Attachment>,
+    pub access: AccessRestrictions,
+    pub collection_uuids: Vec<Uuid>,
+    pub folder_uuid: Option<Uuid>,
+    pub is_favorite: bool,
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, strum::FromRepr, Serialize_repr, Deserialize_repr)]
 #[repr(i32)]
@@ -48,8 +60,8 @@ pub enum CipherType {
     Unknown = i32::MAX,
 }
 
-impl From<Row> for Cipher {
-    fn from(row: Row) -> Self {
+impl<'a> From<RowSlice<'a>> for Cipher {
+    fn from(row: RowSlice<'a>) -> Self {
         let reprompt: Option<i32> = row.get(12);
         Self {
             uuid: row.get(0),
@@ -60,9 +72,9 @@ impl From<Row> for Cipher {
             atype: CipherType::from_repr(row.get(5)).unwrap_or(CipherType::Unknown),
             name: row.get(6),
             notes: row.get(7),
-            fields: row.get::<_, Option<Json<_>>>(8).map(|x| x.0),
-            data: row.get::<_, Json<_>>(9).0,
-            password_history: row.get::<_, Option<Json<_>>>(10).map(|x| x.0),
+            fields: row.get::<Option<Json<_>>>(8).map(|x| x.0),
+            data: row.get::<Json<_>>(9).0,
+            password_history: row.get::<Option<Json<_>>>(10).map(|x| x.0),
             deleted_at: row.get(11),
             reprompt: reprompt.and_then(RepromptType::from_repr),
         }
@@ -126,29 +138,102 @@ pub struct AccessRestrictions {
     pub hide_passwords: bool,
 }
 
-impl Cipher {
-    pub async fn to_json(&self, conn: &Conn, user_uuid: Uuid, for_user: bool) -> ApiResult<Value> {
+impl FullCipher {
+    fn join(attachments: Vec<Attachment>, ciphers: Vec<Row>) -> Vec<Self> {
+        let mut out_attachments: HashMap<Uuid, Vec<Attachment>> = HashMap::new();
+        for attachment in attachments {
+            out_attachments.entry(attachment.cipher_uuid).or_default().push(attachment);
+        }
+
+        ciphers
+            .into_iter()
+            .map(|row| {
+                let cipher: Cipher = RowSlice::new(&row).slice_from(5..).into();
+                // double NULL for CDB support
+                let collection_uuids: Vec<Uuid> = row.get::<_, Option<Vec<Option<Uuid>>>>(4).unwrap_or_default().into_iter().flatten().collect();
+                Self {
+                    attachments: out_attachments.remove(&cipher.uuid).unwrap_or_default(),
+                    cipher,
+                    access: AccessRestrictions {
+                        read_only: row.get(0),
+                        hide_passwords: row.get(1),
+                    },
+                    collection_uuids,
+                    folder_uuid: row.get(2),
+                    is_favorite: row.get(3),
+                }
+            })
+            .collect::<Vec<_>>()
+    }
+
+    pub async fn find_by_org(conn: &Conn, user_uuid: Uuid, organization_uuid: Uuid) -> ApiResult<Vec<Self>> {
+        let attachments = Attachment::find_by_user(conn, user_uuid);
+        let ciphers = async {
+            conn.query(
+                r"
+                SELECT false, false, f.uuid, fav.cipher_uuid IS NOT NULL, coalesce(array_agg(cc.collection_uuid), ARRAY[]::UUID[]), c.*
+                FROM ciphers c
+                INNER JOIN user_cipher_auth uca ON uca.cipher_uuid = c.uuid AND uca.user_uuid = $1
+                LEFT JOIN folder_ciphers fc ON fc.cipher_uuid = c.uuid
+                LEFT JOIN folders f ON f.uuid = fc.folder_uuid AND f.user_uuid = $1
+                LEFT JOIN favorites fav ON fav.cipher_uuid = c.uuid AND fav.user_uuid = $1
+                LEFT JOIN collection_ciphers cc ON cc.cipher_uuid = c.uuid
+                WHERE c.organization_uuid = $2
+                GROUP BY uca.hide_passwords, fc.folder_uuid, fav.cipher_uuid
+                ORDER BY c.created_at ASC
+                ",
+                &[&user_uuid, &organization_uuid],
+            )
+            .await
+        };
+        let (attachments, ciphers) = futures::future::join(attachments, ciphers).await;
+        Ok(Self::join(attachments?, ciphers?))
+    }
+
+    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<Vec<Self>> {
+        let attachments = Attachment::find_by_user(conn, user_uuid);
+        let ciphers = async {
+            conn.query(
+                r"
+                SELECT uca.read_only, uca.hide_passwords, f.uuid, fav.cipher_uuid IS NOT NULL, coalesce(array_agg(cc.collection_uuid), ARRAY[]::UUID[]), c.*
+                FROM ciphers c
+                INNER JOIN user_cipher_auth uca ON uca.cipher_uuid = c.uuid AND uca.user_uuid = $1
+                LEFT JOIN folder_ciphers fc ON fc.cipher_uuid = c.uuid
+                LEFT JOIN folders f ON f.uuid = fc.folder_uuid AND f.user_uuid = $1
+                LEFT JOIN favorites fav ON fav.cipher_uuid = c.uuid AND fav.user_uuid = $1
+                LEFT JOIN collection_ciphers cc ON cc.cipher_uuid = c.uuid
+                GROUP BY c.uuid, uca.read_only, uca.hide_passwords, fc.folder_uuid, fav.cipher_uuid
+                ORDER BY c.created_at ASC
+                ",
+                &[&user_uuid],
+            )
+            .await
+        };
+        let (attachments, ciphers) = futures::future::join(attachments, ciphers).await;
+        Ok(Self::join(attachments?, ciphers?))
+    }
+
+    pub fn to_json(&self, for_user: bool) -> Value {
         use crate::util::format_date;
 
         let mut attachments_json: Value = Value::Null;
-        let attachments = Attachment::find_by_cipher(conn, self.uuid).await?;
-        if !attachments.is_empty() {
-            attachments_json = attachments.iter().map(|c| c.to_json()).collect();
+        if !self.attachments.is_empty() {
+            attachments_json = self.attachments.iter().map(|c| c.to_json()).collect();
         }
 
         // We don't need these values at all for Organizational syncs
         // Skip any other database calls if this is the case and just return false.
         let access = if for_user {
-            self.get_access_restrictions(conn, user_uuid).await?.ok_or_else(|| ApiError::BadRequest("Cipher ownership assertion failure".to_string()))?
+            self.access
         } else {
             Default::default()
         };
 
-        let mut data = self.data.clone();
+        let mut data = self.cipher.data.clone();
 
         // NOTE: This was marked as *Backwards Compatibility Code*, but as of January 2021 this is still being used by upstream
         // Set the first element of the Uris array as Uri, this is needed several (mobile) clients.
-        if self.atype == CipherType::Login {
+        if self.cipher.atype == CipherType::Login {
             //todo: check if this can panic
             if data["Uris"].is_array() {
                 let uri = data["Uris"][0]["Uri"].clone();
@@ -163,12 +248,10 @@ impl Cipher {
 
         // NOTE: This was marked as *Backwards Compatibility Code*, but as of January 2021 this is still being used by upstream
         // data_json should always contain the following keys with every atype
-        data_json["Fields"] = self.fields.clone().unwrap_or_default();
-        data_json["Name"] = Value::String(self.name.clone());
-        data_json["Notes"] = Value::String(self.notes.clone().unwrap_or_default());
-        data_json["PasswordHistory"] = self.password_history.clone().unwrap_or(Value::Null);
-
-        let collection_ids = self.get_collections(conn, user_uuid).await?;
+        data_json["Fields"] = self.cipher.fields.clone().unwrap_or_default();
+        data_json["Name"] = Value::String(self.cipher.name.clone());
+        data_json["Notes"] = Value::String(self.cipher.notes.clone().unwrap_or_default());
+        data_json["PasswordHistory"] = self.cipher.password_history.clone().unwrap_or(Value::Null);
 
         // There are three types of cipher response models in upstream
         // Bitwarden: "cipherMini", "cipher", and "cipherDetails" (in order
@@ -179,28 +262,28 @@ impl Cipher {
         // Ref: https://github.com/bitwarden/server/blob/master/src/Core/Models/Api/Response/CipherResponseModel.cs
         let mut json_object = json!({
             "Object": "cipherDetails",
-            "Id": self.uuid,
-            "Type": self.atype as i32,
-            "CreationDate": format_date(&self.created_at),
-            "RevisionDate": format_date(&self.updated_at),
-            "DeletedDate": self.deleted_at.map_or(Value::Null, |d| Value::String(format_date(&d))),
-            "Reprompt": self.reprompt.unwrap_or(RepromptType::None) as i32,
-            "OrganizationId": self.organization_uuid,
+            "Id": self.cipher.uuid,
+            "Type": self.cipher.atype as i32,
+            "CreationDate": format_date(&self.cipher.created_at),
+            "RevisionDate": format_date(&self.cipher.updated_at),
+            "DeletedDate": self.cipher.deleted_at.map_or(Value::Null, |d| Value::String(format_date(&d))),
+            "Reprompt": self.cipher.reprompt.unwrap_or(RepromptType::None) as i32,
+            "OrganizationId": self.cipher.organization_uuid,
             "Attachments": attachments_json,
             // We have UseTotp set to true by default within the Organization model.
             // This variable together with UsersGetPremium is used to show or hide the TOTP counter.
             "OrganizationUseTotp": true,
 
             // This field is specific to the cipherDetails type.
-            "CollectionIds": collection_ids,
+            "CollectionIds": self.collection_uuids,
 
-            "Name": self.name,
-            "Notes": self.notes,
-            "Fields": self.fields,
+            "Name": self.cipher.name,
+            "Notes": self.cipher.notes,
+            "Fields": self.cipher.fields,
 
             "Data": data_json,
 
-            "PasswordHistory": self.password_history,
+            "PasswordHistory": self.cipher.password_history,
 
             // All Cipher types are included by default as null, but only the matching one will be populated
             "Login": null,
@@ -214,8 +297,8 @@ impl Cipher {
         // Not during an organizational sync like `get_org_details`
         // Skip adding these fields in that case
         if for_user {
-            json_object["FolderId"] = json!(self.get_folder_uuid(conn, user_uuid).await?);
-            json_object["Favorite"] = json!(self.is_favorite(conn, user_uuid).await?);
+            json_object["FolderId"] = json!(self.folder_uuid);
+            json_object["Favorite"] = json!(self.is_favorite);
             // These values are true by default, but can be false if the
             // cipher belongs to a collection or group where the org owner has enabled
             // the "Read Only" or "Hide Passwords" restrictions for the user.
@@ -223,7 +306,7 @@ impl Cipher {
             json_object["ViewPassword"] = json!(!access.hide_passwords);
         }
 
-        let key = match self.atype {
+        let key = match self.cipher.atype {
             CipherType::Login => "Login",
             CipherType::SecureNote => "SecureNote",
             CipherType::Card => "Card",
@@ -233,7 +316,36 @@ impl Cipher {
         };
 
         json_object[key] = data;
-        Ok(json_object)
+        json_object
+    }
+}
+
+impl Cipher {
+    pub async fn to_json(self, conn: &Conn, user_uuid: Uuid, for_user: bool) -> ApiResult<Value> {
+        let attachments = Attachment::find_by_cipher(conn, self.uuid).await?;
+
+        // We don't need these values at all for Organizational syncs
+        // Skip any other database calls if this is the case and just return false.
+        let access = if for_user {
+            self.get_access_restrictions(conn, user_uuid).await?.ok_or_else(|| ApiError::BadRequest("Cipher ownership assertion failure".to_string()))?
+        } else {
+            Default::default()
+        };
+
+        let collection_uuids = self.get_collections(conn, user_uuid).await?;
+
+        let folder_uuid = self.get_folder_uuid(conn, user_uuid).await?;
+        let is_favorite = self.is_favorite(conn, user_uuid).await?;
+
+        Ok(FullCipher {
+            cipher: self,
+            attachments,
+            access,
+            collection_uuids,
+            folder_uuid,
+            is_favorite,
+        }
+        .to_json(for_user))
     }
 
     pub async fn save(&mut self, conn: &Conn) -> ApiResult<()> {
@@ -372,7 +484,7 @@ impl Cipher {
     }
 
     pub async fn get(conn: &Conn, uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM ciphers WHERE uuid = $1", &[&uuid]).await?.map(Into::into))
+        Ok(conn.query_opt(r"SELECT * FROM ciphers WHERE uuid = $1", &[&uuid]).await?.as_ref().map(Into::<RowSlice<'_>>::into).map(Into::into))
     }
 
     pub async fn get_for_user(conn: &Conn, user_uuid: Uuid, uuid: Uuid) -> ApiResult<Option<Self>> {
@@ -382,55 +494,13 @@ impl Cipher {
                 &[&user_uuid, &uuid],
             )
             .await?
+            .as_ref()
+            .map(Into::<RowSlice<'_>>::into)
             .map(Into::into))
     }
 
     pub async fn get_for_user_writable(conn: &Conn, user_uuid: Uuid, uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT c.* FROM ciphers c INNER JOIN user_cipher_auth uca ON uca.cipher_uuid = c.uuid AND uca.user_uuid = $1 WHERE uuid = $2 AND NOT uca.read_only", &[&user_uuid, &uuid]).await?.map(Into::into))
-    }
-
-    // Find all ciphers accessible or visible to the specified user.
-    //
-    // "Accessible" means the user has read access to the cipher, either via
-    // direct ownership, collection or via group access.
-    //
-    // "Visible" usually means the same as accessible, except when an org
-    // owner/admin sets their account or group to have access to only selected
-    // collections in the org (presumably because they aren't interested in
-    // the other collections in the org). In this case, if `visible_only` is
-    // true, then the non-interesting ciphers will not be returned. As a
-    // result, those ciphers will not appear in "My Vault" for the org
-    // owner/admin, but they can still be accessed via the org vault view.
-    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid, visible_only: bool) -> ApiResult<Vec<Self>> {
-        //TODO: what is visibile_only
-        Ok(conn
-            .query(
-                r"
-        SELECT c.*
-        FROM ciphers c
-        INNER JOIN user_cipher_auth uca ON uca.cipher_uuid = c.uuid AND uca.user_uuid = $1
-        ",
-                &[&user_uuid],
-            )
-            .await?
-            .into_iter()
-            .map(|x| x.into())
-            .collect())
-    }
-
-    // Find all ciphers visible to the specified user.
-    pub async fn find_by_user_visible(conn: &Conn, user_uuid: Uuid) -> ApiResult<Vec<Self>> {
-        Self::find_by_user(conn, user_uuid, true).await
-    }
-
-    // Find all ciphers directly owned by the specified user.
-    pub async fn find_owned_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<Vec<Self>> {
-        Ok(conn
-            .query(r"SELECT * FROM ciphers WHERE user_uuid = $1 AND organization_uuid IS NULL", &[&user_uuid])
-            .await?
-            .into_iter()
-            .map(|x| x.into())
-            .collect())
+        Ok(conn.query_opt(r"SELECT c.* FROM ciphers c INNER JOIN user_cipher_auth uca ON uca.cipher_uuid = c.uuid AND uca.user_uuid = $1 WHERE uuid = $2 AND NOT uca.read_only", &[&user_uuid, &uuid]).await?.as_ref().map(Into::<RowSlice<'_>>::into).map(Into::into))
     }
 
     pub async fn delete_owned_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<()> {
@@ -442,10 +512,6 @@ impl Cipher {
     //TODO: owned semantics differ from find_owned_by_user in source, changed here
     pub async fn count_owned_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<i64> {
         Ok(conn.query_one(r"SELECT count(1) FROM ciphers WHERE user_uuid = $1 AND organization_uuid IS NULL", &[&user_uuid]).await?.get(0))
-    }
-
-    pub async fn find_by_org(conn: &Conn, organization_uuid: Uuid) -> ApiResult<Vec<Self>> {
-        Ok(conn.query(r"SELECT * FROM ciphers WHERE organization_uuid = $1", &[&organization_uuid]).await?.into_iter().map(|x| x.into()).collect())
     }
 
     pub async fn count_by_org(conn: &Conn, organization_uuid: Uuid) -> ApiResult<i64> {

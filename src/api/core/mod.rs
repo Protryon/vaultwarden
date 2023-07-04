@@ -20,6 +20,7 @@ pub use events::post_events_collect;
 use crate::{
     api::{ws_users, UpdateType},
     auth::Headers,
+    config::PUBLIC_NO_TRAILING_SLASH,
     db::DB,
     util::{get_reqwest_client, Upcase},
     CONFIG,
@@ -178,7 +179,7 @@ async fn version() -> Json<&'static str> {
 }
 
 async fn config() -> Json<Value> {
-    let domain = &CONFIG.settings.public;
+    let domain = &*PUBLIC_NO_TRAILING_SLASH;
     Json(json!({
         "version": crate::VERSION,
         "gitHash": option_env!("GIT_REV"),

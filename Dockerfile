@@ -1,3 +1,5 @@
+FROM docker.io/vaultwarden/web-vault@sha256:e5b5e99d132d50dc73176afb65f41cf3b834fb06bfa1d621ac16c705c3f10085 as vault
+
 FROM lukemathwalker/cargo-chef:0.1.61-rust-1.70-slim-buster AS planner
 WORKDIR /plan
 
@@ -30,6 +32,7 @@ FROM debian:buster-slim
 WORKDIR /runtime
 
 COPY --from=builder /build/target/vaultwarden /runtime/vaultwarden
+COPY --from=vault /web-vault /web-vault
 
 RUN apt-get update && apt-get install libssl1.1 ca-certificates -y && rm -rf /var/lib/apt/lists/*
 

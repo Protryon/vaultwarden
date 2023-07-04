@@ -1,7 +1,10 @@
 //
 // Web Headers and caching
 //
-use std::{io::ErrorKind, ops::Deref};
+use std::{
+    io::ErrorKind,
+    ops::{Deref, Range, RangeFrom},
+};
 
 use axum::{
     body::BoxBody,
@@ -15,6 +18,7 @@ use axum_util::{
 use http::request::Parts;
 use log::error;
 use tokio::{fs::File, io::AsyncWriteExt, time::Duration};
+use tokio_postgres::{types::FromSql, Row};
 
 use crate::{
     config::ICON_SERVICE_CSP,
@@ -558,28 +562,54 @@ pub fn convert_json_key_lcase_first(src_json: Value) -> Value {
     }
 }
 
-// pub struct CookieManager<'a> {
-//     jar: &'a CookieJar<'a>,
-// }
+#[derive(Clone, Copy)]
+pub struct RowSlice<'a> {
+    inner: &'a Row,
+    start: usize,
+    end: usize,
+}
 
-// impl<'a> CookieManager<'a> {
-//     pub fn new(jar: &'a CookieJar<'a>) -> Self {
-//         Self {
-//             jar,
-//         }
-//     }
+impl<'a> From<&'a Row> for RowSlice<'a> {
+    fn from(value: &'a Row) -> Self {
+        Self {
+            inner: value,
+            start: 0,
+            end: value.len(),
+        }
+    }
+}
 
-//     pub fn set_cookie(&self, name: String, value: String) {
-//         let cookie = Cookie::build(name, value).same_site(SameSite::Lax).finish();
+#[allow(dead_code)]
+impl<'a> RowSlice<'a> {
+    pub fn new(row: &'a Row) -> Self {
+        row.into()
+    }
 
-//         self.jar.add(cookie)
-//     }
+    pub fn get<T: FromSql<'a>>(&self, idx: usize) -> T {
+        let idx = self.start + idx;
+        if idx >= self.end {
+            panic!("error retrieving column {}: out of bounds", idx);
+        }
+        self.inner.get(idx)
+    }
 
-//     pub fn get_cookie(&self, name: String) -> Option<String> {
-//         self.jar.get(&name).map(|c| c.value().to_string())
-//     }
+    pub fn len(&self) -> usize {
+        self.end - self.start
+    }
 
-//     pub fn delete_cookie(&self, name: String) {
-//         self.jar.remove(Cookie::named(name));
-//     }
-// }
+    pub fn slice(&self, index: Range<usize>) -> Self {
+        Self {
+            inner: self.inner,
+            start: self.start + index.start,
+            end: self.end - (self.len() - index.end),
+        }
+    }
+
+    pub fn slice_from(&self, index: RangeFrom<usize>) -> Self {
+        Self {
+            inner: self.inner,
+            start: self.start + index.start,
+            end: self.end,
+        }
+    }
+}

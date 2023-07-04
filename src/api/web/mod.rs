@@ -13,6 +13,7 @@ use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::config::PUBLIC_NO_TRAILING_SLASH;
 use crate::db::{Attachment, DB};
 use crate::templates::render_template;
 use crate::util::Cached;
@@ -36,16 +37,6 @@ fn not_found() -> ApiResult<Response> {
     });
     let text = render_template("404", &json)?;
     Ok((StatusCode::NOT_FOUND, Html(text)).into_response())
-}
-
-lazy_static::lazy_static! {
-    pub static ref PUBLIC_NO_TRAILING_SLASH: String = {
-        let mut path = CONFIG.settings.public.to_string();
-        if path.ends_with("/") {
-            path.truncate(path.len() - 1);
-        }
-        path
-    };
 }
 
 async fn web_index() -> ApiResult<Response> {

@@ -125,39 +125,11 @@ fn init_logging(level: log::LevelFilter) -> Result<(), fern::InitError> {
         log::LevelFilter::Off
     };
 
-    let diesel_logger_level: log::LevelFilter = if cfg!(feature = "query_logger") && std::env::var("QUERY_LOGGER").is_ok() {
-        log::LevelFilter::Debug
-    } else {
-        log::LevelFilter::Off
-    };
-
-    // Only show Rocket underscore `_` logs when the level is Debug or higher
-    // Else this will bloat the log output with useless messages.
-    let rocket_underscore_level = if level >= log::LevelFilter::Debug {
-        log::LevelFilter::Warn
-    } else {
-        log::LevelFilter::Off
-    };
-
     let mut logger = fern::Dispatch::new()
         .level(level)
-        // Hide unknown certificate errors if using self-signed
-        .level_for("rustls::session", log::LevelFilter::Off)
         // Hide failed to close stream messages
         .level_for("hyper::server", log::LevelFilter::Warn)
-        // Silence Rocket `_` logs
-        .level_for("_", rocket_underscore_level)
-        .level_for("rocket::response::responder::_", rocket_underscore_level)
-        .level_for("rocket::server::_", rocket_underscore_level)
-        .level_for("vaultwarden::api::admin::_", rocket_underscore_level)
-        .level_for("vaultwarden::api::notifications::_", rocket_underscore_level)
         // Silence Rocket logs
-        .level_for("rocket::launch", log::LevelFilter::Error)
-        .level_for("rocket::launch_", log::LevelFilter::Error)
-        .level_for("rocket::rocket", log::LevelFilter::Warn)
-        .level_for("rocket::server", log::LevelFilter::Warn)
-        .level_for("rocket::fairing::fairings", log::LevelFilter::Warn)
-        .level_for("rocket::shield::shield", log::LevelFilter::Warn)
         .level_for("hyper::proto", log::LevelFilter::Off)
         .level_for("hyper::client", log::LevelFilter::Off)
         // Prevent cookie_store logs
@@ -165,7 +137,6 @@ fn init_logging(level: log::LevelFilter) -> Result<(), fern::InitError> {
         // Variable level for trust-dns used by reqwest
         .level_for("trust_dns_resolver::name_server::name_server", trust_dns_level)
         .level_for("trust_dns_proto::xfer", trust_dns_level)
-        .level_for("diesel_logger", diesel_logger_level)
         .chain(std::io::stdout());
 
     // Enable smtp debug logging only specifically for smtp when need.

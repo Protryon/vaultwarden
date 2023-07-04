@@ -11,7 +11,7 @@ use crate::{db::Conn, CONFIG};
 
 use super::Cipher;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Attachment {
     pub uuid: Uuid,
     pub cipher_uuid: Uuid,
@@ -139,6 +139,20 @@ impl Attachment {
             )
             .await?
             .map(Into::into))
+    }
+
+    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<Vec<Self>> {
+        Ok(conn
+            .query_opt(
+                r"
+            SELECT a.* FROM attachments a
+            INNER JOIN user_cipher_auth uca ON uca.cipher_uuid = a.cipher_uuid AND uca.user_uuid = $1",
+                &[&user_uuid],
+            )
+            .await?
+            .into_iter()
+            .map(|x| x.into())
+            .collect())
     }
 
     pub async fn find_by_cipher(conn: &Conn, cipher_uuid: Uuid) -> ApiResult<Vec<Self>> {

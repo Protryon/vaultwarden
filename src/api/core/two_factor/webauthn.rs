@@ -10,6 +10,7 @@ use webauthn_rs::{base64_data::Base64UrlSafeData, proto::*, AuthenticationState,
 use crate::{
     api::PasswordData,
     auth::Headers,
+    config::PUBLIC_NO_TRAILING_SLASH,
     db::{Conn, EventType, TwoFactor, TwoFactorType, DB},
     events::log_user_event,
     util::Upcase,
@@ -316,7 +317,7 @@ pub async fn generate_webauthn_login(user_uuid: Uuid, conn: &Conn) -> ApiResult<
     }
 
     // Generate a challenge based on the credentials
-    let ext = RequestAuthenticationExtensions::builder().appid(format!("{}/app-id.json", &CONFIG.settings.public)).build();
+    let ext = RequestAuthenticationExtensions::builder().appid(format!("{}/app-id.json", &*PUBLIC_NO_TRAILING_SLASH)).build();
     let (response, state) = WebauthnConfig::load().generate_challenge_authenticate_options(creds, Some(ext))?;
 
     // Save the challenge state for later validation

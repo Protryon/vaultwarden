@@ -17,8 +17,8 @@ mod two_factor_incomplete;
 mod user;
 
 pub use self::attachment::Attachment;
-pub use self::cipher::{Cipher, CipherType, RepromptType};
-pub use self::collection::{Collection, CollectionCipher, CollectionUser};
+pub use self::cipher::{Cipher, CipherType, FullCipher, RepromptType};
+pub use self::collection::{Collection, CollectionCipher, CollectionUser, CollectionWithAccess};
 pub use self::device::Device;
 pub use self::emergency_access::{EmergencyAccess, EmergencyAccessStatus, EmergencyAccessType};
 pub use self::event::{Event, EventType};

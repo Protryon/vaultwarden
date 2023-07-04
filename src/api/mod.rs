@@ -22,7 +22,6 @@ use http::HeaderValue;
 use log::{error, info, Level};
 use serde::Deserialize;
 use smallvec::SmallVec;
-pub use web::PUBLIC_NO_TRAILING_SLASH;
 
 use crate::{
     util::{AppHeaders, Cors},

@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{
     auth::{decode_emergency_access_invite, Headers},
     db::{
-        Cipher, Conn, EmergencyAccess, EmergencyAccessStatus, EmergencyAccessType, Invitation, OrganizationPolicy, TwoFactor, User, UserOrgType,
+        Conn, EmergencyAccess, EmergencyAccessStatus, EmergencyAccessType, FullCipher, Invitation, OrganizationPolicy, TwoFactor, User, UserOrgType,
         UserOrganization, DB,
     },
     mail,
@@ -495,12 +495,7 @@ async fn view_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers)
         err!("Emergency access not valid.")
     }
 
-    let ciphers = Cipher::find_owned_by_user(&conn, emergency_access.grantor_uuid).await?;
-
-    let mut ciphers_json = Vec::with_capacity(ciphers.len());
-    for c in ciphers {
-        ciphers_json.push(c.to_json(&conn, emergency_access.grantor_uuid, true).await?);
-    }
+    let ciphers_json = FullCipher::find_by_user(&conn, headers.user.uuid).await?.iter().map(|x| x.to_json(true)).collect::<Vec<_>>();
 
     Ok(Json(json!({
       "Ciphers": ciphers_json,

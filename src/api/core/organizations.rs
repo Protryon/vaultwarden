@@ -14,8 +14,8 @@ use uuid::Uuid;
 use crate::api::{ws_users, PasswordData, UpdateType};
 use crate::auth::{decode_invite, Headers, ManagerHeaders, ManagerHeadersLoose, OrgAdminHeaders, OrgOwnerHeaders};
 use crate::db::{
-    Cipher, Collection, CollectionCipher, CollectionGroup, CollectionUser, Conn, EventType, Group, GroupUser, Invitation, OrgPolicyErr, OrgPolicyType,
-    Organization, OrganizationApiKey, OrganizationPolicy, TwoFactor, User, UserOrgStatus, UserOrgType, UserOrganization, DB,
+    Cipher, Collection, CollectionCipher, CollectionGroup, CollectionUser, Conn, EventType, FullCipher, Group, GroupUser, Invitation, OrgPolicyErr,
+    OrgPolicyType, Organization, OrganizationApiKey, OrganizationPolicy, TwoFactor, User, UserOrgStatus, UserOrgType, UserOrganization, DB,
 };
 use crate::events::log_event;
 use crate::util::{AutoTxn, Upcase};
@@ -733,13 +733,9 @@ async fn get_org_details(Query(data): Query<OrgIdData>, headers: Headers) -> Api
 }
 
 async fn _get_org_details(org_uuid: Uuid, user_uuid: Uuid, conn: &Conn) -> ApiResult<Value> {
-    let ciphers = Cipher::find_by_org(conn, org_uuid).await?;
+    let ciphers_json = FullCipher::find_by_org(&conn, user_uuid, org_uuid).await?.iter().map(|x| x.to_json(false)).collect::<Vec<_>>();
 
-    let mut ciphers_json = Vec::with_capacity(ciphers.len());
-    for c in ciphers {
-        ciphers_json.push(c.to_json(conn, user_uuid, false).await?);
-    }
-    Ok(json!(ciphers_json))
+    Ok(Value::Array(ciphers_json))
 }
 
 #[derive(Deserialize)]

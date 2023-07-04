@@ -1,10 +1,10 @@
-use axum_util::errors::{ApiError, ApiResult};
+use axum_util::errors::ApiResult;
 use serde_json::{json, Value};
 
 use tokio_postgres::Row;
 use uuid::Uuid;
 
-use crate::db::Conn;
+use crate::{db::Conn, util::RowSlice};
 
 use super::{cipher::AccessRestrictions, User};
 
@@ -13,6 +13,12 @@ pub struct Collection {
     pub uuid: Uuid,
     pub organization_uuid: Uuid,
     pub name: String,
+}
+
+#[derive(Debug)]
+pub struct CollectionWithAccess {
+    pub collection: Collection,
+    pub access: AccessRestrictions,
 }
 
 #[derive(Debug)]
@@ -29,13 +35,19 @@ pub struct CollectionCipher {
     pub collection_uuid: Uuid,
 }
 
-impl From<Row> for Collection {
-    fn from(row: Row) -> Self {
+impl<'a> From<RowSlice<'a>> for Collection {
+    fn from(row: RowSlice<'a>) -> Self {
         Self {
             uuid: row.get(0),
             organization_uuid: row.get(1),
             name: row.get(2),
         }
+    }
+}
+
+impl From<Row> for Collection {
+    fn from(row: Row) -> Self {
+        RowSlice::new(&row).into()
     }
 }
 
@@ -78,15 +90,40 @@ impl Collection {
             "Object": "collection",
         })
     }
+}
 
-    pub async fn to_json_details(&self, conn: &Conn, user_uuid: Uuid) -> ApiResult<Value> {
-        let access = self.get_access_restrictions(conn, user_uuid).await?.ok_or(ApiError::NotFound)?;
-
-        let mut json_object = self.to_json();
+impl CollectionWithAccess {
+    pub fn to_json_details(&self) -> Value {
+        let mut json_object = self.collection.to_json();
         json_object["Object"] = json!("collectionDetails");
-        json_object["ReadOnly"] = json!(access.read_only);
-        json_object["HidePasswords"] = json!(access.hide_passwords);
-        Ok(json_object)
+        json_object["ReadOnly"] = json!(self.access.read_only);
+        json_object["HidePasswords"] = json!(self.access.hide_passwords);
+        json_object
+    }
+
+    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<Vec<Self>> {
+        Ok(conn
+            .query(
+                r"
+        SELECT uca.read_only, uca.hide_passwords, co.*
+        FROM collections co
+        INNER JOIN user_collection_auth uca ON uca.collection_uuid = co.uuid AND uca.user_uuid = $1
+        ",
+                &[&user_uuid],
+            )
+            .await?
+            .into_iter()
+            .map(|row| {
+                let collection: Collection = RowSlice::new(&row).slice_from(2..).into();
+                CollectionWithAccess {
+                    collection,
+                    access: AccessRestrictions {
+                        read_only: row.get(0),
+                        hide_passwords: row.get(1),
+                    },
+                }
+            })
+            .collect())
     }
 }
 
@@ -200,16 +237,6 @@ impl Collection {
             )
             .await?
             .map(Into::into))
-    }
-
-    pub async fn get_access_restrictions(&self, conn: &Conn, user_uuid: Uuid) -> ApiResult<Option<AccessRestrictions>> {
-        Ok(conn
-            .query_opt(r"SELECT read_only, hide_passwords FROM user_collection_auth WHERE user_uuid = $1 AND collection_uuid = $2", &[&user_uuid, &self.uuid])
-            .await?
-            .map(|x| AccessRestrictions {
-                read_only: x.get(0),
-                hide_passwords: x.get(1),
-            }))
     }
 }
 
