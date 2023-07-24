@@ -1,6 +1,6 @@
 use std::net::IpAddr;
 
-use axum_util::errors::ApiResult;
+use axol::Result;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -9,14 +9,14 @@ use crate::{
     CONFIG,
 };
 
-pub async fn log_user_event(event_type: EventType, user_uuid: Uuid, device_type: i32, event_date: DateTime<Utc>, ip: IpAddr, conn: &mut Conn) -> ApiResult<()> {
+pub async fn log_user_event(event_type: EventType, user_uuid: Uuid, device_type: i32, event_date: DateTime<Utc>, ip: IpAddr, conn: &mut Conn) -> Result<()> {
     if !CONFIG.settings.org_events_enabled {
         return Ok(());
     }
     _log_user_event(event_type, user_uuid, device_type, event_date, ip, conn).await
 }
 
-async fn _log_user_event(event_type: EventType, user_uuid: Uuid, device_type: i32, event_date: DateTime<Utc>, ip: IpAddr, conn: &mut Conn) -> ApiResult<()> {
+async fn _log_user_event(event_type: EventType, user_uuid: Uuid, device_type: i32, event_date: DateTime<Utc>, ip: IpAddr, conn: &mut Conn) -> Result<()> {
     let orgs = UserOrganization::get_organization_uuid_by_user(conn, user_uuid).await?;
     let mut events: Vec<Event> = Vec::with_capacity(orgs.len() + 1); // We need an event per org and one without an org
 
@@ -52,7 +52,7 @@ pub async fn log_event(
     event_date: DateTime<Utc>,
     ip: IpAddr,
     conn: &Conn,
-) -> ApiResult<()> {
+) -> Result<()> {
     if !CONFIG.settings.org_events_enabled {
         return Ok(());
     }
@@ -69,7 +69,7 @@ async fn _log_event(
     event_date: DateTime<Utc>,
     ip: IpAddr,
     conn: &Conn,
-) -> ApiResult<()> {
+) -> Result<()> {
     // Create a new empty event
     let mut event = Event::new(event_type, Some(event_date));
     match event_type as i32 {

@@ -1,16 +1,16 @@
-use axum_util::errors::ApiResult;
+use axol::{Error, Result};
 use handlebars::{Context, Handlebars, Helper, HelperResult, Output, RenderContext, RenderError, Renderable};
 use log::warn;
 
 use crate::CONFIG;
 
-pub fn render_template<T: serde::ser::Serialize>(name: &str, data: &T) -> ApiResult<String> {
+pub fn render_template<T: serde::ser::Serialize>(name: &str, data: &T) -> Result<String> {
     if CONFIG.advanced.reload_templates {
         warn!("RELOADING TEMPLATES");
         let hb = load_templates(CONFIG.folders.templates());
-        hb.render(name, data).map_err(Into::into)
+        hb.render(name, data).map_err(Error::internal)
     } else {
-        TEMPLATES.render(name, data).map_err(Into::into)
+        TEMPLATES.render(name, data).map_err(Error::internal)
     }
 }
 

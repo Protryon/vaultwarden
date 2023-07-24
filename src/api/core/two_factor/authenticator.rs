@@ -1,7 +1,6 @@
 use std::net::IpAddr;
 
-use axum::Json;
-use axum_util::errors::ApiResult;
+use axol::prelude::*;
 use chrono::{Duration, NaiveDateTime, Utc};
 use data_encoding::BASE32;
 use log::warn;
@@ -13,7 +12,7 @@ use crate::{
     api::PasswordData,
     auth::Headers,
     crypto,
-    db::{Conn, EventType, TwoFactor, TwoFactorType, DB},
+    db::{Conn, Event, EventType, TwoFactor, TwoFactorType, DB},
     events::log_user_event,
     util::Upcase,
 };
@@ -22,7 +21,7 @@ pub use crate::config::CONFIG;
 
 use super::_generate_recover_code;
 
-pub async fn generate_authenticator(headers: Headers, data: Json<Upcase<PasswordData>>) -> ApiResult<Json<Value>> {
+pub async fn generate_authenticator(headers: Headers, data: Json<Upcase<PasswordData>>) -> Result<Json<Value>> {
     let data: PasswordData = data.0.data;
     let user = headers.user;
 
@@ -30,7 +29,7 @@ pub async fn generate_authenticator(headers: Headers, data: Json<Upcase<Password
         err!("Invalid password");
     }
 
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let twofactor = TwoFactor::find_by_user_and_type(&conn, user.uuid, TwoFactorType::Authenticator).await?;
 
@@ -55,7 +54,7 @@ pub struct EnableAuthenticatorData {
     token: String,
 }
 
-pub async fn activate_authenticator(headers: Headers, data: Json<Upcase<EnableAuthenticatorData>>) -> ApiResult<Json<Value>> {
+pub async fn activate_authenticator(headers: Headers, data: Json<Upcase<EnableAuthenticatorData>>) -> Result<Json<Value>> {
     let data: EnableAuthenticatorData = data.0.data;
     let password_hash = data.master_password_hash;
     let key = data.key;
@@ -76,7 +75,7 @@ pub async fn activate_authenticator(headers: Headers, data: Json<Upcase<EnableAu
     if decoded_key.len() != 20 {
         err!("Invalid key length")
     }
-    let mut conn = DB.get().await?;
+    let mut conn = DB.get().await.ise()?;
 
     // Validate the token provided with the key, and save new twofactor
     validate_totp_code(user.uuid, &token, Value::String(key.to_uppercase()), headers.ip, &conn).await?;
@@ -92,7 +91,7 @@ pub async fn activate_authenticator(headers: Headers, data: Json<Upcase<EnableAu
     })))
 }
 
-pub async fn validate_totp_code_str(user_uuid: Uuid, totp_code: &str, secret: Value, ip: IpAddr, conn: &Conn) -> ApiResult<()> {
+pub async fn validate_totp_code_str(user_uuid: Uuid, totp_code: &str, secret: Value, ip: IpAddr, conn: &Conn) -> Result<()> {
     if !totp_code.chars().all(char::is_numeric) {
         err!("TOTP code is not a number");
     }
@@ -100,7 +99,7 @@ pub async fn validate_totp_code_str(user_uuid: Uuid, totp_code: &str, secret: Va
     validate_totp_code(user_uuid, totp_code, secret, ip, conn).await
 }
 
-pub async fn validate_totp_code(user_uuid: Uuid, totp_code: &str, secret: Value, ip: IpAddr, conn: &Conn) -> ApiResult<()> {
+pub async fn validate_totp_code(user_uuid: Uuid, totp_code: &str, secret: Value, ip: IpAddr, conn: &Conn) -> Result<()> {
     use totp_lite::{totp_custom, Sha1};
 
     let decoded_secret = match secret.as_str().map(|x| BASE32.decode(x.as_bytes())) {
@@ -145,20 +144,12 @@ pub async fn validate_totp_code(user_uuid: Uuid, totp_code: &str, secret: Value,
             return Ok(());
         } else if generated == totp_code && time_step <= last_used {
             warn!("This TOTP or a TOTP code within {} steps back or forward has already been used!", steps);
-            err!(
-                format!("Invalid TOTP code! Server time: {} IP: {}", current_time.format("%F %T UTC"), ip),
-                ErrorEvent {
-                    event: EventType::UserFailedLogIn2fa
-                }
-            );
+            Event::new(EventType::UserFailedLogIn2fa, None).with_user_uuid(user_uuid).save(conn).await?;
+            err!(format!("Invalid TOTP code! Server time: {} IP: {}", current_time.format("%F %T UTC"), ip));
         }
     }
 
-    // Else no valide code received, deny access
-    err!(
-        format!("Invalid TOTP code! Server time: {} IP: {}", current_time.format("%F %T UTC"), ip),
-        ErrorEvent {
-            event: EventType::UserFailedLogIn2fa
-        }
-    );
+    // Else no valid code received, deny access
+    Event::new(EventType::UserFailedLogIn2fa, None).with_user_uuid(user_uuid).save(conn).await?;
+    err!(format!("Invalid TOTP code! Server time: {} IP: {}", current_time.format("%F %T UTC"), ip));
 }

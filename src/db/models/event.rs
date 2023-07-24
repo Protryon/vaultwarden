@@ -1,4 +1,4 @@
-use axum_util::errors::ApiResult;
+use axol::{ErrorExt, Result};
 use serde_json::{json, Value};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio_postgres::Row;
@@ -190,13 +190,18 @@ impl Event {
             // "installationId": null, // Not supported
         })
     }
+
+    pub fn with_user_uuid(mut self, uuid: Uuid) -> Self {
+        self.user_uuid = Some(uuid);
+        self
+    }
 }
 
 /// https://github.com/bitwarden/server/blob/8a22c0479e987e756ce7412c48a732f9002f0a2d/src/Core/Services/Implementations/EventService.cs
 impl Event {
     pub const PAGE_SIZE: i64 = 30;
 
-    pub async fn save(&self, conn: &Conn) -> ApiResult<()> {
+    pub async fn save(&self, conn: &Conn) -> Result<()> {
         conn.execute(r"INSERT INTO events (uuid, event_type, user_uuid, organization_uuid, cipher_uuid, collection_uuid, group_uuid, act_user_uuid, device_type, ip_address, event_date, policy_uuid, provider_uuid, provider_user_uuid, provider_organization_uuid) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)", &[
             &self.uuid,
             &(self.event_type as i32),
@@ -213,32 +218,33 @@ impl Event {
             &self.provider_uuid,
             &self.provider_user_uuid,
             &self.provider_organization_uuid,
-        ]).await?;
+        ]).await.ise()?;
         Ok(())
     }
 
-    pub async fn save_user_event(conn: &mut Conn, events: impl IntoIterator<Item = &Event>) -> ApiResult<()> {
-        let transaction = conn.transaction().await?;
+    pub async fn save_user_event(conn: &mut Conn, events: impl IntoIterator<Item = &Event>) -> Result<()> {
+        let transaction = conn.transaction().await.ise()?;
         for event in events {
-            event.save(transaction.client()).await?;
+            event.save(transaction.client()).await.ise()?;
         }
-        transaction.commit().await?;
+        transaction.commit().await.ise()?;
         Ok(())
     }
 
-    pub async fn find_by_organization(conn: &Conn, organization_uuid: Uuid, start: DateTime<Utc>, end: DateTime<Utc>) -> ApiResult<Vec<Self>> {
+    pub async fn find_by_organization(conn: &Conn, organization_uuid: Uuid, start: DateTime<Utc>, end: DateTime<Utc>) -> Result<Vec<Self>> {
         Ok(conn
             .query(
                 r"SELECT * FROM events WHERE organization_uuid = $1 AND event_date BETWEEN $2 AND $3 ORDER BY event_date DESC LIMIT $4",
                 &[&organization_uuid, &start, &end, &Self::PAGE_SIZE],
             )
-            .await?
+            .await
+            .ise()?
             .into_iter()
             .map(|x| x.into())
             .collect())
     }
 
-    pub async fn count_by_organization(conn: &Conn, organization_uuid: Uuid) -> ApiResult<i64> {
+    pub async fn count_by_organization(conn: &Conn, organization_uuid: Uuid) -> Result<i64> {
         let row = conn
             .query_one(
                 r"
@@ -248,7 +254,8 @@ impl Event {
         ",
                 &[&organization_uuid],
             )
-            .await?;
+            .await
+            .ise()?;
         Ok(row.get(0))
     }
 
@@ -258,28 +265,29 @@ impl Event {
         user_uuid: Uuid,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
-    ) -> ApiResult<Vec<Self>> {
-        Ok(conn.query(r"SELECT * FROM events WHERE organization_uuid = $1 AND event.user_uuid = $5 OR event.act_user_id = $5 AND event_date BETWEEN $2 AND $3 ORDER BY event_date DESC LIMIT $4", &[&organization_uuid, &start, &end, &Self::PAGE_SIZE, &user_uuid]).await?.into_iter().map(|x| x.into()).collect())
+    ) -> Result<Vec<Self>> {
+        Ok(conn.query(r"SELECT * FROM events WHERE organization_uuid = $1 AND event.user_uuid = $5 OR event.act_user_id = $5 AND event_date BETWEEN $2 AND $3 ORDER BY event_date DESC LIMIT $4", &[&organization_uuid, &start, &end, &Self::PAGE_SIZE, &user_uuid]).await.ise()?.into_iter().map(|x| x.into()).collect())
     }
 
-    pub async fn find_by_cipher(conn: &Conn, cipher_uuid: Uuid, start: DateTime<Utc>, end: DateTime<Utc>) -> ApiResult<Vec<Self>> {
+    pub async fn find_by_cipher(conn: &Conn, cipher_uuid: Uuid, start: DateTime<Utc>, end: DateTime<Utc>) -> Result<Vec<Self>> {
         Ok(conn
             .query(
                 r"SELECT * FROM events WHERE cipher_uuid = $1 AND event_date BETWEEN $2 AND $3 ORDER BY event_date DESC LIMIT $4",
                 &[&cipher_uuid, &start, &end, &Self::PAGE_SIZE],
             )
-            .await?
+            .await
+            .ise()?
             .into_iter()
             .map(|x| x.into())
             .collect())
     }
 
-    pub async fn clean_events(conn: &Conn) -> ApiResult<()> {
+    pub async fn clean_events(conn: &Conn) -> Result<()> {
         let Some(days_to_retain) = CONFIG.settings.events_days_retain else {
             return Ok(());
         };
         let min_date = Utc::now() - Duration::days(days_to_retain);
-        conn.execute(r"DELETE FROM events WHERE event_date < $1", &[&min_date]).await?;
+        conn.execute(r"DELETE FROM events WHERE event_date < $1", &[&min_date]).await.ise()?;
         Ok(())
     }
 }

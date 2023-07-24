@@ -1,7 +1,5 @@
-use axum::{extract::FromRequestParts, Json};
-use axum_util::errors::{ApiError, ApiResult};
+use axol::prelude::*;
 use chrono::Utc;
-use http::request::Parts;
 use log::warn;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -41,7 +39,7 @@ pub struct OrgImportData {
     // LargeImport: bool, // For now this will not be used, upstream uses this to prevent syncs of more then 2000 users or groups without the flag set.
 }
 
-pub async fn ldap_import(conn: AutoTxn, token: PublicToken, data: Json<Upcase<OrgImportData>>) -> ApiResult<()> {
+pub async fn ldap_import(conn: AutoTxn, token: PublicToken, data: Json<Upcase<OrgImportData>>) -> Result<()> {
     // Most of the logic for this function can be found here
     // https://github.com/bitwarden/server/blob/fd892b2ff4547648a276734fb2b14a8abae2c6f5/src/Core/Services/Implementations/OrganizationService.cs#L1797
 
@@ -157,16 +155,10 @@ pub async fn ldap_import(conn: AutoTxn, token: PublicToken, data: Json<Upcase<Or
 pub struct PublicToken(Uuid);
 
 #[async_trait::async_trait]
-impl<S: Send + Sync> FromRequestParts<S> for PublicToken {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let access_token = parts
-            .headers
-            .get("authorization")
-            .and_then(|x| x.to_str().ok())
-            .and_then(|x| x.strip_prefix("Bearer "))
-            .ok_or(ApiError::Unauthorized("missing authorization header".to_string()))?;
+impl<'a> FromRequestParts<'a> for PublicToken {
+    async fn from_request_parts(req: RequestPartsRef<'a>) -> Result<Self> {
+        let access_token =
+            req.headers.get("authorization").and_then(|x| x.strip_prefix("Bearer ")).ok_or(Error::unauthorized("missing authorization header"))?;
         let claims = match auth::decode_api_org(access_token) {
             Ok(claims) => claims,
             Err(_) => err!("Invalid claim"),
@@ -188,7 +180,7 @@ impl<S: Send + Sync> FromRequestParts<S> for PublicToken {
 
         // Check if claims.sub is org_api_key.uuid
         // Check if claims.client_sub is org_api_key.org_uuid
-        let conn = DB.get().await?;
+        let conn = DB.get().await.ise()?;
         let org_uuid = match claims.client_id.strip_prefix("organization.").and_then(|x| Uuid::parse_str(x).ok()) {
             Some(uuid) => uuid,
             None => err!("Malformed client_id"),

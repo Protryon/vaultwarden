@@ -1,5 +1,4 @@
-use axum_util::errors::ApiError;
-use axum_util::errors::ApiResult;
+use axol::{Error, ErrorExt, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 use serde::Serialize;
@@ -246,27 +245,28 @@ impl User {
 }
 
 impl User {
-    pub async fn last_revision(&self, conn: &Conn) -> ApiResult<DateTime<Utc>> {
-        Ok(conn.query_one(r"SELECT coalesce(updated_at, now()) FROM user_revisions WHERE uuid = $1", &[&self.uuid]).await?.get(0))
+    pub async fn last_revision(&self, conn: &Conn) -> Result<DateTime<Utc>> {
+        Ok(conn.query_one(r"SELECT coalesce(updated_at, now()) FROM user_revisions WHERE uuid = $1", &[&self.uuid]).await.ise()?.get(0))
     }
 
-    pub async fn flag_revision_for(conn: &Conn, uuid: Uuid) -> ApiResult<()> {
+    pub async fn flag_revision_for(conn: &Conn, uuid: Uuid) -> Result<()> {
         conn.execute(r"INSERT INTO user_revisions (uuid, updated_at) VALUES ($1, now()) ON CONFLICT (uuid) DO UPDATE SET uuid = EXCLUDED.uuid", &[&uuid])
-            .await?;
+            .await
+            .ise()?;
         Ok(())
     }
 
-    pub async fn flag_revision(&self, conn: &Conn) -> ApiResult<()> {
+    pub async fn flag_revision(&self, conn: &Conn) -> Result<()> {
         Self::flag_revision_for(conn, self.uuid).await
     }
 
-    pub async fn to_json(&self, conn: &Conn) -> ApiResult<Value> {
+    pub async fn to_json(&self, conn: &Conn) -> Result<Value> {
         let mut orgs_json = Vec::new();
-        for c in UserOrganization::find_by_user_with_status(conn, self.uuid, UserOrgStatus::Confirmed).await? {
-            orgs_json.push(c.to_json(conn).await?);
+        for c in UserOrganization::find_by_user_with_status(conn, self.uuid, UserOrgStatus::Confirmed).await.ise()? {
+            orgs_json.push(c.to_json(conn).await.ise()?);
         }
 
-        let twofactor_enabled = !TwoFactor::find_by_user_official(conn, self.uuid).await?.is_empty();
+        let twofactor_enabled = !TwoFactor::find_by_user_official(conn, self.uuid).await.ise()?.is_empty();
 
         // TODO: Might want to save the status field in the DB
         let status = if self.password_hash.is_empty() {
@@ -297,9 +297,9 @@ impl User {
         }))
     }
 
-    pub async fn save(&mut self, conn: &Conn) -> ApiResult<()> {
+    pub async fn save(&mut self, conn: &Conn) -> Result<()> {
         if self.email.trim().is_empty() {
-            return Err(ApiError::BadRequest("User email can't be empty".to_string()));
+            return Err(Error::bad_request("User email can't be empty"));
         }
 
         conn.execute(r"INSERT INTO users (uuid, enabled, created_at, verified_at, last_verifying_at, login_verify_count, name, email, akey, email_new, email_new_token, password_hash, salt, password_iterations, security_stamp, stamp_exception, password_hint, private_key, public_key, totp_secret, totp_recover, equivalent_domains, excluded_globals, client_kdf_type, client_kdf_iter, client_kdf_memory, client_kdf_parallelism, api_key, avatar_color, external_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30) ON CONFLICT (uuid) DO UPDATE
@@ -363,41 +363,41 @@ impl User {
             &self.api_key,
             &self.avatar_color,
             &self.external_id,
-        ]).await?;
-        self.flag_revision(conn).await?;
+        ]).await.ise()?;
+        self.flag_revision(conn).await.ise()?;
         Ok(())
     }
 
-    pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
-        for user_org in UserOrganization::find_by_user_with_status(conn, self.uuid, UserOrgStatus::Confirmed).await? {
+    pub async fn delete(&self, conn: &Conn) -> Result<()> {
+        for user_org in UserOrganization::find_by_user_with_status(conn, self.uuid, UserOrgStatus::Confirmed).await.ise()? {
             if user_org.atype == UserOrgType::Owner
-                && UserOrganization::count_confirmed_by_org_and_type(conn, user_org.organization_uuid, UserOrgType::Owner).await? <= 1
+                && UserOrganization::count_confirmed_by_org_and_type(conn, user_org.organization_uuid, UserOrgType::Owner).await.ise()? <= 1
             {
                 err!("Can't delete last owner")
             }
         }
-        Invitation::take(conn, &self.email).await?; // Delete invitation if any
-        conn.execute(r"DELETE FROM users WHERE uuid = $1", &[&self.uuid]).await?;
+        Invitation::take(conn, &self.email).await.ise()?; // Delete invitation if any
+        conn.execute(r"DELETE FROM users WHERE uuid = $1", &[&self.uuid]).await.ise()?;
         Ok(())
     }
 
-    pub async fn get(conn: &Conn, uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM users WHERE uuid = $1", &[&uuid]).await?.map(Into::into))
+    pub async fn get(conn: &Conn, uuid: Uuid) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM users WHERE uuid = $1", &[&uuid]).await.ise()?.map(Into::into))
     }
 
-    pub async fn find_by_email(conn: &Conn, email: &str) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM users WHERE email = $1", &[&email]).await?.map(Into::into))
+    pub async fn find_by_email(conn: &Conn, email: &str) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM users WHERE email = $1", &[&email]).await.ise()?.map(Into::into))
     }
 
-    pub async fn find_by_external_id(conn: &Conn, id: &str) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM users WHERE external_id = $1", &[&id]).await?.map(Into::into))
+    pub async fn find_by_external_id(conn: &Conn, id: &str) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM users WHERE external_id = $1", &[&id]).await.ise()?.map(Into::into))
     }
 
-    pub async fn get_all(conn: &Conn) -> ApiResult<Vec<Self>> {
-        Ok(conn.query(r"SELECT * FROM users", &[]).await?.into_iter().map(|x| x.into()).collect())
+    pub async fn get_all(conn: &Conn) -> Result<Vec<Self>> {
+        Ok(conn.query(r"SELECT * FROM users", &[]).await.ise()?.into_iter().map(|x| x.into()).collect())
     }
 
-    pub async fn last_active(&self, conn: &Conn) -> ApiResult<Option<DateTime<Utc>>> {
-        Ok(Device::find_latest_active_by_user(conn, self.uuid).await?.map(|x| x.updated_at))
+    pub async fn last_active(&self, conn: &Conn) -> Result<Option<DateTime<Utc>>> {
+        Ok(Device::find_latest_active_by_user(conn, self.uuid).await.ise()?.map(|x| x.updated_at))
     }
 }

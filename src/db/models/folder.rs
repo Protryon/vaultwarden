@@ -1,4 +1,4 @@
-use axum_util::errors::ApiResult;
+use axol::{ErrorExt, Result};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use tokio_postgres::Row;
@@ -79,7 +79,7 @@ impl FolderCipher {
 }
 
 impl Folder {
-    pub async fn save(&mut self, conn: &Conn) -> ApiResult<()> {
+    pub async fn save(&mut self, conn: &Conn) -> Result<()> {
         self.updated_at = Utc::now();
 
         conn.execute(
@@ -91,55 +91,63 @@ impl Folder {
         name = EXCLUDED.name",
             &[&self.uuid, &self.created_at, &self.updated_at, &self.user_uuid, &self.name],
         )
-        .await?;
-        User::flag_revision_for(conn, self.user_uuid).await?;
+        .await
+        .ise()?;
+        User::flag_revision_for(conn, self.user_uuid).await.ise()?;
         Ok(())
     }
 
-    pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
-        conn.execute(r"DELETE FROM folders WHERE uuid = $1", &[&self.uuid]).await?;
-        User::flag_revision_for(conn, self.user_uuid).await?;
+    pub async fn delete(&self, conn: &Conn) -> Result<()> {
+        conn.execute(r"DELETE FROM folders WHERE uuid = $1", &[&self.uuid]).await.ise()?;
+        User::flag_revision_for(conn, self.user_uuid).await.ise()?;
         Ok(())
     }
 
-    pub async fn get_with_user(conn: &Conn, uuid: Uuid, user_uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM folders WHERE uuid = $1 AND user_uuid = $2", &[&uuid, &user_uuid]).await?.map(Into::into))
+    pub async fn get_with_user(conn: &Conn, uuid: Uuid, user_uuid: Uuid) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM folders WHERE uuid = $1 AND user_uuid = $2", &[&uuid, &user_uuid]).await.ise()?.map(Into::into))
     }
 
-    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<Vec<Self>> {
-        Ok(conn.query(r"SELECT * FROM folders WHERE user_uuid = $1", &[&user_uuid]).await?.into_iter().map(|x| x.into()).collect())
+    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid) -> Result<Vec<Self>> {
+        Ok(conn.query(r"SELECT * FROM folders WHERE user_uuid = $1", &[&user_uuid]).await.ise()?.into_iter().map(|x| x.into()).collect())
     }
 
-    pub async fn delete_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<()> {
-        User::flag_revision_for(conn, user_uuid).await?;
-        conn.execute(r"DELETE FROM folders WHERE user_uuid = $1", &[&user_uuid]).await?;
+    pub async fn delete_by_user(conn: &Conn, user_uuid: Uuid) -> Result<()> {
+        User::flag_revision_for(conn, user_uuid).await.ise()?;
+        conn.execute(r"DELETE FROM folders WHERE user_uuid = $1", &[&user_uuid]).await.ise()?;
         Ok(())
     }
 }
 
 impl FolderCipher {
-    pub async fn save(&self, conn: &Conn) -> ApiResult<()> {
+    pub async fn save(&self, conn: &Conn) -> Result<()> {
         conn.execute(
             "INSERT INTO folder_ciphers (cipher_uuid, folder_uuid) VALUES ($1, $2) ON CONFLICT (cipher_uuid, folder_uuid) DO NOTHING",
             &[&self.cipher_uuid, &self.folder_uuid],
         )
-        .await?;
-        self.flag_revision(conn).await?;
+        .await
+        .ise()?;
+        self.flag_revision(conn).await.ise()?;
         Ok(())
     }
 
-    pub async fn flag_revision(&self, conn: &Conn) -> ApiResult<()> {
-        conn.execute(r"UPDATE user_revisions u SET updated_at = now() FROM folders f WHERE f.uuid = $1 AND f.user_uuid = u.uuid", &[&self.folder_uuid]).await?;
+    pub async fn flag_revision(&self, conn: &Conn) -> Result<()> {
+        conn.execute(r"UPDATE user_revisions u SET updated_at = now() FROM folders f WHERE f.uuid = $1 AND f.user_uuid = u.uuid", &[&self.folder_uuid])
+            .await
+            .ise()?;
         Ok(())
     }
 
-    pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
-        self.flag_revision(conn).await?;
-        conn.execute(r"DELETE FROM folder_ciphers WHERE cipher_uuid = $1 AND folder_uuid = $2", &[&self.cipher_uuid, &self.folder_uuid]).await?;
+    pub async fn delete(&self, conn: &Conn) -> Result<()> {
+        self.flag_revision(conn).await.ise()?;
+        conn.execute(r"DELETE FROM folder_ciphers WHERE cipher_uuid = $1 AND folder_uuid = $2", &[&self.cipher_uuid, &self.folder_uuid]).await.ise()?;
         Ok(())
     }
 
-    pub async fn find_by_folder_and_cipher(conn: &Conn, folder_uuid: Uuid, cipher_uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM folder_ciphers WHERE folder_uuid = $1 AND cipher_uuid = $2", &[&folder_uuid, &cipher_uuid]).await?.map(Into::into))
+    pub async fn find_by_folder_and_cipher(conn: &Conn, folder_uuid: Uuid, cipher_uuid: Uuid) -> Result<Option<Self>> {
+        Ok(conn
+            .query_opt(r"SELECT * FROM folder_ciphers WHERE folder_uuid = $1 AND cipher_uuid = $2", &[&folder_uuid, &cipher_uuid])
+            .await
+            .ise()?
+            .map(Into::into))
     }
 }

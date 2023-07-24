@@ -1,4 +1,4 @@
-use axum_util::errors::{ApiError, ApiResult};
+use axol::{Error, Result};
 use chrono::{Duration, Utc};
 use log::{debug, error};
 
@@ -7,7 +7,7 @@ use crate::{
     CONFIG,
 };
 
-pub async fn emergency_request_timeout_job() -> ApiResult<()> {
+pub async fn emergency_request_timeout_job() -> Result<()> {
     debug!("Start emergency_request_timeout_job");
     if !CONFIG.settings.emergency_access_allowed {
         return Ok(());
@@ -35,10 +35,10 @@ pub async fn emergency_request_timeout_job() -> ApiResult<()> {
 
             if CONFIG.mail_enabled() {
                 // get grantor user to send Accepted email
-                let grantor_user = User::get(&conn, emer.grantor_uuid).await?.ok_or(ApiError::NotFound)?;
+                let grantor_user = User::get(&conn, emer.grantor_uuid).await?.ok_or(Error::NotFound)?;
 
                 // get grantee user to send Accepted email
-                let grantee_user = User::get(&conn, emer.grantee_uuid.ok_or(ApiError::NotFound)?).await?.ok_or(ApiError::NotFound)?;
+                let grantee_user = User::get(&conn, emer.grantee_uuid.ok_or(Error::NotFound)?).await?.ok_or(Error::NotFound)?;
 
                 crate::mail::send_emergency_access_recovery_timed_out(&grantor_user.email, &grantee_user.name, emer.get_type_as_str()).await?;
 
@@ -49,7 +49,7 @@ pub async fn emergency_request_timeout_job() -> ApiResult<()> {
     Ok(())
 }
 
-pub async fn emergency_notification_reminder_job() -> ApiResult<()> {
+pub async fn emergency_notification_reminder_job() -> Result<()> {
     debug!("Start emergency_notification_reminder_job");
     if !CONFIG.settings.emergency_access_allowed {
         return Ok(());
@@ -83,10 +83,10 @@ pub async fn emergency_notification_reminder_job() -> ApiResult<()> {
 
             if CONFIG.mail_enabled() {
                 // get grantor user to send Accepted email
-                let grantor_user = User::get(&conn, emer.grantor_uuid).await?.ok_or(ApiError::NotFound)?;
+                let grantor_user = User::get(&conn, emer.grantor_uuid).await?.ok_or(Error::NotFound)?;
 
                 // get grantee user to send Accepted email
-                let grantee_user = User::get(&conn, emer.grantee_uuid.ok_or(ApiError::NotFound)?).await?.ok_or(ApiError::NotFound)?;
+                let grantee_user = User::get(&conn, emer.grantee_uuid.ok_or(Error::NotFound)?).await?.ok_or(Error::NotFound)?;
 
                 crate::mail::send_emergency_access_recovery_reminder(
                     &grantor_user.email,

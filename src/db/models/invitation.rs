@@ -1,4 +1,4 @@
-use axum_util::errors::ApiResult;
+use axol::{ErrorExt, Result};
 
 use crate::db::Conn;
 
@@ -15,29 +15,29 @@ impl Invitation {
         }
     }
 
-    pub async fn save(&self, conn: &Conn) -> ApiResult<()> {
+    pub async fn save(&self, conn: &Conn) -> Result<()> {
         if self.email.trim().is_empty() {
             err!("Invitation email can't be empty")
         }
-        conn.execute("INSERT INTO invitations (email) VALUES ($1) ON CONFLICT (email) DO NOTHING", &[&self.email]).await?;
+        conn.execute("INSERT INTO invitations (email) VALUES ($1) ON CONFLICT (email) DO NOTHING", &[&self.email]).await.ise()?;
         Ok(())
     }
 
-    pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
-        conn.execute("DELETE FROM invitations WHERE email = $1", &[&self.email]).await?;
+    pub async fn delete(&self, conn: &Conn) -> Result<()> {
+        conn.execute("DELETE FROM invitations WHERE email = $1", &[&self.email]).await.ise()?;
         Ok(())
     }
 
-    pub async fn find_by_email(conn: &Conn, email: &str) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM invitations WHERE email = $1", &[&email]).await?.map(|x| Invitation {
+    pub async fn find_by_email(conn: &Conn, email: &str) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM invitations WHERE email = $1", &[&email]).await.ise()?.map(|x| Invitation {
             email: x.get(0),
         }))
     }
 
-    pub async fn take(conn: &Conn, email: &str) -> ApiResult<bool> {
-        match Self::find_by_email(conn, email).await? {
+    pub async fn take(conn: &Conn, email: &str) -> Result<bool> {
+        match Self::find_by_email(conn, email).await.ise()? {
             Some(invitation) => {
-                invitation.delete(conn).await?;
+                invitation.delete(conn).await.ise()?;
                 Ok(true)
             }
             None => Ok(false),

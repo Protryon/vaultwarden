@@ -1,5 +1,4 @@
-use axum_util::errors::ApiResult;
-use http::StatusCode;
+use axol::{http::StatusCode, Result};
 use once_cell::sync::Lazy;
 use std::{net::IpAddr, num::NonZeroU32, time::Duration};
 
@@ -21,20 +20,20 @@ static LIMITER_ADMIN: Lazy<Limiter> = Lazy::new(|| {
     RateLimiter::keyed(Quota::with_period(seconds).expect("Non-zero admin ratelimit seconds").allow_burst(burst))
 });
 
-pub fn check_limit_login(ip: &IpAddr) -> ApiResult<()> {
+pub fn check_limit_login(ip: &IpAddr) -> Result<()> {
     match LIMITER_LOGIN.check_key(ip) {
         Ok(_) => Ok(()),
         Err(_e) => {
-            err_code!("Too many login requests", StatusCode::TOO_MANY_REQUESTS);
+            err_code!("Too many login requests", StatusCode::TooManyRequests);
         }
     }
 }
 
-pub fn check_limit_admin(ip: &IpAddr) -> ApiResult<()> {
+pub fn check_limit_admin(ip: &IpAddr) -> Result<()> {
     match LIMITER_ADMIN.check_key(ip) {
         Ok(_) => Ok(()),
         Err(_e) => {
-            err_code!("Too many admin requests", StatusCode::TOO_MANY_REQUESTS);
+            err_code!("Too many admin requests", StatusCode::TooManyRequests);
         }
     }
 }

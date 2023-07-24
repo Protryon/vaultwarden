@@ -1,5 +1,4 @@
-use axum::Json;
-use axum_util::errors::ApiResult;
+use axol::prelude::*;
 use chrono::{Duration, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -9,7 +8,7 @@ use crate::{
     api::PasswordData,
     auth::Headers,
     crypto,
-    db::{Conn, EventType, TwoFactor, TwoFactorType, User, DB},
+    db::{Conn, Event, EventType, TwoFactor, TwoFactorType, User, DB},
     error::MapResult,
     events::log_user_event,
     mail,
@@ -28,9 +27,9 @@ pub struct SendEmailLoginData {
 
 /// User is trying to login and wants to use email 2FA.
 /// Does not require Bearer token
-pub async fn send_email_login(data: Json<Upcase<SendEmailLoginData>>) -> ApiResult<()> {
+pub async fn send_email_login(data: Json<Upcase<SendEmailLoginData>>) -> Result<()> {
     let data: SendEmailLoginData = data.0.data;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     // Get the user
     let user = match User::find_by_email(&conn, &data.Email).await? {
@@ -53,14 +52,14 @@ pub async fn send_email_login(data: Json<Upcase<SendEmailLoginData>>) -> ApiResu
 }
 
 /// Generate the token, save the data for later verification and send email to user
-pub async fn send_token(user_uuid: Uuid, conn: &Conn) -> ApiResult<()> {
+pub async fn send_token(user_uuid: Uuid, conn: &Conn) -> Result<()> {
     let mut twofactor = TwoFactor::find_by_user_and_type(conn, user_uuid, TwoFactorType::Email).await?.map_res("Two factor not found")?;
 
     let generated_token = crypto::generate_email_token(CONFIG.email_2fa.as_ref().map(|x| x.email_token_size).unwrap_or_default());
 
-    let mut twofactor_data: EmailTokenData = serde_json::from_value(twofactor.data)?;
+    let mut twofactor_data: EmailTokenData = serde_json::from_value(twofactor.data).ise()?;
     twofactor_data.set_token(generated_token);
-    twofactor.data = serde_json::to_value(&twofactor_data)?;
+    twofactor.data = serde_json::to_value(&twofactor_data).ise()?;
     twofactor.save(conn).await?;
 
     mail::send_token(&twofactor_data.email, &twofactor_data.last_token.map_res("Token is empty")?).await?;
@@ -69,18 +68,18 @@ pub async fn send_token(user_uuid: Uuid, conn: &Conn) -> ApiResult<()> {
 }
 
 /// When user clicks on Manage email 2FA show the user the related information
-pub async fn get_email(headers: Headers, data: Json<Upcase<PasswordData>>) -> ApiResult<Json<Value>> {
+pub async fn get_email(headers: Headers, data: Json<Upcase<PasswordData>>) -> Result<Json<Value>> {
     let data: PasswordData = data.0.data;
     let user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
         err!("Invalid password");
     }
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let (enabled, mfa_email) = match TwoFactor::find_by_user_and_type(&conn, user.uuid, TwoFactorType::Email).await? {
         Some(x) => {
-            let twofactor_data: EmailTokenData = serde_json::from_value(x.data)?;
+            let twofactor_data: EmailTokenData = serde_json::from_value(x.data).ise()?;
             (true, json!(twofactor_data.email))
         }
         _ => (false, serde_json::value::Value::Null),
@@ -102,7 +101,7 @@ pub struct SendEmailData {
 }
 
 /// Send a verification email to the specified email address to check whether it exists/belongs to user.
-pub async fn send_email(conn: AutoTxn, headers: Headers, data: Json<Upcase<SendEmailData>>) -> ApiResult<()> {
+pub async fn send_email(conn: AutoTxn, headers: Headers, data: Json<Upcase<SendEmailData>>) -> Result<()> {
     let data: SendEmailData = data.0.data;
     let user = headers.user;
 
@@ -122,7 +121,7 @@ pub async fn send_email(conn: AutoTxn, headers: Headers, data: Json<Upcase<SendE
     let twofactor_data = EmailTokenData::new(data.email, generated_token);
 
     // Uses EmailVerificationChallenge as type to show that it's not verified yet.
-    let twofactor = TwoFactor::new(user.uuid, TwoFactorType::EmailVerificationChallenge, serde_json::to_value(twofactor_data.clone())?);
+    let twofactor = TwoFactor::new(user.uuid, TwoFactorType::EmailVerificationChallenge, serde_json::to_value(twofactor_data.clone()).ise()?);
     twofactor.save(&conn).await?;
 
     mail::send_token(&twofactor_data.email, &twofactor_data.last_token.map_res("Token is empty")?).await?;
@@ -141,18 +140,18 @@ pub struct EmailData {
 }
 
 /// Verify email belongs to user and can be used for 2FA email codes.
-pub async fn email(headers: Headers, data: Json<Upcase<EmailData>>) -> ApiResult<Json<Value>> {
+pub async fn email(headers: Headers, data: Json<Upcase<EmailData>>) -> Result<Json<Value>> {
     let data: EmailData = data.0.data;
     let mut user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
         err!("Invalid password");
     }
-    let mut conn = DB.get().await?;
+    let mut conn = DB.get().await.ise()?;
 
     let mut twofactor = TwoFactor::find_by_user_and_type(&conn, user.uuid, TwoFactorType::EmailVerificationChallenge).await?.map_res("Two factor not found")?;
 
-    let mut email_data: EmailTokenData = serde_json::from_value(twofactor.data)?;
+    let mut email_data: EmailTokenData = serde_json::from_value(twofactor.data).ise()?;
 
     let issued_token = match &email_data.last_token {
         Some(t) => t,
@@ -165,7 +164,7 @@ pub async fn email(headers: Headers, data: Json<Upcase<EmailData>>) -> ApiResult
 
     email_data.reset_token();
     twofactor.atype = TwoFactorType::Email;
-    twofactor.data = serde_json::to_value(email_data.clone())?;
+    twofactor.data = serde_json::to_value(email_data.clone()).ise()?;
     twofactor.save(&mut conn).await?;
 
     _generate_recover_code(&mut user, &conn).await?;
@@ -180,20 +179,18 @@ pub async fn email(headers: Headers, data: Json<Upcase<EmailData>>) -> ApiResult
 }
 
 /// Validate the email code when used as TwoFactor token mechanism
-pub async fn validate_email_code_str(user_uuid: Uuid, token: &str, data: Value) -> ApiResult<()> {
-    let mut email_data: EmailTokenData = serde_json::from_value(data)?;
-    let mut conn = DB.get().await?;
-    let txn = conn.transaction().await?;
+pub async fn validate_email_code_str(user_uuid: Uuid, token: &str, data: Value) -> Result<()> {
+    let mut email_data: EmailTokenData = serde_json::from_value(data).ise()?;
+    let mut conn = DB.get().await.ise()?;
+    let txn = conn.transaction().await.ise()?;
 
     let mut twofactor = TwoFactor::find_by_user_and_type(txn.client(), user_uuid, TwoFactorType::Email).await?.map_res("Two factor not found")?;
     let issued_token = match &email_data.last_token {
         Some(t) => t,
-        _ => err!(
-            "No token available",
-            ErrorEvent {
-                event: EventType::UserFailedLogIn2fa
-            }
-        ),
+        _ => {
+            Event::new(EventType::UserFailedLogIn2fa, None).with_user_uuid(user_uuid).save(txn.client()).await?;
+            err!("No token available")
+        }
     };
 
     if !crypto::ct_eq(issued_token, token) {
@@ -201,33 +198,25 @@ pub async fn validate_email_code_str(user_uuid: Uuid, token: &str, data: Value) 
         if email_data.attempts >= CONFIG.email_2fa.as_ref().map(|x| x.email_attempts_limit).unwrap_or_default() {
             email_data.reset_token();
         }
-        twofactor.data = serde_json::to_value(email_data)?;
+        twofactor.data = serde_json::to_value(email_data).ise()?;
         twofactor.save(txn.client()).await?;
 
-        txn.commit().await?;
+        txn.commit().await.ise()?;
 
-        err!(
-            "Token is invalid",
-            ErrorEvent {
-                event: EventType::UserFailedLogIn2fa
-            }
-        )
+        Event::new(EventType::UserFailedLogIn2fa, None).with_user_uuid(user_uuid).save(&conn).await?;
+        err!("Token is invalid")
     }
 
     email_data.reset_token();
-    twofactor.data = serde_json::to_value(email_data.clone())?;
+    twofactor.data = serde_json::to_value(email_data.clone()).ise()?;
     twofactor.save(txn.client()).await?;
-    txn.commit().await?;
+    txn.commit().await.ise()?;
 
     let date = NaiveDateTime::from_timestamp_opt(email_data.token_sent, 0).map_res("invalid timestamp")?.and_utc();
     let max_time = CONFIG.email_2fa.as_ref().map(|x| x.email_expiration_time).unwrap_or_default() as i64;
     if date + Duration::seconds(max_time) < Utc::now() {
-        err!(
-            "Token has expired",
-            ErrorEvent {
-                event: EventType::UserFailedLogIn2fa
-            }
-        )
+        Event::new(EventType::UserFailedLogIn2fa, None).with_user_uuid(user_uuid).save(&conn).await?;
+        err!("Token has expired")
     }
 
     Ok(())

@@ -1,5 +1,5 @@
 use anyhow::anyhow;
-use axum_util::errors::{ApiError, ApiResult};
+use axol::{Error, Result};
 use chrono::Utc;
 use log::{debug, error};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
@@ -32,9 +32,9 @@ struct LocalAuthPushToken {
 
 // TODO: unpanickify this file
 
-async fn get_auth_push_token() -> ApiResult<String> {
+async fn get_auth_push_token() -> Result<String> {
     let Some(push) = CONFIG.push.as_ref() else {
-        return Err(ApiError::Other(anyhow!("failed to get push config")));
+        return Err(Error::internal(anyhow!("failed to get push config")));
     };
     static PUSH_TOKEN: Lazy<RwLock<LocalAuthPushToken>> = Lazy::new(|| {
         RwLock::new(LocalAuthPushToken {
@@ -75,7 +75,7 @@ async fn get_auth_push_token() -> ApiResult<String> {
     Ok(push_token.access_token.clone())
 }
 
-pub async fn register_push_device(user_uuid: Uuid, device: Device) -> ApiResult<()> {
+pub async fn register_push_device(user_uuid: Uuid, device: Device) -> Result<()> {
     let Some(push) = CONFIG.push.as_ref() else {
         return Ok(());
     };
@@ -102,12 +102,14 @@ pub async fn register_push_device(user_uuid: Uuid, device: Device) -> ApiResult<
         .header(AUTHORIZATION, auth_header)
         .json(&data)
         .send()
-        .await?
-        .error_for_status()?;
+        .await
+        .map_err(Error::internal)?
+        .error_for_status()
+        .map_err(Error::internal)?;
     Ok(())
 }
 
-pub async fn unregister_push_device(uuid: Uuid) -> ApiResult<()> {
+pub async fn unregister_push_device(uuid: Uuid) -> Result<()> {
     let Some(push) = CONFIG.push.as_ref() else {
         return Ok(());
     };
@@ -126,7 +128,7 @@ pub async fn unregister_push_device(uuid: Uuid) -> ApiResult<()> {
     Ok(())
 }
 
-pub async fn push_cipher_update(ut: UpdateType, cipher: &Cipher, acting_device_uuid: Uuid, conn: &Conn) -> ApiResult<()> {
+pub async fn push_cipher_update(ut: UpdateType, cipher: &Cipher, acting_device_uuid: Uuid, conn: &Conn) -> Result<()> {
     // We shouldn't send a push notification on cipher update if the cipher belongs to an organization, this isn't implemented in the upstream server too.
     if cipher.organization_uuid.is_some() {
         return Ok(());
@@ -188,7 +190,7 @@ pub fn push_user_update(ut: UpdateType, user: &User) {
     })));
 }
 
-pub async fn push_folder_update(ut: UpdateType, folder: &Folder, acting_device_uuid: Uuid, conn: &Conn) -> ApiResult<()> {
+pub async fn push_folder_update(ut: UpdateType, folder: &Folder, acting_device_uuid: Uuid, conn: &Conn) -> Result<()> {
     if Device::check_user_has_push_device(conn, folder.user_uuid).await? {
         tokio::task::spawn(send_to_push_relay(json!({
             "userId": folder.user_uuid,
@@ -206,7 +208,7 @@ pub async fn push_folder_update(ut: UpdateType, folder: &Folder, acting_device_u
     Ok(())
 }
 
-pub async fn push_send_update(ut: UpdateType, send: &crate::db::Send, acting_device_uuid: Uuid, conn: &Conn) -> ApiResult<()> {
+pub async fn push_send_update(ut: UpdateType, send: &crate::db::Send, acting_device_uuid: Uuid, conn: &Conn) -> Result<()> {
     if let Some(s) = send.user_uuid {
         if Device::check_user_has_push_device(conn, s).await? {
             tokio::task::spawn(send_to_push_relay(json!({

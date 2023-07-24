@@ -5,20 +5,13 @@ use std::{
 };
 
 use anyhow::anyhow;
-use axum::{
-    body::Full,
-    extract::Path,
-    headers::ContentType,
-    response::{IntoResponse, Response as AxumResponse},
-    routing, Router,
+use axol::http::{
+    header::{CONTENT_TYPE, LOCATION},
+    typed_headers::ContentType,
 };
-use axum_util::errors::ApiError;
+use axol::prelude::*;
 use bytes::{Bytes, BytesMut};
 use futures::{stream::StreamExt, TryFutureExt};
-use http::{
-    header::{CONTENT_TYPE, LOCATION},
-    StatusCode,
-};
 use log::{debug, error, info, warn};
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -35,11 +28,9 @@ use tokio::{
 use html5gum::{Emitter, EndTag, HtmlString, InfallibleTokenizer, Readable, StartTag, StringReader, Tokenizer};
 
 use crate::{
-    api::OutHeader,
     config::IconService,
-    error::Error,
     util::{get_reqwest_client_builder, Cached},
-    CONFIG,
+    MapResult, CONFIG,
 };
 
 // TODO: unpanickify this file
@@ -47,8 +38,8 @@ use crate::{
 pub fn route() -> Router {
     let out = Router::new();
     match CONFIG.advanced.icon_service {
-        IconService::Internal => out.route("/:domain/icon.png", routing::get(icon_internal)),
-        _ => out.route("/:domain/icon.png", routing::get(icon_external)),
+        IconService::Internal => out.get("/:domain/icon.png", icon_internal),
+        _ => out.get("/:domain/icon.png", icon_external),
     }
 }
 
@@ -88,45 +79,40 @@ static CLIENT: Lazy<Client> = Lazy::new(|| {
 // Build Regex only once since this takes a lot of time.
 static ICON_SIZE_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?x)(\d+)\D*(\d+)").unwrap());
 
-async fn icon_external(Path(domain): Path<String>) -> AxumResponse {
+async fn icon_external(Path(domain): Path<String>) -> Result<axol::http::Response> {
     if !is_valid_domain(&domain) {
         warn!("Invalid domain: {}", domain);
-        return StatusCode::NOT_FOUND.into_response();
+        return Err(Error::NotFound);
     }
 
     if check_domain_blacklist_reason(&domain).await.is_some() {
-        return StatusCode::NOT_FOUND.into_response();
+        return Err(Error::NotFound);
     }
 
     let url = CONFIG.advanced.icon_service.url().replace("{}", &domain);
     let status = match CONFIG.advanced.icon_redirect_code {
-        301 => StatusCode::MOVED_PERMANENTLY, // legacy permanent redirect
-        302 => StatusCode::FOUND,             // legacy temporary redirect
-        307 => StatusCode::TEMPORARY_REDIRECT,
-        308 => StatusCode::PERMANENT_REDIRECT,
+        301 => StatusCode::MovedPermanently, // legacy permanent redirect
+        302 => StatusCode::Found,            // legacy temporary redirect
+        307 => StatusCode::TemporaryRedirect,
+        308 => StatusCode::PermanentRedirect,
         _ => {
-            return ApiError::Other(anyhow!("Unexpected redirect code {}", CONFIG.advanced.icon_redirect_code)).into_response();
+            return Err(Error::internal(anyhow!("Unexpected redirect code {}", CONFIG.advanced.icon_redirect_code)));
         }
     };
     (status, [(LOCATION, url)]).into_response()
 }
 
-async fn icon_internal(Path(domain): Path<String>) -> AxumResponse {
+async fn icon_internal(Path(domain): Path<String>) -> Result<axol::http::Response> {
     const FALLBACK_ICON: &[u8] = include_bytes!("../../static/images/fallback-icon.png");
 
     if !is_valid_domain(&domain) {
         warn!("Invalid domain: {}", domain);
-        return (Cached::ttl(CONFIG.advanced.icon_cache_negttl, true), OutHeader(ContentType::png()), Full::from(FALLBACK_ICON)).into_response();
+        return (Cached::ttl(CONFIG.advanced.icon_cache_negttl, true), Typed(ContentType::png()), FALLBACK_ICON).into_response();
     }
 
     match get_icon(&domain).await {
-        Some((icon, icon_type)) => (
-            Cached::ttl(CONFIG.advanced.icon_cache_ttl, true),
-            [(CONTENT_TYPE, format!("image/{icon_type}").parse::<HeaderValue>().unwrap())],
-            Full::from(icon),
-        )
-            .into_response(),
-        _ => (Cached::ttl(CONFIG.advanced.icon_cache_negttl, true), OutHeader(ContentType::png()), Full::from(FALLBACK_ICON)).into_response(),
+        Some((icon, icon_type)) => (Cached::ttl(CONFIG.advanced.icon_cache_ttl, true), [(CONTENT_TYPE, format!("image/{icon_type}"))], icon).into_response(),
+        _ => (Cached::ttl(CONFIG.advanced.icon_cache_negttl, true), Typed(ContentType::png()), FALLBACK_ICON).into_response(),
     }
 }
 
@@ -223,7 +209,7 @@ async fn get_icon(domain: &str) -> Option<(Vec<u8>, String)> {
             Some((icon.to_vec(), icon_type.unwrap_or("x-icon").to_string()))
         }
         Err(e) => {
-            warn!("Unable to download icon: {:?}", e);
+            debug!("Unable to download icon: {}", e);
             let miss_indicator = path + ".miss";
             save_icon(&miss_indicator, &[]).await;
             None
@@ -249,10 +235,10 @@ async fn get_cached_icon(path: &str) -> Option<Vec<u8>> {
     None
 }
 
-async fn file_is_expired(path: &str, ttl: u64) -> Result<bool, Error> {
+async fn file_is_expired(path: &str, ttl: u64) -> Result<bool> {
     let meta = symlink_metadata(path).await?;
     let modified = meta.modified()?;
-    let age = SystemTime::now().duration_since(modified)?;
+    let age = SystemTime::now().duration_since(modified).ise()?;
 
     Ok(ttl > 0 && ttl <= age.as_secs())
 }
@@ -418,7 +404,7 @@ async fn get_icon_url(domain: &str) -> Result<IconUrlResult, Error> {
         iconlist.push(Icon::new(40, String::from(url.join("/apple-touch-icon.png").unwrap())));
 
         // 384KB should be more than enough for the HTML, though as we only really need the HTML header.
-        let limited_reader = stream_to_bytes_limit(content, 384 * 1024).await?.to_vec();
+        let limited_reader = stream_to_bytes_limit(content, 384 * 1024).await.map_res("failed to read html")?.to_vec();
 
         let dom = Tokenizer::new_with_emitter(limited_reader.to_reader(), FaviconEmitter::default()).infallible();
         get_favicons_node(dom, &mut iconlist, &url);
@@ -440,11 +426,11 @@ async fn get_icon_url(domain: &str) -> Result<IconUrlResult, Error> {
     })
 }
 
-async fn get_page(url: &str) -> Result<Response, Error> {
+async fn get_page(url: &str) -> Result<Response> {
     get_page_with_referer(url, "").await
 }
 
-async fn get_page_with_referer(url: &str, referer: &str) -> Result<Response, Error> {
+async fn get_page_with_referer(url: &str, referer: &str) -> Result<Response> {
     match check_domain_blacklist_reason(url::Url::parse(url).unwrap().host_str().unwrap_or_default()).await {
         Some(DomainBlacklistReason::Regex) => warn!("Favicon '{}' is from a blacklisted domain!", url),
         Some(DomainBlacklistReason::IP) => warn!("Favicon '{}' is hosted on a non-global IP!", url),
@@ -457,7 +443,7 @@ async fn get_page_with_referer(url: &str, referer: &str) -> Result<Response, Err
     }
 
     match client.send().await {
-        Ok(c) => c.error_for_status().map_err(Into::into),
+        Ok(c) => c.error_for_status().map_res("failed to get_page_with_referrer"),
         Err(e) => err_silent!(format!("{e}")),
     }
 }
@@ -583,7 +569,7 @@ async fn download_icon(domain: &str) -> Result<(Bytes, Option<&str>), Error> {
         } else {
             match get_page_with_referer(&icon.href, &icon_result.referer).await {
                 Ok(res) => {
-                    buffer = stream_to_bytes_limit(res, 5120 * 1024).await?; // 5120KB/5MB for each icon max (Same as icons.bitwarden.net)
+                    buffer = stream_to_bytes_limit(res, 5120 * 1024).await.map_res("failed to read icon")?; // 5120KB/5MB for each icon max (Same as icons.bitwarden.net)
 
                     // Check if the icon type is allowed, else try an icon from the list.
                     icon_type = get_icon_type(&buffer);

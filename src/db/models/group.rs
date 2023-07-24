@@ -1,4 +1,4 @@
-use axum_util::errors::ApiResult;
+use axol::{ErrorExt, Result};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use tokio_postgres::Row;
@@ -99,9 +99,10 @@ impl Group {
         })
     }
 
-    pub async fn to_json_details(&self, conn: &Conn) -> ApiResult<Value> {
+    pub async fn to_json_details(&self, conn: &Conn) -> Result<Value> {
         let collections_groups: Vec<Value> = CollectionGroup::find_by_group(conn, self.uuid)
-            .await?
+            .await
+            .ise()?
             .iter()
             .map(|entry| {
                 json!({
@@ -161,7 +162,7 @@ impl GroupUser {
 
 /// Database methods
 impl Group {
-    pub async fn save(&mut self, conn: &Conn) -> ApiResult<()> {
+    pub async fn save(&mut self, conn: &Conn) -> Result<()> {
         self.revision_date = Utc::now();
 
         conn.execute(r"INSERT INTO groups (uuid, organization_uuid, name, access_all, external_id, creation_date, revision_date) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (uuid) DO UPDATE
@@ -179,46 +180,53 @@ impl Group {
             &self.external_id,
             &self.creation_date,
             &self.revision_date,
-        ]).await?;
-        Self::flag_revision(conn, self.uuid).await?;
+        ]).await.ise()?;
+        Self::flag_revision(conn, self.uuid).await.ise()?;
         Ok(())
     }
 
-    pub async fn flag_revision(conn: &Conn, uuid: Uuid) -> ApiResult<()> {
+    pub async fn flag_revision(conn: &Conn, uuid: Uuid) -> Result<()> {
         conn.execute(r"UPDATE user_revisions u SET updated_at = now() FROM group_users gu WHERE gu.group_uuid = $1 AND gu.user_uuid = u.uuid", &[&uuid])
-            .await?;
+            .await
+            .ise()?;
         Ok(())
     }
 
-    pub async fn find_by_organization(conn: &Conn, organization_uuid: Uuid) -> ApiResult<Vec<Self>> {
-        Ok(conn.query(r"SELECT cu.* FROM groups cu WHERE cu.organization_uuid = $1", &[&organization_uuid]).await?.into_iter().map(|x| x.into()).collect())
+    pub async fn find_by_organization(conn: &Conn, organization_uuid: Uuid) -> Result<Vec<Self>> {
+        Ok(conn
+            .query(r"SELECT cu.* FROM groups cu WHERE cu.organization_uuid = $1", &[&organization_uuid])
+            .await
+            .ise()?
+            .into_iter()
+            .map(|x| x.into())
+            .collect())
     }
 
-    pub async fn count_by_org(conn: &Conn, organization_uuid: Uuid) -> ApiResult<i64> {
-        Ok(conn.query_one(r"SELECT count(1) FROM groups WHERE organization_uuid = $1", &[&organization_uuid]).await?.get(0))
+    pub async fn count_by_org(conn: &Conn, organization_uuid: Uuid) -> Result<i64> {
+        Ok(conn.query_one(r"SELECT count(1) FROM groups WHERE organization_uuid = $1", &[&organization_uuid]).await.ise()?.get(0))
     }
 
-    pub async fn get(conn: &Conn, uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM groups WHERE uuid = $1", &[&uuid]).await?.map(Into::into))
+    pub async fn get(conn: &Conn, uuid: Uuid) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM groups WHERE uuid = $1", &[&uuid]).await.ise()?.map(Into::into))
     }
 
-    pub async fn get_for_org(conn: &Conn, uuid: Uuid, organization_uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM groups WHERE uuid = $1 AND organization_uuid = $2", &[&uuid, &organization_uuid]).await?.map(Into::into))
+    pub async fn get_for_org(conn: &Conn, uuid: Uuid, organization_uuid: Uuid) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM groups WHERE uuid = $1 AND organization_uuid = $2", &[&uuid, &organization_uuid]).await.ise()?.map(Into::into))
     }
 
-    pub async fn find_by_external_id(conn: &Conn, id: &str) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM groups WHERE external_id = $1", &[&id]).await?.map(Into::into))
+    pub async fn find_by_external_id(conn: &Conn, id: &str) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM groups WHERE external_id = $1", &[&id]).await.ise()?.map(Into::into))
     }
 
-    pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
-        Self::flag_revision(conn, self.uuid).await?;
-        conn.execute(r"DELETE FROM groups WHERE uuid = $1", &[&self.uuid]).await?;
+    pub async fn delete(&self, conn: &Conn) -> Result<()> {
+        Self::flag_revision(conn, self.uuid).await.ise()?;
+        conn.execute(r"DELETE FROM groups WHERE uuid = $1", &[&self.uuid]).await.ise()?;
         Ok(())
     }
 }
 
 impl CollectionGroup {
-    pub async fn save(&self, conn: &Conn) -> ApiResult<()> {
+    pub async fn save(&self, conn: &Conn) -> Result<()> {
         conn.execute(r"INSERT INTO collection_groups (collection_uuid, group_uuid, read_only, hide_passwords) VALUES ($1, $2, $3, $4) ON CONFLICT (collection_uuid, group_uuid) DO UPDATE
         SET
         read_only = EXCLUDED.read_only,
@@ -227,78 +235,81 @@ impl CollectionGroup {
             &self.group_uuid,
             &self.read_only,
             &self.hide_passwords,
-        ]).await?;
-        Group::flag_revision(conn, self.group_uuid).await?;
+        ]).await.ise()?;
+        Group::flag_revision(conn, self.group_uuid).await.ise()?;
         Ok(())
     }
 
-    pub async fn find_by_group(conn: &Conn, group_uuid: Uuid) -> ApiResult<Vec<Self>> {
-        Ok(conn.query(r"SELECT * FROM collection_groups WHERE group_uuid = $1", &[&group_uuid]).await?.into_iter().map(|x| x.into()).collect())
+    pub async fn find_by_group(conn: &Conn, group_uuid: Uuid) -> Result<Vec<Self>> {
+        Ok(conn.query(r"SELECT * FROM collection_groups WHERE group_uuid = $1", &[&group_uuid]).await.ise()?.into_iter().map(|x| x.into()).collect())
     }
 
-    pub async fn find_by_collection(conn: &Conn, collection_uuid: Uuid) -> ApiResult<Vec<Self>> {
-        Ok(conn.query(r"SELECT * FROM collection_groups WHERE collection_uuid = $1", &[&collection_uuid]).await?.into_iter().map(|x| x.into()).collect())
+    pub async fn find_by_collection(conn: &Conn, collection_uuid: Uuid) -> Result<Vec<Self>> {
+        Ok(conn.query(r"SELECT * FROM collection_groups WHERE collection_uuid = $1", &[&collection_uuid]).await.ise()?.into_iter().map(|x| x.into()).collect())
     }
 
-    pub async fn delete_all_by_group(conn: &Conn, group_uuid: Uuid) -> ApiResult<()> {
-        Group::flag_revision(conn, group_uuid).await?;
-        conn.execute(r"DELETE FROM collection_groups WHERE group_uuid = $1", &[&group_uuid]).await?;
+    pub async fn delete_all_by_group(conn: &Conn, group_uuid: Uuid) -> Result<()> {
+        Group::flag_revision(conn, group_uuid).await.ise()?;
+        conn.execute(r"DELETE FROM collection_groups WHERE group_uuid = $1", &[&group_uuid]).await.ise()?;
         Ok(())
     }
 
-    pub async fn delete_all_by_collection(conn: &Conn, collection_uuid: Uuid) -> ApiResult<()> {
-        Collection::flag_revision(conn, collection_uuid).await?;
-        conn.execute(r"DELETE FROM collection_groups WHERE collection_uuid = $1", &[&collection_uuid]).await?;
+    pub async fn delete_all_by_collection(conn: &Conn, collection_uuid: Uuid) -> Result<()> {
+        Collection::flag_revision(conn, collection_uuid).await.ise()?;
+        conn.execute(r"DELETE FROM collection_groups WHERE collection_uuid = $1", &[&collection_uuid]).await.ise()?;
         Ok(())
     }
 }
 
 impl GroupUser {
-    pub async fn save(&self, conn: &Conn) -> ApiResult<()> {
+    pub async fn save(&self, conn: &Conn) -> Result<()> {
         conn.execute(
             "INSERT INTO group_users (group_uuid, user_uuid) VALUES ($1, $2) ON CONFLICT (group_uuid, user_uuid) DO NOTHING",
             &[&self.group_uuid, &self.user_uuid],
         )
-        .await?;
-        User::flag_revision_for(conn, self.user_uuid).await?;
+        .await
+        .ise()?;
+        User::flag_revision_for(conn, self.user_uuid).await.ise()?;
         Ok(())
     }
 
-    pub async fn find_by_group(conn: &Conn, group_uuid: Uuid) -> ApiResult<Vec<Self>> {
-        Ok(conn.query(r"SELECT * FROM group_users WHERE group_uuid = $1", &[&group_uuid]).await?.into_iter().map(|x| x.into()).collect())
+    pub async fn find_by_group(conn: &Conn, group_uuid: Uuid) -> Result<Vec<Self>> {
+        Ok(conn.query(r"SELECT * FROM group_users WHERE group_uuid = $1", &[&group_uuid]).await.ise()?.into_iter().map(|x| x.into()).collect())
     }
 
-    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid, organization_uuid: Uuid) -> ApiResult<Vec<Self>> {
+    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid, organization_uuid: Uuid) -> Result<Vec<Self>> {
         Ok(conn
             .query(
                 r"SELECT gu.* FROM group_users gu INNER JOIN groups g ON g.uuid = gu.group_uuid WHERE gu.user_uuid = $1 AND g.organization_uuid = $2",
                 &[&user_uuid, &organization_uuid],
             )
-            .await?
+            .await
+            .ise()?
             .into_iter()
             .map(|x| x.into())
             .collect())
     }
 
-    pub async fn delete_by_group_uuid_and_user_id(conn: &Conn, group_uuid: Uuid, user_uuid: Uuid) -> ApiResult<()> {
-        User::flag_revision_for(conn, user_uuid).await?;
-        conn.execute(r"DELETE FROM group_users WHERE user_uuid = $1 AND group_uuid = $2", &[&user_uuid, &group_uuid]).await?;
+    pub async fn delete_by_group_uuid_and_user_id(conn: &Conn, group_uuid: Uuid, user_uuid: Uuid) -> Result<()> {
+        User::flag_revision_for(conn, user_uuid).await.ise()?;
+        conn.execute(r"DELETE FROM group_users WHERE user_uuid = $1 AND group_uuid = $2", &[&user_uuid, &group_uuid]).await.ise()?;
         Ok(())
     }
 
-    pub async fn delete_all_by_group(conn: &Conn, group_uuid: Uuid) -> ApiResult<()> {
-        Group::flag_revision(conn, group_uuid).await?;
-        conn.execute(r"DELETE FROM group_users WHERE group_uuid = $1", &[&group_uuid]).await?;
+    pub async fn delete_all_by_group(conn: &Conn, group_uuid: Uuid) -> Result<()> {
+        Group::flag_revision(conn, group_uuid).await.ise()?;
+        conn.execute(r"DELETE FROM group_users WHERE group_uuid = $1", &[&group_uuid]).await.ise()?;
         Ok(())
     }
 
-    pub async fn delete_all_by_user(conn: &Conn, user_uuid: Uuid, organization_uuid: Uuid) -> ApiResult<()> {
-        User::flag_revision_for(conn, user_uuid).await?;
+    pub async fn delete_all_by_user(conn: &Conn, user_uuid: Uuid, organization_uuid: Uuid) -> Result<()> {
+        User::flag_revision_for(conn, user_uuid).await.ise()?;
         conn.execute(
             r"DELETE FROM group_users gu INNER JOIN groups g ON g.uuid = gu.group_uuid WHERE gu.user_uuid = $1 AND g.organization_uuid = $2",
             &[&user_uuid, &organization_uuid],
         )
-        .await?;
+        .await
+        .ise()?;
         Ok(())
     }
 }

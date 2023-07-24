@@ -1,14 +1,10 @@
 use std::io::ErrorKind;
 
-use super::OutHeader;
-use axum::body::Full;
-use axum::extract::Path;
-use axum::headers::ContentType;
-use axum::response::{Html, IntoResponse, Response};
-use axum::{routing, Json, Router};
-use axum_util::errors::ApiError;
-use http::header::CONTENT_DISPOSITION;
-use http::{header, HeaderValue, StatusCode, Uri};
+use axol::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
+use axol::http::response::Response;
+use axol::http::typed_headers::ContentType;
+use axol::http::{StatusCode, Uri};
+use axol::{prelude::*, Html};
 use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
@@ -17,37 +13,37 @@ use crate::config::PUBLIC_NO_TRAILING_SLASH;
 use crate::db::{Attachment, DB};
 use crate::templates::render_template;
 use crate::util::Cached;
-use crate::{api::ApiResult, CONFIG};
+use crate::CONFIG;
 
 pub fn route(mut router: Router) -> Router {
     if CONFIG.settings.web_vault_enabled {
-        router = router.route("/", routing::get(web_index));
-        router = router.route("/app-id.json", routing::get(app_id));
-        router = router.fallback(web_files);
+        router = router.get("/", web_index);
+        router = router.get("/app-id.json", app_id);
+        router = router.fallback("/", web_files);
     }
-    router = router.route("/attachments/:uuid/:filename", routing::get(attachments));
-    router = router.route("/alive", routing::get(alive));
-    router = router.route("/vw_static/:filename", routing::get(static_files));
+    router = router.get("/attachments/:uuid/:filename", attachments);
+    router = router.get("/alive", alive);
+    router = router.get("/vw_static/:filename", static_files);
     router
 }
 
-fn not_found() -> ApiResult<Response> {
+fn not_found() -> Result<Response> {
     let json = json!({
         "urlpath": &*PUBLIC_NO_TRAILING_SLASH,
     });
     let text = render_template("404", &json)?;
-    Ok((StatusCode::NOT_FOUND, Html(text)).into_response())
+    (StatusCode::NotFound, Html(text)).into_response()
 }
 
-async fn web_index() -> ApiResult<Response> {
+async fn web_index() -> Result<Response> {
     let path = CONFIG.folders.web_vault().join("index.html");
     let raw = tokio::fs::read_to_string(&path).await?;
-    Ok((Cached::short(false), Html(raw)).into_response())
+    (Cached::short(false), Html(raw)).into_response()
 }
 
-async fn app_id() -> Response {
+async fn app_id() -> Result<Response> {
     (
-        [(header::CONTENT_TYPE, HeaderValue::from_static("application/fido.trusted-apps+json"))],
+        [(CONTENT_TYPE, "application/fido.trusted-apps+json")],
         Cached::long(true),
         Json(json!({
         "trustedFacets": [
@@ -73,11 +69,11 @@ async fn app_id() -> Response {
         .into_response()
 }
 
-async fn web_files(uri: Uri) -> Response {
+async fn web_files(uri: Uri) -> Result<Response> {
     let base = CONFIG.folders.web_vault();
     let mut path = uri.path();
     if path.contains("..") {
-        return StatusCode::NOT_FOUND.into_response();
+        return Err(Error::NotFound);
     }
     while path.starts_with("/") {
         path = &path[1..];
@@ -85,13 +81,13 @@ async fn web_files(uri: Uri) -> Response {
     //todo: confirm this is safe
     let total = base.join(path);
     let content_type = match total.extension().and_then(|x| x.to_str()) {
-        None => return StatusCode::NOT_FOUND.into_response(),
+        None => return Err(Error::NotFound),
         Some(x) => mime_guess::from_ext(x).first().unwrap_or(mime::APPLICATION_OCTET_STREAM),
     };
     match tokio::fs::read(&total).await {
-        Ok(raw) => (OutHeader(ContentType::from(content_type)), Cached::long(true), Full::from(raw)).into_response(),
+        Ok(raw) => (Typed(ContentType::from(content_type)), Cached::long(true), raw).into_response(),
         Err(e) if e.kind() == ErrorKind::NotFound => not_found().into_response(),
-        Err(e) => ApiError::from(e).into_response(),
+        Err(e) => Err(Error::internal(e)),
     }
 }
 
@@ -101,31 +97,31 @@ struct AttachmentPath {
     filename: Uuid,
 }
 
-async fn attachments(Path(path): Path<AttachmentPath>) -> ApiResult<Response> {
-    let conn = DB.get().await?;
+async fn attachments(Path(path): Path<AttachmentPath>) -> Result<Response> {
+    let conn = DB.get().await.map_err(Error::internal)?;
     //TODO: why no user auth??
     let Some(attachment) = Attachment::get_with_cipher(&conn, path.filename, path.uuid).await? else {
-        return Ok(not_found().into_response());
+        return not_found();
     };
     let path = CONFIG.folders.attachments().join(path.uuid.to_string()).join(path.filename.to_string());
     match tokio::fs::read(&path).await {
-        Ok(raw) => Ok((
-            [(CONTENT_DISPOSITION, format!(r#"attachment; filename="{}""#, attachment.file_name).parse::<HeaderValue>().unwrap())],
-            OutHeader(ContentType::from(mime::APPLICATION_OCTET_STREAM)),
-            Full::from(raw),
+        Ok(raw) => (
+            [(CONTENT_DISPOSITION, format!(r#"attachment; filename="{}""#, attachment.file_name))],
+            Typed(ContentType::from(mime::APPLICATION_OCTET_STREAM)),
+            raw,
         )
-            .into_response()),
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(not_found().into_response()),
-        Err(e) => Err(ApiError::from(e)),
+            .into_response(),
+        Err(e) if e.kind() == ErrorKind::NotFound => not_found(),
+        Err(e) => Err(Error::internal(e)),
     }
 }
 
 async fn alive() {}
 
-pub async fn static_files(Path(filename): Path<String>) -> Response {
-    let content_type: OutHeader<ContentType> = OutHeader(
+pub async fn static_files(Path(filename): Path<String>) -> Result<Response> {
+    let content_type: Typed<ContentType> = Typed(
         match std::path::Path::new(&filename).extension().and_then(|x| x.to_str()) {
-            None => return StatusCode::NOT_FOUND.into_response(),
+            None => return Err(Error::NotFound),
             Some(x) => mime_guess::from_ext(x).first().unwrap_or(mime::APPLICATION_OCTET_STREAM),
         }
         .into(),
@@ -151,7 +147,7 @@ pub async fn static_files(Path(filename): Path<String>) -> Response {
         "datatables.js" => &include_bytes!("../../static/scripts/datatables.js")[..],
         "datatables.css" => &include_bytes!("../../static/scripts/datatables.css")[..],
         "jquery-3.6.4.slim.js" => &include_bytes!("../../static/scripts/jquery-3.6.4.slim.js")[..],
-        _ => return StatusCode::NOT_FOUND.into_response(),
+        _ => return Err(Error::NotFound),
     };
-    (content_type, Full::from(bytes)).into_response()
+    (content_type, bytes).into_response()
 }

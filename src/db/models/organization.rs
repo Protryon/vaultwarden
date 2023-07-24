@@ -1,4 +1,4 @@
-use axum_util::errors::{ApiError, ApiResult};
+use axol::{Error, ErrorExt, Result};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use serde_repr::{Deserialize_repr, Serialize_repr};
@@ -240,7 +240,7 @@ impl OrganizationApiKey {
 
 */
 impl Organization {
-    pub async fn save(&self, conn: &Conn) -> ApiResult<()> {
+    pub async fn save(&self, conn: &Conn) -> Result<()> {
         if !email_address::EmailAddress::is_valid(self.billing_email.trim()) {
             err!(format!("BillingEmail {} is not a valid email address", self.billing_email.trim()))
         }
@@ -254,42 +254,44 @@ impl Organization {
         public_key = EXCLUDED.public_key",
             &[&self.uuid, &self.name, &self.billing_email, &self.private_key, &self.public_key],
         )
-        .await?;
-        Self::flag_revision(conn, self.uuid).await?;
+        .await
+        .ise()?;
+        Self::flag_revision(conn, self.uuid).await.ise()?;
         Ok(())
     }
 
-    pub async fn flag_revision(conn: &Conn, uuid: Uuid) -> ApiResult<()> {
+    pub async fn flag_revision(conn: &Conn, uuid: Uuid) -> Result<()> {
         conn.execute(
             r"UPDATE user_revisions u SET updated_at = now() FROM user_organizations uo WHERE uo.organization_uuid = $1 AND uo.user_uuid = u.uuid",
             &[&uuid],
         )
-        .await?;
+        .await
+        .ise()?;
         Ok(())
     }
 
-    pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
-        Self::flag_revision(conn, self.uuid).await?;
-        conn.execute(r"DELETE FROM organizations WHERE uuid = $1", &[&self.uuid]).await?;
+    pub async fn delete(&self, conn: &Conn) -> Result<()> {
+        Self::flag_revision(conn, self.uuid).await.ise()?;
+        conn.execute(r"DELETE FROM organizations WHERE uuid = $1", &[&self.uuid]).await.ise()?;
         Ok(())
     }
 
-    pub async fn get(conn: &Conn, uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM organizations WHERE uuid = $1", &[&uuid]).await?.map(Into::into))
+    pub async fn get(conn: &Conn, uuid: Uuid) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM organizations WHERE uuid = $1", &[&uuid]).await.ise()?.map(Into::into))
     }
 
-    pub async fn find_by_name(conn: &Conn, name: &str) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM organizations WHERE name = $1 LIMIT 1", &[&name]).await?.map(Into::into))
+    pub async fn find_by_name(conn: &Conn, name: &str) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM organizations WHERE name = $1 LIMIT 1", &[&name]).await.ise()?.map(Into::into))
     }
 
-    pub async fn get_all(conn: &Conn) -> ApiResult<Vec<Self>> {
-        Ok(conn.query(r"SELECT * FROM organizations", &[]).await?.into_iter().map(|x| x.into()).collect())
+    pub async fn get_all(conn: &Conn) -> Result<Vec<Self>> {
+        Ok(conn.query(r"SELECT * FROM organizations", &[]).await.ise()?.into_iter().map(|x| x.into()).collect())
     }
 }
 
 impl UserOrganization {
-    pub async fn to_json(&self, conn: &Conn) -> ApiResult<Value> {
-        let org = Organization::get(conn, self.organization_uuid).await?.ok_or(ApiError::NotFound)?;
+    pub async fn to_json(&self, conn: &Conn) -> Result<Value> {
+        let org = Organization::get(conn, self.organization_uuid).await.ise()?.ok_or(Error::NotFound)?;
 
         // https://github.com/bitwarden/server/blob/13d1e74d6960cf0d042620b72d85bf583a4236f7/src/Api/Models/Response/ProfileOrganizationResponseModel.cs
         Ok(json!({
@@ -353,17 +355,17 @@ impl UserOrganization {
         }))
     }
 
-    pub async fn to_json_user_details(&self, conn: &Conn, include_collections: bool, include_groups: bool) -> ApiResult<Value> {
-        let user = User::get(conn, self.user_uuid).await?.ok_or(ApiError::NotFound)?;
+    pub async fn to_json_user_details(&self, conn: &Conn, include_collections: bool, include_groups: bool) -> Result<Value> {
+        let user = User::get(conn, self.user_uuid).await.ise()?.ok_or(Error::NotFound)?;
 
         // Because BitWarden want the status to be -1 for revoked users we need to catch that here.
         // We subtract/add a number so we can restore/activate the user to it's previous state again.
         let status = self.status() as i32;
 
-        let twofactor_enabled = !TwoFactor::find_by_user_official(conn, user.uuid).await?.is_empty();
+        let twofactor_enabled = !TwoFactor::find_by_user_official(conn, user.uuid).await.ise()?.is_empty();
 
         let groups: Vec<Uuid> = if include_groups && CONFIG.advanced.org_groups_enabled {
-            GroupUser::find_by_user(conn, self.user_uuid, self.organization_uuid).await?.iter().map(|gu| gu.group_uuid).collect()
+            GroupUser::find_by_user(conn, self.user_uuid, self.organization_uuid).await.ise()?.iter().map(|gu| gu.group_uuid).collect()
         } else {
             // The Bitwarden clients seem to call this API regardless of whether groups are enabled,
             // so just act as if there are no groups.
@@ -372,7 +374,8 @@ impl UserOrganization {
 
         let collections: Vec<Value> = if include_collections {
             CollectionUser::find_by_organization_and_user_uuid(conn, self.organization_uuid, self.user_uuid)
-                .await?
+                .await
+                .ise()?
                 .iter()
                 .map(|cu| {
                     json!({
@@ -413,11 +416,11 @@ impl UserOrganization {
     }
 
     #[allow(dead_code)]
-    pub async fn to_json_details(&self, conn: &Conn) -> ApiResult<Value> {
+    pub async fn to_json_details(&self, conn: &Conn) -> Result<Value> {
         let coll_uuids = if self.access_all {
             vec![] // If we have complete access, no need to fill the array
         } else {
-            let collections = CollectionUser::find_by_organization_and_user_uuid(conn, self.organization_uuid, self.user_uuid).await?;
+            let collections = CollectionUser::find_by_organization_and_user_uuid(conn, self.organization_uuid, self.user_uuid).await.ise()?;
             collections
                 .iter()
                 .map(|c| {
@@ -447,7 +450,7 @@ impl UserOrganization {
         }))
     }
 
-    pub async fn save(&self, conn: &Conn) -> ApiResult<()> {
+    pub async fn save(&self, conn: &Conn) -> Result<()> {
         conn.execute(r"INSERT INTO user_organizations (user_uuid, organization_uuid, access_all, akey, status, atype, reset_password_key, revoked) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (user_uuid, organization_uuid) DO UPDATE
         SET
         access_all = EXCLUDED.access_all,
@@ -464,24 +467,27 @@ impl UserOrganization {
             &(self.atype as i32),
             &self.reset_password_key,
             &self.revoked,
-        ]).await?;
-        User::flag_revision_for(conn, self.user_uuid).await?;
+        ]).await.ise()?;
+        User::flag_revision_for(conn, self.user_uuid).await.ise()?;
         Ok(())
     }
 
-    pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
-        conn.execute(r"DELETE FROM user_organizations WHERE user_uuid = $1 AND organization_uuid = $2", &[&self.user_uuid, &self.organization_uuid]).await?;
-        User::flag_revision_for(conn, self.user_uuid).await?;
+    pub async fn delete(&self, conn: &Conn) -> Result<()> {
+        conn.execute(r"DELETE FROM user_organizations WHERE user_uuid = $1 AND organization_uuid = $2", &[&self.user_uuid, &self.organization_uuid])
+            .await
+            .ise()?;
+        User::flag_revision_for(conn, self.user_uuid).await.ise()?;
         Ok(())
     }
 
-    pub async fn find_by_email_and_organization(conn: &Conn, email: &str, organization_uuid: Uuid) -> ApiResult<Option<Self>> {
+    pub async fn find_by_email_and_organization(conn: &Conn, email: &str, organization_uuid: Uuid) -> Result<Option<Self>> {
         Ok(conn
             .query_opt(
                 r"SELECT * FROM user_organizations uo INNER JOIN users u ON u.uuid == uo.user_id WHERE uo.organization_uuid = $1 AND u.email ILIKE $2",
                 &[&organization_uuid, &email],
             )
-            .await?
+            .await
+            .ise()?
             .map(Into::into))
     }
 
@@ -493,68 +499,85 @@ impl UserOrganization {
         (self.access_all || self.atype >= UserOrgType::Admin) && self.has_status(UserOrgStatus::Confirmed)
     }
 
-    pub async fn get(conn: &Conn, user_uuid: Uuid, organization_uuid: Uuid) -> ApiResult<Option<Self>> {
+    pub async fn get(conn: &Conn, user_uuid: Uuid, organization_uuid: Uuid) -> Result<Option<Self>> {
         Ok(conn
             .query_opt(r"SELECT * FROM user_organizations WHERE user_uuid = $1 AND organization_uuid = $2", &[&user_uuid, &organization_uuid])
-            .await?
+            .await
+            .ise()?
             .map(Into::into))
     }
 
-    pub async fn find_by_user_with_status(conn: &Conn, user_uuid: Uuid, status: UserOrgStatus) -> ApiResult<Vec<Self>> {
+    pub async fn find_by_user_with_status(conn: &Conn, user_uuid: Uuid, status: UserOrgStatus) -> Result<Vec<Self>> {
         Ok(conn
             .query(r"SELECT * FROM user_organizations WHERE user_uuid = $1 AND status = $2", &[&user_uuid, &(status as i32)])
-            .await?
+            .await
+            .ise()?
             .into_iter()
             .map(|x| x.into())
             .collect())
     }
 
-    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<Vec<Self>> {
-        Ok(conn.query(r"SELECT * FROM user_organizations WHERE user_uuid = $1", &[&user_uuid]).await?.into_iter().map(|x| x.into()).collect())
+    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid) -> Result<Vec<Self>> {
+        Ok(conn.query(r"SELECT * FROM user_organizations WHERE user_uuid = $1", &[&user_uuid]).await.ise()?.into_iter().map(|x| x.into()).collect())
     }
 
-    pub async fn count_accepted_and_confirmed_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<i64> {
+    pub async fn count_accepted_and_confirmed_by_user(conn: &Conn, user_uuid: Uuid) -> Result<i64> {
         Ok(conn
             .query_one(
                 r"SELECT COUNT(1) FROM user_organizations WHERE user_uuid = $1 AND (status = $2 OR status = $3)",
                 &[&user_uuid, &(UserOrgStatus::Accepted as i32), &(UserOrgStatus::Confirmed as i32)],
             )
-            .await?
+            .await
+            .ise()?
             .get(0))
     }
 
-    pub async fn find_by_org(conn: &Conn, organization_uuid: Uuid) -> ApiResult<Vec<Self>> {
-        Ok(conn.query(r"SELECT * FROM user_organizations WHERE organization_uuid = $1", &[&organization_uuid]).await?.into_iter().map(|x| x.into()).collect())
-    }
-
-    pub async fn count_by_org(conn: &Conn, organization_uuid: Uuid) -> ApiResult<i64> {
-        Ok(conn.query_one(r"SELECT COUNT(1) FROM user_organizations WHERE organization_uuid = $1", &[&organization_uuid]).await?.get(0))
-    }
-
-    pub async fn find_by_org_and_type(conn: &Conn, organization_uuid: Uuid, atype: UserOrgType) -> ApiResult<Vec<Self>> {
+    pub async fn find_by_org(conn: &Conn, organization_uuid: Uuid) -> Result<Vec<Self>> {
         Ok(conn
-            .query(r"SELECT * FROM user_organizations WHERE organization_uuid = $1 AND atype = $2", &[&organization_uuid, &(atype as i32)])
-            .await?
+            .query(r"SELECT * FROM user_organizations WHERE organization_uuid = $1", &[&organization_uuid])
+            .await
+            .ise()?
             .into_iter()
             .map(|x| x.into())
             .collect())
     }
 
-    pub async fn count_confirmed_by_org_and_type(conn: &Conn, organization_uuid: Uuid, atype: UserOrgType) -> ApiResult<i64> {
+    pub async fn count_by_org(conn: &Conn, organization_uuid: Uuid) -> Result<i64> {
+        Ok(conn.query_one(r"SELECT COUNT(1) FROM user_organizations WHERE organization_uuid = $1", &[&organization_uuid]).await.ise()?.get(0))
+    }
+
+    pub async fn find_by_org_and_type(conn: &Conn, organization_uuid: Uuid, atype: UserOrgType) -> Result<Vec<Self>> {
+        Ok(conn
+            .query(r"SELECT * FROM user_organizations WHERE organization_uuid = $1 AND atype = $2", &[&organization_uuid, &(atype as i32)])
+            .await
+            .ise()?
+            .into_iter()
+            .map(|x| x.into())
+            .collect())
+    }
+
+    pub async fn count_confirmed_by_org_and_type(conn: &Conn, organization_uuid: Uuid, atype: UserOrgType) -> Result<i64> {
         Ok(conn
             .query_one(
                 r"SELECT COUNT(1) FROM user_organizations WHERE organization_uuid = $1 AND atype = $2 AND status = $3",
                 &[&organization_uuid, &(atype as i32), &(UserOrgStatus::Confirmed as i32)],
             )
-            .await?
+            .await
+            .ise()?
             .get(0))
     }
 
-    pub async fn get_organization_uuid_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<Vec<Uuid>> {
-        Ok(conn.query(r"SELECT organization_uuid FROM user_organizations WHERE user_uuid = $1", &[&user_uuid]).await?.into_iter().map(|x| x.get(0)).collect())
+    pub async fn get_organization_uuid_by_user(conn: &Conn, user_uuid: Uuid) -> Result<Vec<Uuid>> {
+        Ok(conn
+            .query(r"SELECT organization_uuid FROM user_organizations WHERE user_uuid = $1", &[&user_uuid])
+            .await
+            .ise()?
+            .into_iter()
+            .map(|x| x.get(0))
+            .collect())
     }
 
-    pub async fn find_by_user_and_policy(conn: &Conn, user_uuid: Uuid, policy_type: OrgPolicyType) -> ApiResult<Vec<Self>> {
+    pub async fn find_by_user_and_policy(conn: &Conn, user_uuid: Uuid, policy_type: OrgPolicyType) -> Result<Vec<Self>> {
         Ok(conn
             .query(
                 r"SELECT uo.*
@@ -564,13 +587,14 @@ impl UserOrganization {
         ",
                 &[&user_uuid, &(policy_type as i32)],
             )
-            .await?
+            .await
+            .ise()?
             .into_iter()
             .map(|x| x.into())
             .collect())
     }
 
-    pub async fn user_has_ge_admin_access_to_cipher(conn: &Conn, user_uuid: Uuid, cipher_uuid: Uuid) -> ApiResult<bool> {
+    pub async fn user_has_ge_admin_access_to_cipher(conn: &Conn, user_uuid: Uuid, cipher_uuid: Uuid) -> Result<bool> {
         Ok(conn
             .query_one(
                 r"
@@ -581,14 +605,15 @@ impl UserOrganization {
         ",
                 &[&user_uuid, &cipher_uuid, &(UserOrgType::Owner as i32), &(UserOrgType::Admin as i32)],
             )
-            .await?
+            .await
+            .ise()?
             .get::<_, i64>(0)
             > 0)
     }
 }
 
 impl OrganizationApiKey {
-    pub async fn save(&self, conn: &Conn) -> ApiResult<()> {
+    pub async fn save(&self, conn: &Conn) -> Result<()> {
         conn.execute(
             r"INSERT INTO organization_api_key (uuid, organization_uuid, atype, api_key, revision_date) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (uuid) DO UPDATE
         SET
@@ -598,13 +623,14 @@ impl OrganizationApiKey {
         revision_date = EXCLUDED.revision_date",
             &[&self.uuid, &self.organization_uuid, &self.atype, &self.api_key, &self.revision_date],
         )
-        .await?;
+        .await
+        .ise()?;
         Ok(())
     }
 
     //TODO: the logic here must be wrong (there can be multiple keys)
-    pub async fn find_by_org_uuid(conn: &Conn, organization_uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM organization_api_key WHERE organization_uuid = $1", &[&organization_uuid]).await?.map(Into::into))
+    pub async fn find_by_org_uuid(conn: &Conn, organization_uuid: Uuid) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM organization_api_key WHERE organization_uuid = $1", &[&organization_uuid]).await.ise()?.map(Into::into))
     }
 }
 

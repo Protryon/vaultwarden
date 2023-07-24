@@ -1,4 +1,4 @@
-use axum_util::errors::ApiResult;
+use axol::{ErrorExt, Result};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 
@@ -83,7 +83,7 @@ impl TwoFactor {
 
 /// Database methods
 impl TwoFactor {
-    pub async fn save(&self, conn: &Conn) -> ApiResult<()> {
+    pub async fn save(&self, conn: &Conn) -> Result<()> {
         conn.execute(
             r"INSERT INTO twofactor (user_uuid, atype, enabled, data, last_used) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (user_uuid, atype) DO UPDATE
         SET
@@ -92,25 +92,26 @@ impl TwoFactor {
         last_used = EXCLUDED.last_used",
             &[&self.user_uuid, &(self.atype as i32), &self.enabled, &self.data, &self.last_used],
         )
-        .await?;
+        .await
+        .ise()?;
         Ok(())
     }
 
-    pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
-        conn.execute(r"DELETE FROM twofactor WHERE user_uuid = $1 AND atype = $2", &[&self.user_uuid, &(self.atype as i32)]).await?;
+    pub async fn delete(&self, conn: &Conn) -> Result<()> {
+        conn.execute(r"DELETE FROM twofactor WHERE user_uuid = $1 AND atype = $2", &[&self.user_uuid, &(self.atype as i32)]).await.ise()?;
         Ok(())
     }
 
-    pub async fn find_by_user_official(conn: &Conn, user_uuid: Uuid) -> ApiResult<Vec<Self>> {
-        Ok(conn.query(r"SELECT * FROM twofactor WHERE user_uuid = $1 AND atype < 1000", &[&user_uuid]).await?.into_iter().map(|x| x.into()).collect())
+    pub async fn find_by_user_official(conn: &Conn, user_uuid: Uuid) -> Result<Vec<Self>> {
+        Ok(conn.query(r"SELECT * FROM twofactor WHERE user_uuid = $1 AND atype < 1000", &[&user_uuid]).await.ise()?.into_iter().map(|x| x.into()).collect())
     }
 
-    pub async fn find_by_user_and_type(conn: &Conn, user_uuid: Uuid, atype: TwoFactorType) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM twofactor WHERE user_uuid = $1 AND atype = $2", &[&user_uuid, &(atype as i32)]).await?.map(Into::into))
+    pub async fn find_by_user_and_type(conn: &Conn, user_uuid: Uuid, atype: TwoFactorType) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM twofactor WHERE user_uuid = $1 AND atype = $2", &[&user_uuid, &(atype as i32)]).await.ise()?.map(Into::into))
     }
 
-    pub async fn delete_all_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<()> {
-        conn.execute(r"DELETE FROM twofactor WHERE user_uuid = $1", &[&user_uuid]).await?;
+    pub async fn delete_all_by_user(conn: &Conn, user_uuid: Uuid) -> Result<()> {
+        conn.execute(r"DELETE FROM twofactor WHERE user_uuid = $1", &[&user_uuid]).await.ise()?;
         Ok(())
     }
 }

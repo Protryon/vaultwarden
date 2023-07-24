@@ -1,9 +1,7 @@
 use std::collections::HashSet;
 use std::str::FromStr;
 
-use axum::extract::{Path, Query};
-use axum::{routing, Json, Router};
-use axum_util::errors::{ApiError, ApiResult};
+use axol::prelude::*;
 use chrono::Utc;
 use log::{debug, error};
 use serde::{Deserialize, Serialize};
@@ -19,91 +17,92 @@ use crate::db::{
 };
 use crate::events::log_event;
 use crate::util::{AutoTxn, Upcase};
-use crate::{error::Error, mail, util::convert_json_key_lcase_first, CONFIG};
+use crate::{mail, util::convert_json_key_lcase_first, CONFIG};
 
 pub fn route(router: Router) -> Router {
     router
-        .route("/organizations", routing::post(create_organization))
-        .route("/organizations/:org_uuid", routing::delete(delete_organization))
-        .route("/organizations/:org_uuid/delete", routing::post(delete_organization))
-        .route("/organizations/:org_uuid/leave", routing::post(leave_organization))
-        .route("/organizations/:org_uuid", routing::get(get_organization))
-        .route("/organizations/:org_uuid", routing::put(post_organization))
-        .route("/organizations/:org_uuid", routing::post(post_organization))
-        .route("/collections", routing::get(get_user_collections))
+        .post("/organizations", create_organization)
+        .delete("/organizations/:org_uuid", delete_organization)
+        .post("/organizations/:org_uuid/delete", delete_organization)
+        .post("/organizations/:org_uuid/leave", leave_organization)
+        .get("/organizations/:org_uuid", get_organization)
+        .put("/organizations/:org_uuid", post_organization)
+        .post("/organizations/:org_uuid", post_organization)
+        .get("/collections", get_user_collections)
         // actually should be :identifier, but axum panics...
-        .route("/organizations/:org_uuid/auto-enroll-status", routing::get(get_auto_enroll_status))
-        .route("/organizations/:org_uuid/collections", routing::get(get_org_collections))
-        .route("/organizations/:org_uuid/collections/details", routing::get(get_org_collections_details))
-        .route("/organizations/:org_uuid/collections", routing::post(post_organization_collections))
-        .route("/organizations/:org_uuid/collections/:col_id", routing::put(post_organization_collection_update))
-        .route("/organizations/:org_uuid/collections/:col_id", routing::post(post_organization_collection_update))
-        .route("/organizations/:org_uuid/collections/:col_id/user/:user_id", routing::delete(delete_organization_collection_user))
-        .route("/organizations/:org_uuid/collections/:col_id/delete-user/:user_id", routing::post(delete_organization_collection_user))
-        .route("/organizations/:org_uuid/collections/:col_id", routing::delete(delete_organization_collection))
-        .route("/organizations/:org_uuid/collections/:col_id/delete", routing::post(post_organization_collection_delete))
-        .route("/organizations/:org_uuid/collections", routing::delete(bulk_delete_organization_collections))
-        .route("/organizations/:org_uuid/collections/:col_id/details", routing::get(get_org_collection_detail))
-        .route("/organizations/:org_uuid/collections/:col_id/users", routing::get(get_collection_users))
-        .route("/organizations/:org_uuid/collections/:col_id/users", routing::put(put_collection_users))
-        .route("/ciphers/organization-details", routing::get(get_org_details))
-        .route("/organizations/:org_uuid/users", routing::get(get_org_users))
-        .route("/organizations/:org_uuid/keys", routing::post(post_org_keys))
-        .route("/organizations/:org_uuid/users/invite", routing::post(send_invite))
-        .route("/organizations/:org_uuid/users/reinvite", routing::post(bulk_reinvite_user))
-        .route("/organizations/:org_uuid/users/:user_id/reinvite", routing::post(reinvite_user))
-        .route("/organizations/:org_uuid/users/:user_id/accept", routing::post(accept_invite))
-        .route("/organizations/:org_uuid/users/confirm", routing::post(bulk_confirm_invite))
-        .route("/organizations/:org_uuid/users/:user_id/confirm", routing::post(confirm_invite))
-        .route("/organizations/:org_uuid/users/:user_id", routing::get(get_user))
-        .route("/organizations/:org_uuid/users/:user_id", routing::put(edit_user))
-        .route("/organizations/:org_uuid/users/:user_id", routing::post(edit_user))
-        .route("/organizations/:org_uuid/users", routing::delete(bulk_delete_user))
-        .route("/organizations/:org_uuid/users/:user_id", routing::delete(delete_user))
-        .route("/organizations/:org_uuid/users/:user_id/delete", routing::post(delete_user))
-        .route("/organizations/:org_uuid/users/public-keys", routing::post(bulk_public_keys))
-        .route("/ciphers/import-organization", routing::post(post_org_import))
-        .route("/organizations/:org_uuid/policies", routing::get(list_policies))
-        .route("/organizations/:org_uuid/policies/token", routing::get(list_policies_token))
-        .route("/organizations/:org_uuid/policies/invited-user", routing::get(list_policies_invited_user))
-        .route("/organizations/:org_uuid/policies/:pol_type", routing::get(get_policy))
-        .route("/organizations/:org_uuid/policies/:pol_type", routing::put(put_policy))
-        .route("/organizations/:org_uuid/tax", routing::get(get_organization_tax))
-        .route("/plans", routing::get(get_plans))
-        .route("/plans/", routing::get(get_plans))
-        .route("/plans/sales-tax-rates", routing::get(get_plans_tax_rates))
-        .route("/organizations/:org_uuid/import", routing::post(import))
-        .route("/organizations/:org_uuid/users/:user_id/deactivate", routing::put(revoke_organization_user))
-        .route("/organizations/:org_uuid/users/deactivate", routing::put(bulk_revoke_organization_user))
-        .route("/organizations/:org_uuid/users/:user_id/revoke", routing::put(revoke_organization_user))
-        .route("/organizations/:org_uuid/users/revoke", routing::put(bulk_revoke_organization_user))
-        .route("/organizations/:org_uuid/users/:user_id/activate", routing::put(restore_organization_user))
-        .route("/organizations/:org_uuid/users/activate", routing::put(bulk_restore_organization_user))
-        .route("/organizations/:org_uuid/users/:user_id/restore", routing::put(restore_organization_user))
-        .route("/organizations/:org_uuid/users/restore", routing::put(bulk_restore_organization_user))
-        .route("/organizations/:org_uuid/groups", routing::get(get_groups))
-        .route("/organizations/:org_uuid/groups/:group_id", routing::post(put_group))
-        .route("/organizations/:org_uuid/groups", routing::post(post_groups))
-        .route("/organizations/:org_uuid/groups/:group_id", routing::put(put_group))
-        .route("/organizations/:org_uuid/groups/:group_id/details", routing::get(get_group_details))
-        .route("/organizations/:org_uuid/groups/:group_id/delete", routing::post(delete_group))
-        .route("/organizations/:org_uuid/groups/:group_id", routing::delete(delete_group))
-        .route("/organizations/:org_uuid/groups", routing::delete(bulk_delete_groups))
-        .route("/organizations/:org_uuid/groups/:group_id", routing::get(get_group))
-        .route("/organizations/:org_uuid/groups/:group_id/users", routing::get(get_group_users))
-        .route("/organizations/:org_uuid/groups/:group_id/users", routing::put(put_group_users))
-        .route("/organizations/:org_uuid/users/:user_id/groups", routing::get(get_user_groups))
-        .route("/organizations/:org_uuid/users/:user_id/groups", routing::post(put_user_groups))
-        .route("/organizations/:org_uuid/users/:user_id/groups", routing::put(put_user_groups))
-        .route("/organizations/:org_uuid/groups/:group_id/delete-user/:user_id", routing::post(delete_group_user))
-        .route("/organizations/:org_uuid/groups/:group_id/users/:user_id", routing::delete(delete_group_user))
-        .route("/organizations/:org_uuid/keys", routing::get(get_organization_keys))
-        .route("/organizations/:org_uuid/users/:user_id/reset-password", routing::put(put_reset_password))
-        .route("/organizations/:org_uuid/users/:user_id/reset-password-details", routing::get(get_reset_password_details))
-        .route("/organizations/:org_uuid/users/:user_id/reset-password-enrollment", routing::put(put_reset_password_enrollment))
-        .route("/organizations/:org_uuid/export", routing::get(get_org_export))
-        .route("/organizations/:org_uuid/api-key", routing::post(api_key))
-        .route("/organizations/:org_uuid/rotate-api-key", routing::post(rotate_api_key))
+        .get("/organizations/:org_uuid/auto-enroll-status", get_auto_enroll_status)
+        .get("/organizations/:org_uuid/collections", get_org_collections)
+        .get("/organizations/:org_uuid/collections/details", get_org_collections_details)
+        .post("/organizations/:org_uuid/collections", post_organization_collections)
+        .put("/organizations/:org_uuid/collections/:col_id", post_organization_collection_update)
+        .post("/organizations/:org_uuid/collections/:col_id", post_organization_collection_update)
+        .delete("/organizations/:org_uuid/collections/:col_id/user/:user_id", delete_organization_collection_user)
+        .post("/organizations/:org_uuid/collections/:col_id/delete-user/:user_id", delete_organization_collection_user)
+        .delete("/organizations/:org_uuid/collections/:col_id", delete_organization_collection)
+        .post("/organizations/:org_uuid/collections/:col_id/delete", post_organization_collection_delete)
+        .delete("/organizations/:org_uuid/collections", bulk_delete_organization_collections)
+        .get("/organizations/:org_uuid/collections/:col_id/details", get_org_collection_detail)
+        .get("/organizations/:org_uuid/collections/:col_id/users", get_collection_users)
+        .put("/organizations/:org_uuid/collections/:col_id/users", put_collection_users)
+        .get("/ciphers/organization-details", get_org_details)
+        .get("/organizations/:org_uuid/users", get_org_users)
+        .post("/organizations/:org_uuid/keys", post_org_keys)
+        .post("/organizations/:org_uuid/users/invite", send_invite)
+        .post("/organizations/:org_uuid/users/reinvite", bulk_reinvite_user)
+        .post("/organizations/:org_uuid/users/:user_id/reinvite", reinvite_user)
+        .post("/organizations/:org_uuid/users/:user_id/accept", accept_invite)
+        .post("/organizations/:org_uuid/users/confirm", bulk_confirm_invite)
+        .post("/organizations/:org_uuid/users/:user_id/confirm", confirm_invite)
+        .get("/organizations/:org_uuid/users/:user_id", get_user)
+        .put("/organizations/:org_uuid/users/:user_id", edit_user)
+        .post("/organizations/:org_uuid/users/:user_id", edit_user)
+        .delete("/organizations/:org_uuid/users", bulk_delete_user)
+        .delete("/organizations/:org_uuid/users/:user_id", delete_user)
+        .post("/organizations/:org_uuid/users/:user_id/delete", delete_user)
+        .post("/organizations/:org_uuid/users/public-keys", bulk_public_keys)
+        .post("/ciphers/import-organization", post_org_import)
+        .get("/organizations/:org_uuid/policies", list_policies)
+        .get("/organizations/:org_uuid/policies/token", list_policies_token)
+        .get("/organizations/:org_uuid/policies/invited-user", list_policies_invited_user)
+        .get("/organizations/:org_uuid/policies/:pol_type", get_policy)
+        .put("/organizations/:org_uuid/policies/:pol_type", put_policy)
+        .get("/organizations/:org_uuid/tax", get_organization_tax)
+        .get("/plans", get_plans)
+        //TODO: unnecessary in axol right?
+        .get("/plans/", get_plans)
+        .get("/plans/sales-tax-rates", get_plans_tax_rates)
+        .post("/organizations/:org_uuid/import", import)
+        .put("/organizations/:org_uuid/users/:user_id/deactivate", revoke_organization_user)
+        .put("/organizations/:org_uuid/users/deactivate", bulk_revoke_organization_user)
+        .put("/organizations/:org_uuid/users/:user_id/revoke", revoke_organization_user)
+        .put("/organizations/:org_uuid/users/revoke", bulk_revoke_organization_user)
+        .put("/organizations/:org_uuid/users/:user_id/activate", restore_organization_user)
+        .put("/organizations/:org_uuid/users/activate", bulk_restore_organization_user)
+        .put("/organizations/:org_uuid/users/:user_id/restore", restore_organization_user)
+        .put("/organizations/:org_uuid/users/restore", bulk_restore_organization_user)
+        .get("/organizations/:org_uuid/groups", get_groups)
+        .post("/organizations/:org_uuid/groups/:group_id", put_group)
+        .post("/organizations/:org_uuid/groups", post_groups)
+        .put("/organizations/:org_uuid/groups/:group_id", put_group)
+        .get("/organizations/:org_uuid/groups/:group_id/details", get_group_details)
+        .post("/organizations/:org_uuid/groups/:group_id/delete", delete_group)
+        .delete("/organizations/:org_uuid/groups/:group_id", delete_group)
+        .delete("/organizations/:org_uuid/groups", bulk_delete_groups)
+        .get("/organizations/:org_uuid/groups/:group_id", get_group)
+        .get("/organizations/:org_uuid/groups/:group_id/users", get_group_users)
+        .put("/organizations/:org_uuid/groups/:group_id/users", put_group_users)
+        .get("/organizations/:org_uuid/users/:user_id/groups", get_user_groups)
+        .post("/organizations/:org_uuid/users/:user_id/groups", put_user_groups)
+        .put("/organizations/:org_uuid/users/:user_id/groups", put_user_groups)
+        .post("/organizations/:org_uuid/groups/:group_id/delete-user/:user_id", delete_group_user)
+        .delete("/organizations/:org_uuid/groups/:group_id/users/:user_id", delete_group_user)
+        .get("/organizations/:org_uuid/keys", get_organization_keys)
+        .put("/organizations/:org_uuid/users/:user_id/reset-password", put_reset_password)
+        .get("/organizations/:org_uuid/users/:user_id/reset-password-details", get_reset_password_details)
+        .put("/organizations/:org_uuid/users/:user_id/reset-password-enrollment", put_reset_password_enrollment)
+        .get("/organizations/:org_uuid/export", get_org_export)
+        .post("/organizations/:org_uuid/api-key", api_key)
+        .post("/organizations/:org_uuid/rotate-api-key", rotate_api_key)
 }
 
 #[derive(Deserialize)]
@@ -154,7 +153,7 @@ struct OrgBulkIds {
     ids: Vec<Uuid>,
 }
 
-async fn create_organization(conn: AutoTxn, headers: Headers, data: Json<Upcase<OrgData>>) -> ApiResult<Json<Value>> {
+async fn create_organization(conn: AutoTxn, headers: Headers, data: Json<Upcase<OrgData>>) -> Result<Json<Value>> {
     if !CONFIG.is_org_creation_allowed(&headers.user.email) {
         err!("User not allowed to create organizations")
     }
@@ -191,14 +190,14 @@ async fn create_organization(conn: AutoTxn, headers: Headers, data: Json<Upcase<
     Ok(Json(org.to_json()))
 }
 
-async fn delete_organization(Path(org_uuid): Path<Uuid>, headers: OrgOwnerHeaders, data: Json<Upcase<PasswordData>>) -> ApiResult<()> {
+async fn delete_organization(Path(org_uuid): Path<Uuid>, headers: OrgOwnerHeaders, data: Json<Upcase<PasswordData>>) -> Result<()> {
     let data: PasswordData = data.0.data;
     let password_hash = data.master_password_hash;
 
     if !headers.user.check_valid_password(&password_hash) {
         err!("Invalid password")
     }
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     match Organization::get(&conn, org_uuid).await? {
         None => err!("Organization not found"),
@@ -206,8 +205,8 @@ async fn delete_organization(Path(org_uuid): Path<Uuid>, headers: OrgOwnerHeader
     }
 }
 
-async fn leave_organization(Path(org_uuid): Path<Uuid>, headers: Headers) -> ApiResult<()> {
-    let conn = DB.get().await?;
+async fn leave_organization(Path(org_uuid): Path<Uuid>, headers: Headers) -> Result<()> {
+    let conn = DB.get().await.ise()?;
 
     match UserOrganization::get(&conn, headers.user.uuid, org_uuid).await? {
         None => err!("User not part of organization"),
@@ -224,8 +223,8 @@ async fn leave_organization(Path(org_uuid): Path<Uuid>, headers: Headers) -> Api
     }
 }
 
-async fn get_organization(Path(org_uuid): Path<Uuid>, _headers: OrgOwnerHeaders) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+async fn get_organization(Path(org_uuid): Path<Uuid>, _headers: OrgOwnerHeaders) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
 
     match Organization::get(&conn, org_uuid).await? {
         Some(organization) => Ok(Json(organization.to_json())),
@@ -233,8 +232,8 @@ async fn get_organization(Path(org_uuid): Path<Uuid>, _headers: OrgOwnerHeaders)
     }
 }
 
-async fn post_organization(Path(org_uuid): Path<Uuid>, headers: OrgOwnerHeaders, data: Json<Upcase<OrganizationUpdateData>>) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+async fn post_organization(Path(org_uuid): Path<Uuid>, headers: OrgOwnerHeaders, data: Json<Upcase<OrganizationUpdateData>>) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
 
     let data: OrganizationUpdateData = data.0.data;
 
@@ -253,8 +252,8 @@ async fn post_organization(Path(org_uuid): Path<Uuid>, headers: OrgOwnerHeaders,
     Ok(Json(org.to_json()))
 }
 
-async fn get_user_collections(headers: Headers) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+async fn get_user_collections(headers: Headers) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
 
     Ok(Json(json!({
         "Data":
@@ -275,15 +274,15 @@ struct IdentifierPath {
 }
 
 #[allow(unused_variables)]
-async fn get_auto_enroll_status(Path(path): Path<IdentifierPath>) -> ApiResult<Json<Value>> {
+async fn get_auto_enroll_status(Path(path): Path<IdentifierPath>) -> Result<Json<Value>> {
     //TODO
     Ok(Json(json!({
         "ResetPasswordEnabled": false, //Not Implemented.
     })))
 }
 
-async fn get_org_collections(Path(org_uuid): Path<Uuid>, _headers: ManagerHeadersLoose) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+async fn get_org_collections(Path(org_uuid): Path<Uuid>, _headers: ManagerHeadersLoose) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
 
     Ok(Json(json!({
         "Data": _get_org_collections(&conn, org_uuid).await?,
@@ -292,9 +291,9 @@ async fn get_org_collections(Path(org_uuid): Path<Uuid>, _headers: ManagerHeader
     })))
 }
 
-async fn get_org_collections_details(Path(org_uuid): Path<Uuid>, headers: ManagerHeadersLoose) -> ApiResult<Json<Value>> {
+async fn get_org_collections_details(Path(org_uuid): Path<Uuid>, headers: ManagerHeadersLoose) -> Result<Json<Value>> {
     let mut data = Vec::new();
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let user_org = match UserOrganization::get(&conn, headers.user.uuid, org_uuid).await? {
         Some(u) => u,
@@ -350,7 +349,7 @@ async fn get_org_collections_details(Path(org_uuid): Path<Uuid>, headers: Manage
     })))
 }
 
-async fn _get_org_collections(conn: &Conn, org_uuid: Uuid) -> ApiResult<Value> {
+async fn _get_org_collections(conn: &Conn, org_uuid: Uuid) -> Result<Value> {
     Ok(Collection::find_by_organization(conn, org_uuid).await?.iter().map(Collection::to_json).collect::<Value>())
 }
 
@@ -359,7 +358,7 @@ async fn post_organization_collections(
     Path(org_uuid): Path<Uuid>,
     headers: ManagerHeadersLoose,
     data: Json<Upcase<NewCollectionData>>,
-) -> ApiResult<Json<Value>> {
+) -> Result<Json<Value>> {
     let data: NewCollectionData = data.0.data;
 
     let org = match Organization::get(&conn, org_uuid).await? {
@@ -429,7 +428,7 @@ async fn post_organization_collection_update(
     }): Path<OrgColId>,
     headers: ManagerHeaders,
     data: Json<Upcase<NewCollectionData>>,
-) -> ApiResult<Json<Value>> {
+) -> Result<Json<Value>> {
     let data: NewCollectionData = data.0.data;
 
     let org = match Organization::get(&conn, org_uuid).await? {
@@ -488,8 +487,8 @@ async fn delete_organization_collection_user(
         user_id,
     }): Path<OrgColUserId>,
     _headers: OrgAdminHeaders,
-) -> ApiResult<()> {
-    let conn = DB.get().await?;
+) -> Result<()> {
+    let conn = DB.get().await.ise()?;
 
     let collection = match Collection::get(&conn, col_id).await? {
         None => err!("Collection not found"),
@@ -511,7 +510,7 @@ async fn delete_organization_collection_user(
     }
 }
 
-async fn _delete_organization_collection(org_uuid: Uuid, col_id: Uuid, headers: &ManagerHeaders, conn: &Conn) -> ApiResult<()> {
+async fn _delete_organization_collection(org_uuid: Uuid, col_id: Uuid, headers: &ManagerHeaders, conn: &Conn) -> Result<()> {
     match Collection::get(conn, col_id).await? {
         None => err!("Collection not found"),
         Some(collection) => {
@@ -533,8 +532,8 @@ async fn delete_organization_collection(
         col_id,
     }): Path<OrgColId>,
     headers: ManagerHeaders,
-) -> ApiResult<()> {
-    let conn = DB.get().await?;
+) -> Result<()> {
+    let conn = DB.get().await.ise()?;
     _delete_organization_collection(org_uuid, col_id, &headers, &conn).await
 }
 
@@ -553,8 +552,8 @@ async fn post_organization_collection_delete(
     }): Path<OrgColId>,
     headers: ManagerHeaders,
     _data: Json<Upcase<DeleteCollectionData>>,
-) -> ApiResult<()> {
-    let conn = DB.get().await?;
+) -> Result<()> {
+    let conn = DB.get().await.ise()?;
     _delete_organization_collection(org_uuid, col_id, &headers, &conn).await
 }
 
@@ -565,16 +564,12 @@ struct BulkCollectionIds {
     organization_id: Uuid,
 }
 
-async fn bulk_delete_organization_collections(
-    Path(org_uuid): Path<Uuid>,
-    headers: ManagerHeadersLoose,
-    data: Json<Upcase<BulkCollectionIds>>,
-) -> ApiResult<()> {
+async fn bulk_delete_organization_collections(Path(org_uuid): Path<Uuid>, headers: ManagerHeadersLoose, data: Json<Upcase<BulkCollectionIds>>) -> Result<()> {
     let data: BulkCollectionIds = data.0.data;
     if org_uuid != data.organization_id {
         err!("OrganizationId mismatch");
     }
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let collections = data.ids;
 
@@ -592,8 +587,8 @@ async fn get_org_collection_detail(
         col_id,
     }): Path<OrgColId>,
     headers: ManagerHeaders,
-) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
 
     match Collection::find_by_uuid_and_user(&conn, col_id, headers.user.uuid).await? {
         None => err!("Collection not found"),
@@ -652,9 +647,9 @@ async fn get_collection_users(
         col_id,
     }): Path<OrgColId>,
     _headers: ManagerHeaders,
-) -> ApiResult<Json<Value>> {
+) -> Result<Json<Value>> {
     // Get org and collection, check that collection is from org
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let collection = match Collection::find_by_uuid_and_org(&conn, col_id, org_uuid).await? {
         None => err!("Collection not found in Organization"),
@@ -681,7 +676,7 @@ async fn put_collection_users(
     }): Path<OrgColId>,
     _headers: ManagerHeaders,
     data: Json<Vec<Upcase<CollectionData>>>,
-) -> ApiResult<()> {
+) -> Result<()> {
     // Get org and collection, check that collection is from org
     if Collection::find_by_uuid_and_org(&conn, col_id, org_uuid).await?.is_none() {
         err!("Collection not found in Organization")
@@ -722,8 +717,8 @@ struct OrgIdData {
     organization_id: Uuid,
 }
 
-async fn get_org_details(Query(data): Query<OrgIdData>, headers: Headers) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+async fn get_org_details(Query(data): Query<OrgIdData>, headers: Headers) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
 
     Ok(Json(json!({
         "Data": _get_org_details(data.organization_id, headers.user.uuid, &conn).await?,
@@ -732,7 +727,7 @@ async fn get_org_details(Query(data): Query<OrgIdData>, headers: Headers) -> Api
     })))
 }
 
-async fn _get_org_details(org_uuid: Uuid, user_uuid: Uuid, conn: &Conn) -> ApiResult<Value> {
+async fn _get_org_details(org_uuid: Uuid, user_uuid: Uuid, conn: &Conn) -> Result<Value> {
     let ciphers_json = FullCipher::find_by_org(&conn, user_uuid, org_uuid).await?.iter().map(|x| x.to_json(false)).collect::<Vec<_>>();
 
     Ok(Value::Array(ciphers_json))
@@ -745,9 +740,9 @@ struct GetOrgUserData {
     include_groups: Option<bool>,
 }
 
-async fn get_org_users(Query(data): Query<GetOrgUserData>, Path(org_uuid): Path<Uuid>, _headers: ManagerHeadersLoose) -> ApiResult<Json<Value>> {
+async fn get_org_users(Query(data): Query<GetOrgUserData>, Path(org_uuid): Path<Uuid>, _headers: ManagerHeadersLoose) -> Result<Json<Value>> {
     let mut users_json = Vec::new();
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     for u in UserOrganization::find_by_org(&conn, org_uuid).await? {
         users_json.push(u.to_json_user_details(&conn, data.include_collections.unwrap_or(false), data.include_groups.unwrap_or(false)).await?);
@@ -760,9 +755,9 @@ async fn get_org_users(Query(data): Query<GetOrgUserData>, Path(org_uuid): Path<
     })))
 }
 
-async fn post_org_keys(Path(org_uuid): Path<Uuid>, _headers: OrgAdminHeaders, data: Json<Upcase<OrgKeyData>>) -> ApiResult<Json<Value>> {
+async fn post_org_keys(Path(org_uuid): Path<Uuid>, _headers: OrgAdminHeaders, data: Json<Upcase<OrgKeyData>>) -> Result<Json<Value>> {
     let data: OrgKeyData = data.0.data;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let mut org = match Organization::get(&conn, org_uuid).await? {
         Some(organization) => {
@@ -806,7 +801,7 @@ struct InviteData {
     access_all: Option<bool>,
 }
 
-async fn send_invite(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<InviteData>>) -> ApiResult<()> {
+async fn send_invite(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<InviteData>>) -> Result<()> {
     let data: InviteData = data.0.data;
 
     if data.r#type != UserOrgType::User && headers.org_user_type != UserOrgType::Owner {
@@ -898,9 +893,9 @@ async fn send_invite(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdmi
     Ok(())
 }
 
-async fn bulk_reinvite_user(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<OrgBulkIds>>) -> ApiResult<Json<Value>> {
+async fn bulk_reinvite_user(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<OrgBulkIds>>) -> Result<Json<Value>> {
     let data: OrgBulkIds = data.0.data;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let mut bulk_response = Vec::new();
     for org_user_id in data.ids {
@@ -931,12 +926,12 @@ async fn reinvite_user(
         user_id,
     }): Path<OrgUserId>,
     headers: OrgAdminHeaders,
-) -> ApiResult<()> {
-    let conn = DB.get().await?;
+) -> Result<()> {
+    let conn = DB.get().await.ise()?;
     _reinvite_user(org_uuid, user_id, &headers.user.email, &conn).await
 }
 
-async fn _reinvite_user(org_uuid: Uuid, user_id: Uuid, invited_by_email: &str, conn: &Conn) -> ApiResult<()> {
+async fn _reinvite_user(org_uuid: Uuid, user_id: Uuid, invited_by_email: &str, conn: &Conn) -> Result<()> {
     if !CONFIG.settings.invitations_allowed {
         err!("Invitations are not allowed.")
     }
@@ -987,11 +982,11 @@ async fn accept_invite(
         user_id,
     }): Path<OrgUserId>,
     data: Json<Upcase<AcceptData>>,
-) -> ApiResult<()> {
+) -> Result<()> {
     // The web-vault passes org_uuid and org_user_id in the URL, but we are just reading them from the JWT instead
     let data: AcceptData = data.0.data;
     let claims = decode_invite(&data.token)?;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     match User::find_by_email(&conn, &claims.email).await? {
         Some(_) => {
@@ -1062,9 +1057,9 @@ async fn accept_invite(
     Ok(())
 }
 
-async fn bulk_confirm_invite(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<Value>>) -> ApiResult<Json<Value>> {
+async fn bulk_confirm_invite(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<Value>>) -> Result<Json<Value>> {
     let data = data.0.data;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let mut bulk_response = Vec::new();
     match data["Keys"].as_array() {
@@ -1076,7 +1071,7 @@ async fn bulk_confirm_invite(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeader
                 let user_key = invite["Key"].as_str().unwrap_or_default();
                 let err_msg = match _confirm_invite(org_uuid, user_id, user_key, &headers, &conn).await {
                     Ok(_) => String::new(),
-                    Err(e @ ApiError::Other(_)) => return Err(e),
+                    Err(e @ axol::Error::Internal(_)) => return Err(e),
                     Err(e) => format!("{e:?}"),
                 };
 
@@ -1106,14 +1101,14 @@ async fn confirm_invite(
     }): Path<OrgUserId>,
     headers: OrgAdminHeaders,
     data: Json<Upcase<Value>>,
-) -> ApiResult<()> {
+) -> Result<()> {
     let data = data.0.data;
     let user_key = data["Key"].as_str().unwrap_or_default();
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
     _confirm_invite(org_uuid, user_id, user_key, &headers, &conn).await
 }
 
-async fn _confirm_invite(org_uuid: Uuid, user_id: Uuid, key: &str, headers: &OrgAdminHeaders, conn: &Conn) -> ApiResult<()> {
+async fn _confirm_invite(org_uuid: Uuid, user_id: Uuid, key: &str, headers: &OrgAdminHeaders, conn: &Conn) -> Result<()> {
     if key.is_empty() {
         err!("Key or UserId is not set, unable to process request");
     }
@@ -1179,8 +1174,8 @@ async fn get_user(
     }): Path<OrgUserId>,
     _headers: OrgAdminHeaders,
     Query(data): Query<GetOrgUserData>,
-) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
 
     let user = match UserOrganization::get(&conn, user_id, org_uuid).await? {
         Some(user) => user,
@@ -1212,7 +1207,7 @@ async fn edit_user(
     }): Path<OrgUserId>,
     headers: OrgAdminHeaders,
     data: Json<Upcase<EditUserData>>,
-) -> ApiResult<()> {
+) -> Result<()> {
     let data: EditUserData = data.0.data;
 
     let mut user_to_edit = match UserOrganization::get(&conn, user_id, org_uuid).await? {
@@ -1296,11 +1291,11 @@ async fn edit_user(
     Ok(())
 }
 
-async fn bulk_delete_user(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<OrgBulkIds>>) -> ApiResult<Json<Value>> {
+async fn bulk_delete_user(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<OrgBulkIds>>) -> Result<Json<Value>> {
     let data: OrgBulkIds = data.0.data;
 
     let mut bulk_response = Vec::new();
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
     //TODO: N+1 query
     for user_id in data.ids {
         let err_msg = match _delete_user(
@@ -1333,8 +1328,8 @@ async fn bulk_delete_user(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, 
     })))
 }
 
-async fn delete_user(path: Path<OrgUserId>, headers: OrgAdminHeaders) -> ApiResult<()> {
-    let conn = DB.get().await?;
+async fn delete_user(path: Path<OrgUserId>, headers: OrgAdminHeaders) -> Result<()> {
+    let conn = DB.get().await.ise()?;
     _delete_user(path, &headers, &conn).await
 }
 
@@ -1345,7 +1340,7 @@ async fn _delete_user(
     }): Path<OrgUserId>,
     headers: &OrgAdminHeaders,
     conn: &Conn,
-) -> ApiResult<()> {
+) -> Result<()> {
     let user_to_delete = match UserOrganization::get(&conn, user_id, org_uuid).await? {
         Some(user) => user,
         None => err!("User to delete isn't member of the organization"),
@@ -1372,7 +1367,7 @@ async fn _delete_user(
     user_to_delete.delete(&conn).await
 }
 
-async fn bulk_public_keys(conn: AutoTxn, Path(org_uuid): Path<Uuid>, _headers: OrgAdminHeaders, data: Json<Upcase<OrgBulkIds>>) -> ApiResult<Json<Value>> {
+async fn bulk_public_keys(conn: AutoTxn, Path(org_uuid): Path<Uuid>, _headers: OrgAdminHeaders, data: Json<Upcase<OrgBulkIds>>) -> Result<Json<Value>> {
     let data: OrgBulkIds = data.0.data;
 
     let mut bulk_response = Vec::new();
@@ -1426,7 +1421,7 @@ struct RelationsData {
     value: usize,
 }
 
-async fn post_org_import(mut conn: AutoTxn, Query(query): Query<OrgIdData>, headers: OrgAdminHeaders, data: Json<Upcase<ImportData>>) -> ApiResult<()> {
+async fn post_org_import(mut conn: AutoTxn, Query(query): Query<OrgIdData>, headers: OrgAdminHeaders, data: Json<Upcase<ImportData>>) -> Result<()> {
     let data: ImportData = data.0.data;
     let org_uuid = query.organization_id;
 
@@ -1440,7 +1435,7 @@ async fn post_org_import(mut conn: AutoTxn, Query(query): Query<OrgIdData>, head
     for coll in data.collections {
         let collection = Collection::new(org_uuid, coll.name);
         if collection.save(&conn).await.is_err() {
-            collections.push(Err(Error::new("Failed to create Collection", "Failed to create Collection")));
+            collections.push(Err(Error::bad_request(crate::error::api_error("Failed to create Collection"))));
         } else {
             collections.push(Ok(collection));
         }
@@ -1477,8 +1472,8 @@ async fn post_org_import(mut conn: AutoTxn, Query(query): Query<OrgIdData>, head
     Ok(())
 }
 
-async fn list_policies(Path(org_uuid): Path<Uuid>, _headers: OrgAdminHeaders) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+async fn list_policies(Path(org_uuid): Path<Uuid>, _headers: OrgAdminHeaders) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
     let policies = OrganizationPolicy::find_by_org(&conn, org_uuid).await?;
     let policies_json: Vec<Value> = policies.iter().map(OrganizationPolicy::to_json).collect();
 
@@ -1494,7 +1489,7 @@ struct PoliciesToken {
     token: String,
 }
 
-async fn list_policies_token(Path(org_uuid): Path<Uuid>, Query(token): Query<PoliciesToken>) -> ApiResult<Json<Value>> {
+async fn list_policies_token(Path(org_uuid): Path<Uuid>, Query(token): Query<PoliciesToken>) -> Result<Json<Value>> {
     let invite = crate::auth::decode_invite(&token.token)?;
 
     let invite_org_uuid = match invite.org_uuid {
@@ -1505,7 +1500,7 @@ async fn list_policies_token(Path(org_uuid): Path<Uuid>, Query(token): Query<Pol
     if invite_org_uuid != org_uuid {
         err!("Token doesn't match request organization");
     }
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     // TODO: We receive the invite token as ?token=<>, validate it contains the org id
     let policies = OrganizationPolicy::find_by_org(&conn, org_uuid).await?;
@@ -1525,8 +1520,8 @@ struct UserIdQuery {
 }
 
 //TODO: check authorization on this endpoint
-async fn list_policies_invited_user(_headers: OrgAdminHeaders, Path(org_uuid): Path<Uuid>, Query(user_id): Query<UserIdQuery>) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+async fn list_policies_invited_user(_headers: OrgAdminHeaders, Path(org_uuid): Path<Uuid>, Query(user_id): Query<UserIdQuery>) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
 
     if UserOrganization::get(&conn, user_id.user_id, org_uuid).await?.is_none() {
         err!("user not in organization");
@@ -1554,8 +1549,8 @@ async fn get_policy(
         pol_type,
     }): Path<OrgPolicy>,
     _headers: OrgAdminHeaders,
-) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
 
     let policy = match OrganizationPolicy::find_by_org_and_type(&conn, org_uuid, pol_type).await? {
         Some(p) => p,
@@ -1580,7 +1575,7 @@ async fn put_policy(
     }): Path<OrgPolicy>,
     headers: OrgAdminHeaders,
     Json(data): Json<PolicyData>,
-) -> ApiResult<Json<Value>> {
+) -> Result<Json<Value>> {
     // When enabling the TwoFactorAuthentication policy, remove this org's members that do have 2FA
     if pol_type == OrgPolicyType::TwoFactorAuthentication && data.enabled {
         for member in UserOrganization::find_by_org(&conn, org_uuid).await?.into_iter() {
@@ -1658,7 +1653,7 @@ async fn put_policy(
     };
 
     policy.enabled = data.enabled;
-    policy.data = serde_json::to_value(data.data)?;
+    policy.data = serde_json::to_value(data.data).ise()?;
     policy.save(&conn).await?;
 
     log_event(EventType::PolicyUpdated, policy.uuid, org_uuid, headers.user.uuid, headers.device.atype, Utc::now(), headers.ip, &conn).await?;
@@ -1734,7 +1729,7 @@ struct OrgImportData {
 }
 
 //TODO: remove all data.0.data stuff
-async fn import(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<OrgImportData>>) -> ApiResult<()> {
+async fn import(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<OrgImportData>>) -> Result<()> {
     let data = data.0.data;
 
     // TODO: Currently we aren't storing the externalId's anywhere, so we also don't have a way
@@ -1830,12 +1825,7 @@ async fn import(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHead
     Ok(())
 }
 
-async fn bulk_revoke_organization_user(
-    conn: AutoTxn,
-    Path(org_uuid): Path<Uuid>,
-    headers: OrgAdminHeaders,
-    data: Json<Upcase<Value>>,
-) -> ApiResult<Json<Value>> {
+async fn bulk_revoke_organization_user(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<Value>>) -> Result<Json<Value>> {
     let data = data.0.data;
 
     let mut bulk_response = Vec::new();
@@ -1848,7 +1838,7 @@ async fn bulk_revoke_organization_user(
 
                 let err_msg = match _revoke_organization_user(org_uuid, user_id, &headers, &conn).await {
                     Ok(_) => String::new(),
-                    Err(e @ ApiError::Other(_)) => return Err(e),
+                    Err(e @ axol::Error::Internal(_)) => return Err(e),
                     Err(e) => format!("{e:?}"),
                 };
 
@@ -1879,13 +1869,13 @@ async fn revoke_organization_user(
         user_id,
     }): Path<OrgUserId>,
     headers: OrgAdminHeaders,
-) -> ApiResult<()> {
-    let conn = DB.get().await?;
+) -> Result<()> {
+    let conn = DB.get().await.ise()?;
     _revoke_organization_user(org_uuid, user_id, &headers, &conn).await
 }
 
 //TODO: there are a ton of places where identation can be squished
-async fn _revoke_organization_user(org_uuid: Uuid, user_id: Uuid, headers: &OrgAdminHeaders, conn: &Conn) -> ApiResult<()> {
+async fn _revoke_organization_user(org_uuid: Uuid, user_id: Uuid, headers: &OrgAdminHeaders, conn: &Conn) -> Result<()> {
     match UserOrganization::get(conn, user_id, org_uuid).await? {
         Some(mut user_org) if !user_org.revoked => {
             if user_org.user_uuid == headers.user.uuid {
@@ -1910,12 +1900,7 @@ async fn _revoke_organization_user(org_uuid: Uuid, user_id: Uuid, headers: &OrgA
     Ok(())
 }
 
-async fn bulk_restore_organization_user(
-    conn: AutoTxn,
-    Path(org_uuid): Path<Uuid>,
-    headers: OrgAdminHeaders,
-    data: Json<Upcase<Value>>,
-) -> ApiResult<Json<Value>> {
+async fn bulk_restore_organization_user(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<Value>>) -> Result<Json<Value>> {
     let data = data.0.data;
 
     let mut bulk_response = Vec::new();
@@ -1928,7 +1913,7 @@ async fn bulk_restore_organization_user(
 
                 let err_msg = match _restore_organization_user(org_uuid, user_id, &headers, &conn).await {
                     Ok(_) => String::new(),
-                    Err(e @ ApiError::Other(_)) => return Err(e),
+                    Err(e @ axol::Error::Internal(_)) => return Err(e),
                     Err(e) => format!("{e:?}"),
                 };
 
@@ -1959,12 +1944,12 @@ async fn restore_organization_user(
         user_id,
     }): Path<OrgUserId>,
     headers: OrgAdminHeaders,
-) -> ApiResult<()> {
-    let conn = DB.get().await?;
+) -> Result<()> {
+    let conn = DB.get().await.ise()?;
     _restore_organization_user(org_uuid, user_id, &headers, &conn).await
 }
 
-async fn _restore_organization_user(org_uuid: Uuid, user_id: Uuid, headers: &OrgAdminHeaders, conn: &Conn) -> ApiResult<()> {
+async fn _restore_organization_user(org_uuid: Uuid, user_id: Uuid, headers: &OrgAdminHeaders, conn: &Conn) -> Result<()> {
     match UserOrganization::get(conn, user_id, org_uuid).await? {
         Some(mut user_org) if user_org.revoked => {
             if user_org.user_uuid == headers.user.uuid {
@@ -2000,9 +1985,9 @@ async fn _restore_organization_user(org_uuid: Uuid, user_id: Uuid, headers: &Org
     Ok(())
 }
 
-async fn get_groups(Path(org_uuid): Path<Uuid>, _headers: ManagerHeadersLoose) -> ApiResult<Json<Value>> {
+async fn get_groups(Path(org_uuid): Path<Uuid>, _headers: ManagerHeadersLoose) -> Result<Json<Value>> {
     let groups: Vec<Value> = if CONFIG.advanced.org_groups_enabled {
-        let conn = DB.get().await?;
+        let conn = DB.get().await.ise()?;
 
         let groups = Group::find_by_organization(&conn, org_uuid).await?;
         let mut groups_json = Vec::with_capacity(groups.len());
@@ -2034,14 +2019,14 @@ struct GroupRequest {
 }
 
 impl GroupRequest {
-    pub fn to_group(&self, organizations_uuid: Uuid) -> ApiResult<Group> {
+    pub fn to_group(&self, organizations_uuid: Uuid) -> Result<Group> {
         match self.access_all {
             Some(access_all_value) => Ok(Group::new(organizations_uuid, self.name.clone(), access_all_value, self.external_id.clone())),
             _ => err!("Could not convert GroupRequest to Group, because access_all has no value!"),
         }
     }
 
-    pub fn update_group(&self, mut group: Group) -> ApiResult<Group> {
+    pub fn update_group(&self, mut group: Group) -> Result<Group> {
         match self.access_all {
             Some(access_all_value) => {
                 group.name = self.name.clone();
@@ -2089,7 +2074,7 @@ impl SelectionReadOnly {
     }
 }
 
-async fn post_groups(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<GroupRequest>>) -> ApiResult<Json<Value>> {
+async fn post_groups(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<GroupRequest>>) -> Result<Json<Value>> {
     if !CONFIG.advanced.org_groups_enabled {
         err!("Group support is disabled");
     }
@@ -2127,7 +2112,7 @@ async fn put_group(
     }): Path<OrgGroupId>,
     headers: OrgAdminHeaders,
     data: Json<Upcase<GroupRequest>>,
-) -> ApiResult<Json<Value>> {
+) -> Result<Json<Value>> {
     if !CONFIG.advanced.org_groups_enabled {
         err!("Group support is disabled");
     }
@@ -2157,7 +2142,7 @@ async fn add_update_group(
     org_uuid: Uuid,
     headers: &OrgAdminHeaders,
     conn: &Conn,
-) -> ApiResult<Json<Value>> {
+) -> Result<Json<Value>> {
     group.save(conn).await?;
 
     for selection_read_only_request in collections {
@@ -2197,11 +2182,11 @@ async fn get_group_details(
         group_id,
     }): Path<OrgGroupId>,
     _headers: OrgAdminHeaders,
-) -> ApiResult<Json<Value>> {
+) -> Result<Json<Value>> {
     if !CONFIG.advanced.org_groups_enabled {
         err!("Group support is disabled");
     }
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let group = match Group::get_for_org(&conn, group_id, org_uuid).await? {
         Some(group) => group,
@@ -2211,7 +2196,7 @@ async fn get_group_details(
     Ok(Json(group.to_json_details(&conn).await?))
 }
 
-async fn _delete_group(org_uuid: Uuid, group_id: Uuid, headers: &OrgAdminHeaders, conn: &Conn) -> ApiResult<()> {
+async fn _delete_group(org_uuid: Uuid, group_id: Uuid, headers: &OrgAdminHeaders, conn: &Conn) -> Result<()> {
     let group = match Group::get_for_org(&conn, group_id, org_uuid).await? {
         Some(group) => group,
         _ => err!("Group not found"),
@@ -2228,16 +2213,16 @@ async fn delete_group(
         group_id,
     }): Path<OrgGroupId>,
     headers: OrgAdminHeaders,
-) -> ApiResult<()> {
+) -> Result<()> {
     if !CONFIG.advanced.org_groups_enabled {
         err!("Group support is disabled");
     }
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
     _delete_group(org_uuid, group_id, &headers, &conn).await?;
     Ok(())
 }
 
-async fn bulk_delete_groups(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<OrgBulkIds>>) -> ApiResult<()> {
+async fn bulk_delete_groups(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<OrgBulkIds>>) -> Result<()> {
     if !CONFIG.advanced.org_groups_enabled {
         err!("Group support is disabled");
     }
@@ -2257,11 +2242,11 @@ async fn get_group(
         group_id,
     }): Path<OrgGroupId>,
     _headers: OrgAdminHeaders,
-) -> ApiResult<Json<Value>> {
+) -> Result<Json<Value>> {
     if !CONFIG.advanced.org_groups_enabled {
         err!("Group support is disabled");
     }
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let group = match Group::get_for_org(&conn, group_id, org_uuid).await? {
         Some(group) => group,
@@ -2277,11 +2262,11 @@ async fn get_group_users(
         group_id,
     }): Path<OrgGroupId>,
     _headers: OrgAdminHeaders,
-) -> ApiResult<Json<Value>> {
+) -> Result<Json<Value>> {
     if !CONFIG.advanced.org_groups_enabled {
         err!("Group support is disabled");
     }
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     match Group::get_for_org(&conn, group_id, org_uuid).await? {
         Some(_) => { /* Do nothing */ }
@@ -2301,7 +2286,7 @@ async fn put_group_users(
     }): Path<OrgGroupId>,
     headers: OrgAdminHeaders,
     data: Json<Vec<Uuid>>,
-) -> ApiResult<()> {
+) -> Result<()> {
     if !CONFIG.advanced.org_groups_enabled {
         err!("Group support is disabled");
     }
@@ -2342,11 +2327,11 @@ async fn get_user_groups(
         user_id,
     }): Path<OrgUserId>,
     _headers: OrgAdminHeaders,
-) -> ApiResult<Json<Value>> {
+) -> Result<Json<Value>> {
     if !CONFIG.advanced.org_groups_enabled {
         err!("Group support is disabled");
     }
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     match UserOrganization::get(&conn, user_id, org_uuid).await? {
         Some(_) => { /* Do nothing */ }
@@ -2372,7 +2357,7 @@ async fn put_user_groups(
     }): Path<OrgUserId>,
     headers: OrgAdminHeaders,
     data: Json<Upcase<OrganizationUserUpdateGroupsRequest>>,
-) -> ApiResult<()> {
+) -> Result<()> {
     if !CONFIG.advanced.org_groups_enabled {
         err!("Group support is disabled");
     }
@@ -2412,11 +2397,11 @@ async fn delete_group_user(
         user_id,
     }): Path<OrgGroupUserId>,
     headers: OrgAdminHeaders,
-) -> ApiResult<()> {
+) -> Result<()> {
     if !CONFIG.advanced.org_groups_enabled {
         err!("Group support is disabled");
     }
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     match UserOrganization::get(&conn, user_id, org_uuid).await? {
         Some(_) => { /* Do nothing */ }
@@ -2446,8 +2431,8 @@ struct OrganizationUserResetPasswordRequest {
     key: String,
 }
 
-async fn get_organization_keys(Path(org_uuid): Path<Uuid>) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+async fn get_organization_keys(Path(org_uuid): Path<Uuid>) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
 
     let org = match Organization::get(&conn, org_uuid).await? {
         Some(organization) => organization,
@@ -2468,8 +2453,8 @@ async fn put_reset_password(
     }): Path<OrgUserId>,
     headers: OrgAdminHeaders,
     data: Json<Upcase<OrganizationUserResetPasswordRequest>>,
-) -> ApiResult<()> {
-    let conn = DB.get().await?;
+) -> Result<()> {
+    let conn = DB.get().await.ise()?;
 
     let org = match Organization::get(&conn, org_uuid).await? {
         Some(org) => org,
@@ -2520,8 +2505,8 @@ async fn get_reset_password_details(
         user_id,
     }): Path<OrgUserId>,
     headers: OrgAdminHeaders,
-) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
 
     let org = match Organization::get(&conn, org_uuid).await? {
         Some(org) => org,
@@ -2553,7 +2538,7 @@ async fn get_reset_password_details(
     })))
 }
 
-async fn check_reset_password_applicable_and_permissions(org_uuid: Uuid, user_id: Uuid, headers: &OrgAdminHeaders, conn: &Conn) -> ApiResult<()> {
+async fn check_reset_password_applicable_and_permissions(org_uuid: Uuid, user_id: Uuid, headers: &OrgAdminHeaders, conn: &Conn) -> Result<()> {
     check_reset_password_applicable(org_uuid, conn).await?;
 
     let target_user = match UserOrganization::get(conn, user_id, org_uuid).await? {
@@ -2569,7 +2554,7 @@ async fn check_reset_password_applicable_and_permissions(org_uuid: Uuid, user_id
     }
 }
 
-async fn check_reset_password_applicable(org_uuid: Uuid, conn: &Conn) -> ApiResult<()> {
+async fn check_reset_password_applicable(org_uuid: Uuid, conn: &Conn) -> Result<()> {
     if !CONFIG.mail_enabled() {
         err!("Password reset is not supported on an email-disabled instance.");
     }
@@ -2593,8 +2578,8 @@ async fn put_reset_password_enrollment(
     }): Path<OrgUserId>,
     headers: Headers,
     data: Json<Upcase<OrganizationUserResetPasswordEnrollmentRequest>>,
-) -> ApiResult<()> {
-    let conn = DB.get().await?;
+) -> Result<()> {
+    let conn = DB.get().await.ise()?;
 
     if user_id != headers.user.uuid {
         err!("path and token mismatch for uuid");
@@ -2634,7 +2619,7 @@ async fn put_reset_password_enrollment(
 // NOTE: It seems clients can't handle uppercase-first keys!!
 //       We need to convert all keys so they have the first character to be a lowercase.
 //       Else the export will be just an empty JSON file.
-async fn get_org_export(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders) -> ApiResult<Json<Value>> {
+async fn get_org_export(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders) -> Result<Json<Value>> {
     use semver::{Version, VersionReq};
 
     // Since version v2023.1.0 the format of the export is different.
@@ -2649,7 +2634,7 @@ async fn get_org_export(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders) ->
     } else {
         false
     };
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     // Also both main keys here need to be lowercase, else the export will fail.
     Ok(if use_list_response_model {
@@ -2675,14 +2660,14 @@ async fn get_org_export(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders) ->
     })
 }
 
-async fn _api_key(org_uuid: Uuid, rotate: bool, headers: OrgAdminHeaders, data: PasswordData) -> ApiResult<Json<Value>> {
+async fn _api_key(org_uuid: Uuid, rotate: bool, headers: OrgAdminHeaders, data: PasswordData) -> Result<Json<Value>> {
     let user = headers.user;
 
     // Validate the admin users password
     if !user.check_valid_password(&data.master_password_hash) {
         err!("Invalid password")
     }
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let org_api_key = match OrganizationApiKey::find_by_org_uuid(&conn, org_uuid).await? {
         Some(mut org_api_key) => {
@@ -2708,10 +2693,10 @@ async fn _api_key(org_uuid: Uuid, rotate: bool, headers: OrgAdminHeaders, data: 
     })))
 }
 
-async fn api_key(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<PasswordData>>) -> ApiResult<Json<Value>> {
+async fn api_key(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<PasswordData>>) -> Result<Json<Value>> {
     _api_key(org_uuid, false, headers, data.0.data).await
 }
 
-async fn rotate_api_key(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<PasswordData>>) -> ApiResult<Json<Value>> {
+async fn rotate_api_key(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<PasswordData>>) -> Result<Json<Value>> {
     _api_key(org_uuid, true, headers, data.0.data).await
 }

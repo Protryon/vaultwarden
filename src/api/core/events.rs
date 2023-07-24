@@ -1,8 +1,4 @@
-use axum::{
-    extract::{Path, Query},
-    Json,
-};
-use axum_util::errors::ApiResult;
+use axol::prelude::*;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -25,13 +21,13 @@ pub struct EventRange {
 }
 
 // Upstream: https://github.com/bitwarden/server/blob/9ecf69d9cabce732cf2c57976dd9afa5728578fb/src/Api/Controllers/EventsController.cs#LL84C35-L84C41
-pub async fn get_org_events(Path(org_uuid): Path<Uuid>, Query(data): Query<EventRange>, _headers: OrgAdminHeaders) -> ApiResult<Json<Value>> {
+pub async fn get_org_events(Path(org_uuid): Path<Uuid>, Query(data): Query<EventRange>, _headers: OrgAdminHeaders) -> Result<Json<Value>> {
     // Return an empty vec when we org events are disabled.
     // This prevents client errors
     let events_json: Vec<Value> = if !CONFIG.settings.org_events_enabled {
         Vec::with_capacity(0)
     } else {
-        let conn = DB.get().await?;
+        let conn = DB.get().await.ise()?;
         let end_date = if let Some(before_date) = data.continuation_token {
             before_date
         } else {
@@ -48,14 +44,14 @@ pub async fn get_org_events(Path(org_uuid): Path<Uuid>, Query(data): Query<Event
     })))
 }
 
-pub async fn get_cipher_events(Path(cipher_uuid): Path<Uuid>, Query(data): Query<EventRange>, headers: Headers) -> ApiResult<Json<Value>> {
+pub async fn get_cipher_events(Path(cipher_uuid): Path<Uuid>, Query(data): Query<EventRange>, headers: Headers) -> Result<Json<Value>> {
     // Return an empty vec when we org events are disabled.
     // This prevents client errors
     let events_json: Vec<Value> = if !CONFIG.settings.org_events_enabled {
         Vec::with_capacity(0)
     } else {
         let mut events_json = Vec::with_capacity(0);
-        let conn = DB.get().await?;
+        let conn = DB.get().await.ise()?;
         if UserOrganization::user_has_ge_admin_access_to_cipher(&conn, headers.user.uuid, cipher_uuid).await? {
             let end_date = if let Some(before_date) = data.continuation_token {
                 before_date
@@ -81,7 +77,7 @@ pub struct GetUserEventsQuery {
     user_id: Uuid,
 }
 
-pub async fn get_user_events(Path(path): Path<GetUserEventsQuery>, Query(data): Query<EventRange>, _headers: OrgAdminHeaders) -> ApiResult<Json<Value>> {
+pub async fn get_user_events(Path(path): Path<GetUserEventsQuery>, Query(data): Query<EventRange>, _headers: OrgAdminHeaders) -> Result<Json<Value>> {
     // Return an empty vec when we org events are disabled.
     // This prevents client errors
     let events_json: Vec<Value> = if !CONFIG.settings.org_events_enabled {
@@ -92,7 +88,7 @@ pub async fn get_user_events(Path(path): Path<GetUserEventsQuery>, Query(data): 
         } else {
             data.end
         };
-        let conn = DB.get().await?;
+        let conn = DB.get().await.ise()?;
 
         Event::find_by_organization_and_user(&conn, path.org_uuid, path.user_id, data.start, end_date).await?.iter().map(|e| e.to_json()).collect()
     };
@@ -133,11 +129,11 @@ pub struct EventCollection {
 // Upstream:
 // https://github.com/bitwarden/server/blob/8a22c0479e987e756ce7412c48a732f9002f0a2d/src/Events/Controllers/CollectController.cs
 // https://github.com/bitwarden/server/blob/8a22c0479e987e756ce7412c48a732f9002f0a2d/src/Core/Services/Implementations/EventService.cs
-pub async fn post_events_collect(headers: Headers, data: Json<Vec<Upcase<EventCollection>>>) -> ApiResult<()> {
+pub async fn post_events_collect(headers: Headers, data: Json<Vec<Upcase<EventCollection>>>) -> Result<()> {
     if !CONFIG.settings.org_events_enabled {
         return Ok(());
     }
-    let mut conn = DB.get().await?;
+    let mut conn = DB.get().await.ise()?;
 
     for event in data.iter().map(|d| &d.data) {
         match event.r#type as i32 {

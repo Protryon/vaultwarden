@@ -1,5 +1,4 @@
-use axum::Json;
-use axum_util::errors::{ApiError, ApiResult};
+use axol::prelude::*;
 use chrono::Utc;
 use data_encoding::BASE64;
 use serde::{Deserialize, Serialize};
@@ -11,7 +10,7 @@ use crate::{
     api::PasswordData,
     auth::Headers,
     crypto,
-    db::{Conn, EventType, TwoFactor, TwoFactorType, User, DB},
+    db::{Conn, Event, EventType, TwoFactor, TwoFactorType, User, DB},
     error::MapResult,
     events::log_user_event,
     util::{get_reqwest_client, Upcase},
@@ -87,13 +86,13 @@ impl DuoStatus {
 
 const DISABLED_MESSAGE_DEFAULT: &str = "<To use the global Duo keys, please leave these fields untouched>";
 
-pub async fn get_duo(headers: Headers, data: Json<Upcase<PasswordData>>) -> ApiResult<Json<Value>> {
+pub async fn get_duo(headers: Headers, data: Json<Upcase<PasswordData>>) -> Result<Json<Value>> {
     let data: PasswordData = data.0.data;
 
     if !headers.user.check_valid_password(&data.master_password_hash) {
         err!("Invalid password");
     }
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let data = get_user_duo_data(headers.user.uuid, &conn).await?;
 
@@ -151,7 +150,7 @@ fn check_duo_fields_custom(data: &EnableDuoData) -> bool {
     !empty_or_default(&data.secret_key) && !empty_or_default(&data.integration_key)
 }
 
-pub async fn activate_duo(headers: Headers, data: Json<Upcase<EnableDuoData>>) -> ApiResult<Json<Value>> {
+pub async fn activate_duo(headers: Headers, data: Json<Upcase<EnableDuoData>>) -> Result<Json<Value>> {
     let data: EnableDuoData = data.0.data;
     let mut user = headers.user;
 
@@ -161,14 +160,14 @@ pub async fn activate_duo(headers: Headers, data: Json<Upcase<EnableDuoData>>) -
 
     let (data, data_str) = if check_duo_fields_custom(&data) {
         let data_req: DuoData = data.into();
-        let data_str = serde_json::to_value(data_req.clone())?;
+        let data_str = serde_json::to_value(data_req.clone()).ise()?;
         duo_api_request("GET", "/auth/v2/check", "", &data_req).await?;
         (data_req.obscure(), data_str)
     } else {
         (DuoData::secret(), Value::Null)
     };
 
-    let mut conn = DB.get().await?;
+    let mut conn = DB.get().await.ise()?;
 
     let twofactor = TwoFactor::new(user.uuid, TwoFactorType::Duo, data_str);
     twofactor.save(&conn).await?;
@@ -186,7 +185,7 @@ pub async fn activate_duo(headers: Headers, data: Json<Upcase<EnableDuoData>>) -
     })))
 }
 
-async fn duo_api_request(method: &str, path: &str, params: &str, data: &DuoData) -> ApiResult<()> {
+async fn duo_api_request(method: &str, path: &str, params: &str, data: &DuoData) -> Result<()> {
     use reqwest::{header, Method};
     use std::str::FromStr;
 
@@ -207,8 +206,10 @@ async fn duo_api_request(method: &str, path: &str, params: &str, data: &DuoData)
         .header(header::USER_AGENT, "vaultwarden:Duo/1.0 (Rust)")
         .header(header::DATE, date)
         .send()
-        .await?
-        .error_for_status()?;
+        .await
+        .ise()?
+        .error_for_status()
+        .ise()?;
 
     Ok(())
 }
@@ -220,7 +221,7 @@ const AUTH_PREFIX: &str = "AUTH";
 const DUO_PREFIX: &str = "TX";
 const APP_PREFIX: &str = "APP";
 
-async fn get_user_duo_data(uuid: Uuid, conn: &Conn) -> ApiResult<DuoStatus> {
+async fn get_user_duo_data(uuid: Uuid, conn: &Conn) -> Result<DuoStatus> {
     // If the user doesn't have an entry, disabled
     let twofactor = match TwoFactor::find_by_user_and_type(conn, uuid, TwoFactorType::Duo).await? {
         Some(t) => t,
@@ -242,17 +243,17 @@ async fn get_user_duo_data(uuid: Uuid, conn: &Conn) -> ApiResult<DuoStatus> {
 }
 
 // let (ik, sk, ak, host) = get_duo_keys();
-async fn get_duo_keys_email(email: &str, conn: &Conn) -> ApiResult<(String, String, String, Url)> {
+async fn get_duo_keys_email(email: &str, conn: &Conn) -> Result<(String, String, String, Url)> {
     let data = match User::find_by_email(conn, email).await? {
         Some(u) => get_user_duo_data(u.uuid, conn).await?.data(),
         _ => DuoData::global(),
     }
     .map_res("Can't fetch Duo Keys")?;
 
-    Ok((data.integration_key, data.secret_key, CONFIG.duo.as_ref().map(|x| x.app_key.clone()).ok_or(ApiError::NotFound)?, data.host))
+    Ok((data.integration_key, data.secret_key, CONFIG.duo.as_ref().map(|x| x.app_key.clone()).ok_or(Error::NotFound)?, data.host))
 }
 
-pub async fn generate_duo_signature(email: &str, conn: &Conn) -> ApiResult<(String, Url)> {
+pub async fn generate_duo_signature(email: &str, conn: &Conn) -> Result<(String, Url)> {
     let now = Utc::now().timestamp();
 
     let (ik, sk, ak, host) = get_duo_keys_email(email, conn).await?;
@@ -270,19 +271,15 @@ fn sign_duo_values(key: &str, email: &str, ikey: &str, prefix: &str, expire: i64
     format!("{}|{}", cookie, crypto::hmac_sign(key, &cookie))
 }
 
-pub async fn validate_duo_login(email: &str, response: &str, conn: &Conn) -> ApiResult<()> {
+pub async fn validate_duo_login(user_uuid: Uuid, email: &str, response: &str, conn: &Conn) -> Result<()> {
     // email is as entered by the user, so it needs to be normalized before
     // comparison with auth_user below.
     let email = &email.to_lowercase();
 
     let split: Vec<&str> = response.split(':').collect();
     if split.len() != 2 {
-        err!(
-            "Invalid response length",
-            ErrorEvent {
-                event: EventType::UserFailedLogIn2fa
-            }
-        );
+        Event::new(EventType::UserFailedLogIn2fa, None).with_user_uuid(user_uuid).save(conn).await?;
+        err!("Invalid response length");
     }
 
     let auth_sig = split[0];
@@ -296,18 +293,14 @@ pub async fn validate_duo_login(email: &str, response: &str, conn: &Conn) -> Api
     let app_user = parse_duo_values(&ak, app_sig, &ik, APP_PREFIX, now)?;
 
     if !crypto::ct_eq(&auth_user, app_user) || !crypto::ct_eq(&auth_user, email) {
-        err!(
-            "Error validating duo authentication",
-            ErrorEvent {
-                event: EventType::UserFailedLogIn2fa
-            }
-        )
+        Event::new(EventType::UserFailedLogIn2fa, None).with_user_uuid(user_uuid).save(conn).await?;
+        err!("Error validating duo authentication")
     }
 
     Ok(())
 }
 
-fn parse_duo_values(key: &str, val: &str, ikey: &str, prefix: &str, time: i64) -> ApiResult<String> {
+fn parse_duo_values(key: &str, val: &str, ikey: &str, prefix: &str, time: i64) -> Result<String> {
     let split: Vec<&str> = val.split('|').collect();
     if split.len() != 3 {
         err!("Invalid value length")

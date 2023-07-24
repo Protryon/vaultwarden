@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{api::core::CipherData, db::Conn, util::RowSlice, CONFIG};
-use axum_util::errors::{ApiError, ApiResult};
+use axol::{Error, ErrorExt, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{json, Value};
 use serde_repr::{Deserialize_repr, Serialize_repr};
@@ -107,7 +107,7 @@ impl Cipher {
         }
     }
 
-    pub fn validate_notes(cipher_data: &[CipherData]) -> ApiResult<()> {
+    pub fn validate_notes(cipher_data: &[CipherData]) -> Result<()> {
         let mut validation_errors = serde_json::Map::new();
         for (index, cipher) in cipher_data.iter().enumerate() {
             if let Some(note) = &cipher.notes {
@@ -166,7 +166,7 @@ impl FullCipher {
             .collect::<Vec<_>>()
     }
 
-    pub async fn find_by_org(conn: &Conn, user_uuid: Uuid, organization_uuid: Uuid) -> ApiResult<Vec<Self>> {
+    pub async fn find_by_org(conn: &Conn, user_uuid: Uuid, organization_uuid: Uuid) -> Result<Vec<Self>> {
         let attachments = Attachment::find_by_user(conn, user_uuid);
         let ciphers = async {
             conn.query(
@@ -187,10 +187,10 @@ impl FullCipher {
             .await
         };
         let (attachments, ciphers) = futures::future::join(attachments, ciphers).await;
-        Ok(Self::join(attachments?, ciphers?))
+        Ok(Self::join(attachments?, ciphers.ise()?))
     }
 
-    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<Vec<Self>> {
+    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid) -> Result<Vec<Self>> {
         let attachments = Attachment::find_by_user(conn, user_uuid);
         let ciphers = async {
             conn.query(
@@ -202,7 +202,7 @@ impl FullCipher {
                 LEFT JOIN folders f ON f.uuid = fc.folder_uuid AND f.user_uuid = $1
                 LEFT JOIN favorites fav ON fav.cipher_uuid = c.uuid AND fav.user_uuid = $1
                 LEFT JOIN collection_ciphers cc ON cc.cipher_uuid = c.uuid
-                GROUP BY c.uuid, uca.read_only, uca.hide_passwords, fc.folder_uuid, fav.cipher_uuid
+                GROUP BY c.uuid, f.uuid, uca.read_only, uca.hide_passwords, fc.folder_uuid, fav.cipher_uuid
                 ORDER BY c.created_at ASC
                 ",
                 &[&user_uuid],
@@ -210,7 +210,7 @@ impl FullCipher {
             .await
         };
         let (attachments, ciphers) = futures::future::join(attachments, ciphers).await;
-        Ok(Self::join(attachments?, ciphers?))
+        Ok(Self::join(attachments?, ciphers.ise()?))
     }
 
     pub fn to_json(&self, for_user: bool) -> Value {
@@ -321,21 +321,21 @@ impl FullCipher {
 }
 
 impl Cipher {
-    pub async fn to_json(self, conn: &Conn, user_uuid: Uuid, for_user: bool) -> ApiResult<Value> {
-        let attachments = Attachment::find_by_cipher(conn, self.uuid).await?;
+    pub async fn to_json(self, conn: &Conn, user_uuid: Uuid, for_user: bool) -> Result<Value> {
+        let attachments = Attachment::find_by_cipher(conn, self.uuid).await.ise()?;
 
         // We don't need these values at all for Organizational syncs
         // Skip any other database calls if this is the case and just return false.
         let access = if for_user {
-            self.get_access_restrictions(conn, user_uuid).await?.ok_or_else(|| ApiError::BadRequest("Cipher ownership assertion failure".to_string()))?
+            self.get_access_restrictions(conn, user_uuid).await.ise()?.ok_or_else(|| Error::bad_request("Cipher ownership assertion failure"))?
         } else {
             Default::default()
         };
 
-        let collection_uuids = self.get_collections(conn, user_uuid).await?;
+        let collection_uuids = self.get_collections(conn, user_uuid).await.ise()?;
 
-        let folder_uuid = self.get_folder_uuid(conn, user_uuid).await?;
-        let is_favorite = self.is_favorite(conn, user_uuid).await?;
+        let folder_uuid = self.get_folder_uuid(conn, user_uuid).await.ise()?;
+        let is_favorite = self.is_favorite(conn, user_uuid).await.ise()?;
 
         Ok(FullCipher {
             cipher: self,
@@ -348,7 +348,7 @@ impl Cipher {
         .to_json(for_user))
     }
 
-    pub async fn save(&mut self, conn: &Conn) -> ApiResult<()> {
+    pub async fn save(&mut self, conn: &Conn) -> Result<()> {
         self.updated_at = Utc::now();
 
         conn.execute(r"INSERT INTO ciphers (uuid, created_at, updated_at, user_uuid, organization_uuid, atype, name, notes, fields, data, password_history, deleted_at, reprompt) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) ON CONFLICT (uuid) DO UPDATE
@@ -378,43 +378,44 @@ impl Cipher {
             &self.password_history,
             &self.deleted_at,
             &self.reprompt.map(|x| x as i32),
-        ]).await?;
-        Self::flag_revision(conn, self.uuid).await?;
+        ]).await.ise()?;
+        Self::flag_revision(conn, self.uuid).await.ise()?;
         Ok(())
     }
 
-    pub async fn flag_revision(conn: &Conn, uuid: Uuid) -> ApiResult<()> {
+    pub async fn flag_revision(conn: &Conn, uuid: Uuid) -> Result<()> {
         conn.execute(
             r"UPDATE user_revisions u SET updated_at = now() FROM user_cipher_auth uca WHERE uca.cipher_uuid = $1 AND uca.user_uuid = u.uuid",
             &[&uuid],
         )
-        .await?;
+        .await
+        .ise()?;
         Ok(())
     }
 
-    pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
-        Self::flag_revision(conn, self.uuid).await?;
-        conn.execute(r"DELETE FROM ciphers WHERE uuid = $1", &[&self.uuid]).await?;
+    pub async fn delete(&self, conn: &Conn) -> Result<()> {
+        Self::flag_revision(conn, self.uuid).await.ise()?;
+        conn.execute(r"DELETE FROM ciphers WHERE uuid = $1", &[&self.uuid]).await.ise()?;
         Ok(())
     }
 
-    pub async fn delete_all_by_organization(conn: &Conn, organization_uuid: Uuid) -> ApiResult<()> {
-        Organization::flag_revision(conn, organization_uuid).await?;
-        conn.execute(r"DELETE FROM ciphers WHERE organization_uuid = $1", &[&organization_uuid]).await?;
+    pub async fn delete_all_by_organization(conn: &Conn, organization_uuid: Uuid) -> Result<()> {
+        Organization::flag_revision(conn, organization_uuid).await.ise()?;
+        conn.execute(r"DELETE FROM ciphers WHERE organization_uuid = $1", &[&organization_uuid]).await.ise()?;
         Ok(())
     }
 
     /// Purge all ciphers that are old enough to be auto-deleted.
-    pub async fn purge_trash(conn: &Conn) -> ApiResult<()> {
+    pub async fn purge_trash(conn: &Conn) -> Result<()> {
         if let Some(auto_delete_days) = CONFIG.settings.trash_auto_delete_days {
             let oldest = Utc::now() - Duration::days(auto_delete_days);
-            conn.execute(r"DELETE FROM ciphers WHERE deleted_at IS NOT NULL AND deleted_at < $1", &[&oldest]).await?;
+            conn.execute(r"DELETE FROM ciphers WHERE deleted_at IS NOT NULL AND deleted_at < $1", &[&oldest]).await.ise()?;
         }
         Ok(())
     }
 
-    pub async fn move_to_folder(&self, conn: &Conn, folder_uuid: Option<Uuid>, user_uuid: Uuid) -> ApiResult<()> {
-        match (self.get_folder_uuid(conn, user_uuid).await?, folder_uuid) {
+    pub async fn move_to_folder(&self, conn: &Conn, folder_uuid: Option<Uuid>, user_uuid: Uuid) -> Result<()> {
+        match (self.get_folder_uuid(conn, user_uuid).await.ise()?, folder_uuid) {
             // No changes
             (None, None) => Ok(()),
             (Some(ref old), Some(ref new)) if old == new => Ok(()),
@@ -423,15 +424,15 @@ impl Cipher {
             (None, Some(new)) => FolderCipher::new(new, self.uuid).save(conn).await,
 
             // Remove from folder
-            (Some(old), None) => match FolderCipher::find_by_folder_and_cipher(conn, old, self.uuid).await? {
+            (Some(old), None) => match FolderCipher::find_by_folder_and_cipher(conn, old, self.uuid).await.ise()? {
                 Some(old) => old.delete(conn).await,
                 None => err!("Couldn't move from previous folder"),
             },
 
             // Move to another folder
             (Some(old), Some(new)) => {
-                if let Some(old) = FolderCipher::find_by_folder_and_cipher(conn, old, self.uuid).await? {
-                    old.delete(conn).await?;
+                if let Some(old) = FolderCipher::find_by_folder_and_cipher(conn, old, self.uuid).await.ise()? {
+                    old.delete(conn).await.ise()?;
                 }
                 FolderCipher::new(new, self.uuid).save(conn).await
             }
@@ -443,32 +444,33 @@ impl Cipher {
     /// not in any collection the user has access to. Otherwise, the user has
     /// access to this cipher, and Some(read_only, hide_passwords) represents
     /// the access restrictions.
-    pub async fn get_access_restrictions(&self, conn: &Conn, user_uuid: Uuid) -> ApiResult<Option<AccessRestrictions>> {
+    pub async fn get_access_restrictions(&self, conn: &Conn, user_uuid: Uuid) -> Result<Option<AccessRestrictions>> {
         Ok(conn
             .query_opt(r"SELECT read_only, hide_passwords FROM user_cipher_auth WHERE user_uuid = $1 AND cipher_uuid = $2", &[&user_uuid, &self.uuid])
-            .await?
+            .await
+            .ise()?
             .map(|x| AccessRestrictions {
                 read_only: x.get(0),
                 hide_passwords: x.get(1),
             }))
     }
 
-    pub async fn is_write_accessible_to_user(&self, conn: &Conn, user_uuid: Uuid) -> ApiResult<bool> {
-        Ok(self.get_access_restrictions(conn, user_uuid).await?.map(|x| !x.read_only).unwrap_or(false))
+    pub async fn is_write_accessible_to_user(&self, conn: &Conn, user_uuid: Uuid) -> Result<bool> {
+        Ok(self.get_access_restrictions(conn, user_uuid).await.ise()?.map(|x| !x.read_only).unwrap_or(false))
     }
 
     // Returns whether this cipher is a favorite of the specified user.
-    pub async fn is_favorite(&self, conn: &Conn, user_uuid: Uuid) -> ApiResult<bool> {
+    pub async fn is_favorite(&self, conn: &Conn, user_uuid: Uuid) -> Result<bool> {
         Favorite::is_favorite(conn, self.uuid, user_uuid).await
     }
 
     // Sets whether this cipher is a favorite of the specified user.
-    pub async fn set_favorite(&self, conn: &Conn, favorite: bool, user_uuid: Uuid) -> ApiResult<()> {
-        Favorite::set_favorite(conn, favorite, self.uuid, user_uuid).await?;
+    pub async fn set_favorite(&self, conn: &Conn, favorite: bool, user_uuid: Uuid) -> Result<()> {
+        Favorite::set_favorite(conn, favorite, self.uuid, user_uuid).await.ise()?;
         Ok(())
     }
 
-    pub async fn get_folder_uuid(&self, conn: &Conn, user_uuid: Uuid) -> ApiResult<Option<Uuid>> {
+    pub async fn get_folder_uuid(&self, conn: &Conn, user_uuid: Uuid) -> Result<Option<Uuid>> {
         Ok(conn
             .query_opt(
                 r"
@@ -479,46 +481,48 @@ impl Cipher {
         ",
                 &[&self.uuid, &user_uuid],
             )
-            .await?
+            .await
+            .ise()?
             .map(|x| x.get(0)))
     }
 
-    pub async fn get(conn: &Conn, uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM ciphers WHERE uuid = $1", &[&uuid]).await?.as_ref().map(Into::<RowSlice<'_>>::into).map(Into::into))
+    pub async fn get(conn: &Conn, uuid: Uuid) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM ciphers WHERE uuid = $1", &[&uuid]).await.ise()?.as_ref().map(Into::<RowSlice<'_>>::into).map(Into::into))
     }
 
-    pub async fn get_for_user(conn: &Conn, user_uuid: Uuid, uuid: Uuid) -> ApiResult<Option<Self>> {
+    pub async fn get_for_user(conn: &Conn, user_uuid: Uuid, uuid: Uuid) -> Result<Option<Self>> {
         Ok(conn
             .query_opt(
                 r"SELECT c.* FROM ciphers c INNER JOIN user_cipher_auth uca ON uca.cipher_uuid = c.uuid AND uca.user_uuid = $1 WHERE uuid = $2",
                 &[&user_uuid, &uuid],
             )
-            .await?
+            .await
+            .ise()?
             .as_ref()
             .map(Into::<RowSlice<'_>>::into)
             .map(Into::into))
     }
 
-    pub async fn get_for_user_writable(conn: &Conn, user_uuid: Uuid, uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT c.* FROM ciphers c INNER JOIN user_cipher_auth uca ON uca.cipher_uuid = c.uuid AND uca.user_uuid = $1 WHERE uuid = $2 AND NOT uca.read_only", &[&user_uuid, &uuid]).await?.as_ref().map(Into::<RowSlice<'_>>::into).map(Into::into))
+    pub async fn get_for_user_writable(conn: &Conn, user_uuid: Uuid, uuid: Uuid) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT c.* FROM ciphers c INNER JOIN user_cipher_auth uca ON uca.cipher_uuid = c.uuid AND uca.user_uuid = $1 WHERE uuid = $2 AND NOT uca.read_only", &[&user_uuid, &uuid]).await.ise()?.as_ref().map(Into::<RowSlice<'_>>::into).map(Into::into))
     }
 
-    pub async fn delete_owned_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<()> {
-        User::flag_revision_for(conn, user_uuid).await?;
-        conn.execute(r"DELETE FROM ciphers WHERE user_uuid = $1 AND organization_uuid IS NULL", &[&user_uuid]).await?;
+    pub async fn delete_owned_by_user(conn: &Conn, user_uuid: Uuid) -> Result<()> {
+        User::flag_revision_for(conn, user_uuid).await.ise()?;
+        conn.execute(r"DELETE FROM ciphers WHERE user_uuid = $1 AND organization_uuid IS NULL", &[&user_uuid]).await.ise()?;
         Ok(())
     }
 
     //TODO: owned semantics differ from find_owned_by_user in source, changed here
-    pub async fn count_owned_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<i64> {
-        Ok(conn.query_one(r"SELECT count(1) FROM ciphers WHERE user_uuid = $1 AND organization_uuid IS NULL", &[&user_uuid]).await?.get(0))
+    pub async fn count_owned_by_user(conn: &Conn, user_uuid: Uuid) -> Result<i64> {
+        Ok(conn.query_one(r"SELECT count(1) FROM ciphers WHERE user_uuid = $1 AND organization_uuid IS NULL", &[&user_uuid]).await.ise()?.get(0))
     }
 
-    pub async fn count_by_org(conn: &Conn, organization_uuid: Uuid) -> ApiResult<i64> {
-        Ok(conn.query_one(r"SELECT count(1) FROM ciphers WHERE organization_uuid = $1", &[&organization_uuid]).await?.get(0))
+    pub async fn count_by_org(conn: &Conn, organization_uuid: Uuid) -> Result<i64> {
+        Ok(conn.query_one(r"SELECT count(1) FROM ciphers WHERE organization_uuid = $1", &[&organization_uuid]).await.ise()?.get(0))
     }
 
-    pub async fn get_collections(&self, conn: &Conn, user_uuid: Uuid) -> ApiResult<Vec<Uuid>> {
+    pub async fn get_collections(&self, conn: &Conn, user_uuid: Uuid) -> Result<Vec<Uuid>> {
         Ok(conn
             .query(
                 r"
@@ -529,13 +533,14 @@ impl Cipher {
         ",
                 &[&self.uuid, &user_uuid],
             )
-            .await?
+            .await
+            .ise()?
             .into_iter()
             .map(|x| x.get(0))
             .collect())
     }
 
-    pub async fn get_auth_users(&self, conn: &Conn) -> ApiResult<Vec<Uuid>> {
+    pub async fn get_auth_users(&self, conn: &Conn) -> Result<Vec<Uuid>> {
         Ok(conn
             .query(
                 r"
@@ -545,7 +550,8 @@ impl Cipher {
         ",
                 &[&self.uuid],
             )
-            .await?
+            .await
+            .ise()?
             .into_iter()
             .map(|x| x.get(0))
             .collect())

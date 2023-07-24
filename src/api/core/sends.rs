@@ -1,24 +1,16 @@
 use std::io::ErrorKind;
 
-use axum::{
-    body::Full,
-    extract::{multipart::Field, Path, Query},
-    headers::ContentType,
-    response::{IntoResponse, Response},
-    routing, Json, Router,
-};
-use axum_typed_multipart::{FieldData, TryFromField, TryFromMultipart, TypedMultipart, TypedMultipartError};
-use axum_util::errors::ApiError;
+use axol::http::{header::CONTENT_DISPOSITION, typed_headers::ContentType};
+use axol::{prelude::*, Multipart};
 use bytes::Bytes;
 use chrono::{DateTime, Duration, Utc};
-use http::{header::CONTENT_DISPOSITION, HeaderValue, StatusCode};
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use serde_with::serde_as;
 use uuid::Uuid;
 
 use crate::{
-    api::{ws_users, ApiResult, OutHeader, UpdateType},
+    api::{ws_users, Result, UpdateType},
     auth::{ClientIp, Headers},
     db::{Attachment, Conn, OrgPolicyType, OrganizationPolicy, Send, SendType, DB},
     util::{AutoTxn, Upcase},
@@ -32,18 +24,18 @@ const SIZE_525_MB: u64 = 550_502_400;
 
 pub fn route(router: Router) -> Router {
     router
-        .route("/sends", routing::get(get_sends))
-        .route("/sends/:uuid", routing::get(get_send))
-        .route("/sends", routing::post(post_send))
-        .route("/sends/file", routing::post(post_send_file))
-        .route("/sends/file/v2", routing::post(post_send_file_v2))
-        .route("/sends/:uuid/file/:file_id", routing::post(post_send_file_v2_data))
-        .route("/sends/access/:access_id", routing::post(post_access))
-        .route("/sends/:uuid/access/file/:file_id", routing::post(post_access_file))
-        .route("/sends/:uuid/:file_id", routing::get(download_send))
-        .route("/sends/:uuid", routing::put(put_send))
-        .route("/sends/:uuid", routing::delete(delete_send))
-        .route("/sends/:uuid/remove-password", routing::put(put_remove_password))
+        .get("/sends", get_sends)
+        .get("/sends/:uuid", get_send)
+        .post("/sends", post_send)
+        .post("/sends/file", post_send_file)
+        .post("/sends/file/v2", post_send_file_v2)
+        .post("/sends/:uuid/file/:file_id", post_send_file_v2_data)
+        .post("/sends/access/:access_id", post_access)
+        .post("/sends/:uuid/access/file/:file_id", post_access_file)
+        .get("/sends/:uuid/:file_id", download_send)
+        .put("/sends/:uuid", put_send)
+        .delete("/sends/:uuid", delete_send)
+        .put("/sends/:uuid/remove-password", put_remove_password)
 }
 
 #[serde_as]
@@ -79,7 +71,7 @@ struct SendData {
 ///
 /// There is also a Vaultwarden-specific `sends_allowed` config setting that
 /// controls this policy globally.
-async fn enforce_disable_send_policy(headers: &Headers, conn: &Conn) -> ApiResult<()> {
+async fn enforce_disable_send_policy(headers: &Headers, conn: &Conn) -> Result<()> {
     let user_uuid = headers.user.uuid;
     if !CONFIG.settings.sends_allowed || OrganizationPolicy::is_applicable_to_user(conn, user_uuid, OrgPolicyType::DisableSend, None).await? {
         err!("Due to an Enterprise Policy, you are only able to delete an existing Send.")
@@ -93,7 +85,7 @@ async fn enforce_disable_send_policy(headers: &Headers, conn: &Conn) -> ApiResul
 /// but is allowed to remove this option from an existing Send.
 ///
 /// Ref: https://bitwarden.com/help/article/policies/#send-options
-async fn enforce_disable_hide_email_policy(data: &SendData, headers: &Headers, conn: &Conn) -> ApiResult<()> {
+async fn enforce_disable_hide_email_policy(data: &SendData, headers: &Headers, conn: &Conn) -> Result<()> {
     let user_uuid = headers.user.uuid;
     let hide_email = data.hide_email.unwrap_or(false);
     if hide_email && OrganizationPolicy::is_hide_email_disabled(conn, user_uuid).await? {
@@ -105,7 +97,7 @@ async fn enforce_disable_hide_email_policy(data: &SendData, headers: &Headers, c
     Ok(())
 }
 
-fn create_send(data: SendData, user_uuid: Uuid) -> ApiResult<Send> {
+fn create_send(data: SendData, user_uuid: Uuid) -> Result<Send> {
     let data_val = if data.r#type == SendType::Text {
         data.text
     } else if data.r#type == SendType::File {
@@ -116,7 +108,7 @@ fn create_send(data: SendData, user_uuid: Uuid) -> ApiResult<Send> {
 
     let data_str = if let Some(mut d) = data_val {
         d.as_object_mut().and_then(|o| o.remove("Response"));
-        serde_json::to_value(&d)?
+        serde_json::to_value(&d).ise()?
     } else {
         err!("Send data not provided");
     };
@@ -144,8 +136,8 @@ fn create_send(data: SendData, user_uuid: Uuid) -> ApiResult<Send> {
     Ok(send)
 }
 
-async fn get_sends(headers: Headers) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+async fn get_sends(headers: Headers) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
     let sends = Send::find_by_user(&conn, headers.user.uuid).await?;
     let sends_json: Vec<Value> = sends.iter().map(|s| s.to_json()).collect();
 
@@ -156,8 +148,8 @@ async fn get_sends(headers: Headers) -> ApiResult<Json<Value>> {
     })))
 }
 
-async fn get_send(Path(uuid): Path<Uuid>, headers: Headers) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+async fn get_send(Path(uuid): Path<Uuid>, headers: Headers) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
     let send = match Send::get_for_user(&conn, uuid, headers.user.uuid).await? {
         Some(send) => send,
         None => err!("Send not found"),
@@ -166,8 +158,8 @@ async fn get_send(Path(uuid): Path<Uuid>, headers: Headers) -> ApiResult<Json<Va
     Ok(Json(send.to_json()))
 }
 
-async fn post_send(headers: Headers, data: Json<Upcase<SendData>>) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+async fn post_send(headers: Headers, data: Json<Upcase<SendData>>) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
 
     enforce_disable_send_policy(&headers, &conn).await?;
 
@@ -185,39 +177,83 @@ async fn post_send(headers: Headers, data: Json<Upcase<SendData>>) -> ApiResult<
     Ok(Json(send.to_json()))
 }
 
-struct MultipartJson<T: DeserializeOwned>(pub T);
+pub struct UploadData {
+    model: SendData,
+    data: Bytes,
+}
 
-#[async_trait::async_trait]
-impl<T: DeserializeOwned> TryFromField for MultipartJson<T> {
-    async fn try_from_field(field: Field<'_>) -> Result<Self, TypedMultipartError> {
-        Ok(MultipartJson(serde_json::from_str(&field.text().await?).map_err(|e| TypedMultipartError::Other {
-            source: e.into(),
-        })?))
+impl UploadData {
+    pub async fn read(mut multipart: Multipart) -> Result<Self> {
+        let mut model = None::<SendData>;
+        let mut data = None::<Bytes>;
+        while let Some(field) = multipart.next_field().await? {
+            match field.name() {
+                Some("model") => {
+                    if model.is_some() {
+                        return Err(Error::bad_request("duplicated multipart field"));
+                    }
+                    let raw: Upcase<SendData> =
+                        serde_json::from_slice(&field.bytes().await.ise()?[..]).map_err(|e| Error::bad_request(format!("invalid model: {e}")))?;
+                    model = Some(raw.data);
+                }
+                Some("data") => {
+                    if data.is_some() {
+                        return Err(Error::bad_request("duplicated multipart field"));
+                    }
+                    data = Some(field.bytes().await?);
+                }
+                _ => return Err(Error::bad_request("unknown multipart field")),
+            }
+        }
+        if let (Some(model), Some(data)) = (model, data) {
+            Ok(Self {
+                model,
+                data,
+            })
+        } else {
+            Err(Error::bad_request("missing fields"))
+        }
     }
 }
 
-#[derive(TryFromMultipart)]
-pub struct UploadData {
-    model: MultipartJson<Upcase<SendData>>,
-    data: FieldData<Bytes>,
+pub struct UploadDataV2 {
+    data: Bytes,
 }
 
-#[derive(TryFromMultipart)]
-pub struct UploadDataV2 {
-    data: FieldData<Bytes>,
+impl UploadDataV2 {
+    pub async fn read(mut multipart: Multipart) -> Result<Self> {
+        let mut data = None::<Bytes>;
+        while let Some(field) = multipart.next_field().await? {
+            match field.name() {
+                Some("data") => {
+                    if data.is_some() {
+                        return Err(Error::bad_request("duplicated multipart field"));
+                    }
+                    data = Some(field.bytes().await?);
+                }
+                _ => return Err(Error::bad_request("unknown multipart field")),
+            }
+        }
+        if let Some(data) = data {
+            Ok(Self {
+                data,
+            })
+        } else {
+            Err(Error::bad_request("missing fields"))
+        }
+    }
 }
 
 // @deprecated Mar 25 2021: This method has been deprecated in favor of direct uploads (v2).
 // This method still exists to support older clients, probably need to remove it sometime.
 // Upstream: https://github.com/bitwarden/server/blob/d0c793c95181dfb1b447eb450f85ba0bfd7ef643/src/Api/Controllers/SendsController.cs#L164-L167
-async fn post_send_file(conn: AutoTxn, headers: Headers, data: TypedMultipart<UploadData>) -> ApiResult<Json<Value>> {
+async fn post_send_file(conn: AutoTxn, headers: Headers, data: Multipart) -> Result<Json<Value>> {
     enforce_disable_send_policy(&headers, &conn).await?;
 
     let UploadData {
         model,
         data,
-    } = data.0;
-    let model = model.0.data;
+    } = UploadData::read(data).await?;
 
     enforce_disable_hide_email_policy(&model, &headers, &conn).await?;
 
@@ -238,7 +274,7 @@ async fn post_send_file(conn: AutoTxn, headers: Headers, data: TypedMultipart<Up
         err!("Send content is not a file");
     }
 
-    let size = data.contents.len();
+    let size = data.len();
     if size as u64 > size_limit {
         err!("Attachment storage limit exceeded with this file");
     }
@@ -248,7 +284,7 @@ async fn post_send_file(conn: AutoTxn, headers: Headers, data: TypedMultipart<Up
     let file_path = folder_path.join(file_id.to_string());
     tokio::fs::create_dir_all(&folder_path).await?;
 
-    tokio::fs::write(file_path, &data.contents).await?;
+    tokio::fs::write(file_path, &data).await?;
 
     if let Some(o) = send.data.as_object_mut() {
         o.insert(String::from("Id"), Value::String(file_id.to_string()));
@@ -264,8 +300,8 @@ async fn post_send_file(conn: AutoTxn, headers: Headers, data: TypedMultipart<Up
 }
 
 // Upstream: https://github.com/bitwarden/server/blob/d0c793c95181dfb1b447eb450f85ba0bfd7ef643/src/Api/Controllers/SendsController.cs#L190
-async fn post_send_file_v2(headers: Headers, data: Json<Upcase<SendData>>) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+async fn post_send_file_v2(headers: Headers, data: Json<Upcase<SendData>>) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
     enforce_disable_send_policy(&headers, &conn).await?;
 
     let data = data.0.data;
@@ -323,13 +359,10 @@ struct SendFilePath {
 }
 
 // https://github.com/bitwarden/server/blob/d0c793c95181dfb1b447eb450f85ba0bfd7ef643/src/Api/Controllers/SendsController.cs#L243
-async fn post_send_file_v2_data(
-    conn: AutoTxn,
-    Path(path): Path<SendFilePath>,
-    headers: Headers,
-    TypedMultipart(data): TypedMultipart<UploadDataV2>,
-) -> ApiResult<()> {
+async fn post_send_file_v2_data(conn: AutoTxn, Path(path): Path<SendFilePath>, headers: Headers, data: Multipart) -> Result<()> {
     enforce_disable_send_policy(&headers, &conn).await?;
+
+    let data = UploadDataV2::read(data).await?;
 
     //TODO: disable overwriting of already existing file? atomic file replacement?
 
@@ -341,7 +374,7 @@ async fn post_send_file_v2_data(
     let file_path = folder_path.join(path.file_id.to_string());
     tokio::fs::create_dir_all(&folder_path).await?;
 
-    tokio::fs::write(&file_path, &data.data.contents).await?;
+    tokio::fs::write(&file_path, &data.data).await?;
 
     send.save(&conn).await?;
 
@@ -357,41 +390,41 @@ pub struct SendAccessData {
     pub password: Option<String>,
 }
 
-async fn post_access(Path(access_id): Path<String>, ip: ClientIp, data: Json<Upcase<SendAccessData>>) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+async fn post_access(Path(access_id): Path<String>, ip: ClientIp, data: Json<Upcase<SendAccessData>>) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
 
     let uuid = Send::decode_access_id(&access_id)?;
 
     let mut send = match Send::get(&conn, uuid).await? {
         Some(s) => s,
-        None => err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NOT_FOUND),
+        None => err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NotFound),
     };
 
     if let Some(max_access_count) = send.max_access_count {
         if send.access_count >= max_access_count {
-            err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NOT_FOUND);
+            err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NotFound);
         }
     }
 
     if let Some(expiration) = send.expiration_date {
         if Utc::now() >= expiration {
-            err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NOT_FOUND)
+            err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NotFound)
         }
     }
 
     if Utc::now() >= send.deletion_date {
-        err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NOT_FOUND)
+        err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NotFound)
     }
 
     if send.disabled {
-        err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NOT_FOUND)
+        err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NotFound)
     }
 
     if send.password_hash.is_some() {
         match data.0.data.password {
             Some(ref p) if send.check_password(p) => { /* Nothing to do here */ }
             Some(_) => err!("Invalid password", format!("IP: {}.", ip.ip)),
-            None => err_code!("Password not provided", format!("IP: {}.", ip.ip), StatusCode::UNAUTHORIZED),
+            None => err_code!("Password not provided", format!("IP: {}.", ip.ip), StatusCode::Unauthorized),
         }
     }
 
@@ -407,39 +440,39 @@ async fn post_access(Path(access_id): Path<String>, ip: ClientIp, data: Json<Upc
     Ok(Json(send.to_json_access(&conn).await?))
 }
 
-async fn post_access_file(Path(path): Path<SendFilePath>, data: Json<Upcase<SendAccessData>>) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+async fn post_access_file(Path(path): Path<SendFilePath>, data: Json<Upcase<SendAccessData>>) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
 
     let mut send = match Send::get(&conn, path.uuid).await? {
         Some(s) => s,
-        None => err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NOT_FOUND),
+        None => err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NotFound),
     };
 
     if let Some(max_access_count) = send.max_access_count {
         if send.access_count >= max_access_count {
-            err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NOT_FOUND)
+            err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NotFound)
         }
     }
 
     if let Some(expiration) = send.expiration_date {
         if Utc::now() >= expiration {
-            err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NOT_FOUND)
+            err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NotFound)
         }
     }
 
     if Utc::now() >= send.deletion_date {
-        err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NOT_FOUND)
+        err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NotFound)
     }
 
     if send.disabled {
-        err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NOT_FOUND)
+        err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NotFound)
     }
 
     if send.password_hash.is_some() {
         match data.0.data.password {
             Some(ref p) if send.check_password(p) => { /* Nothing to do here */ }
             Some(_) => err!("Invalid password."),
-            None => err_code!("Password not provided", StatusCode::UNAUTHORIZED),
+            None => err_code!("Password not provided", StatusCode::Unauthorized),
         }
     }
 
@@ -469,34 +502,29 @@ struct DownloadSendQuery {
     t: String,
 }
 
-async fn download_send(Path(path): Path<SendFilePath>, Query(t): Query<DownloadSendQuery>) -> ApiResult<Response> {
+async fn download_send(Path(path): Path<SendFilePath>, Query(t): Query<DownloadSendQuery>) -> Result<Response> {
     let Ok(claims) = crate::auth::decode_send(&t.t) else {
-        return Err(ApiError::NotFound);
+        return Err(Error::NotFound);
     };
 
     if claims.sub != format!("{}/{}", path.uuid, path.file_id) {
-        return Err(ApiError::NotFound);
+        return Err(Error::NotFound);
     }
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
     let Some(_) = Send::get(&conn, path.uuid).await? else {
-        return Err(ApiError::NotFound);
+        return Err(Error::NotFound);
     };
 
     let path = CONFIG.folders.sends().join(path.uuid.to_string()).join(path.file_id.to_string());
     match tokio::fs::read(&path).await {
-        Ok(raw) => Ok((
-            [(CONTENT_DISPOSITION, "attachment".parse::<HeaderValue>().unwrap())],
-            OutHeader(ContentType::from(mime::APPLICATION_OCTET_STREAM)),
-            Full::from(raw),
-        )
-            .into_response()),
-        Err(e) if e.kind() == ErrorKind::NotFound => Err(ApiError::NotFound),
-        Err(e) => Err(ApiError::from(e)),
+        Ok(raw) => ([(CONTENT_DISPOSITION, "attachment")], Typed(ContentType::from(mime::APPLICATION_OCTET_STREAM)), raw).into_response(),
+        Err(e) if e.kind() == ErrorKind::NotFound => Err(Error::NotFound),
+        Err(e) => Err(Error::from(e)),
     }
 }
 
-async fn put_send(Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<SendData>>) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+async fn put_send(Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<SendData>>) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
     enforce_disable_send_policy(&headers, &conn).await?;
 
     let data: SendData = data.0.data;
@@ -551,8 +579,8 @@ async fn put_send(Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<Se
     Ok(Json(send.to_json()))
 }
 
-async fn delete_send(Path(uuid): Path<Uuid>, headers: Headers) -> ApiResult<()> {
-    let mut conn = DB.get().await?;
+async fn delete_send(Path(uuid): Path<Uuid>, headers: Headers) -> Result<()> {
+    let mut conn = DB.get().await.ise()?;
 
     let send = match Send::get_for_user(&conn, uuid, headers.user.uuid).await? {
         Some(s) => s,
@@ -565,8 +593,8 @@ async fn delete_send(Path(uuid): Path<Uuid>, headers: Headers) -> ApiResult<()> 
     Ok(())
 }
 
-async fn put_remove_password(Path(uuid): Path<Uuid>, headers: Headers) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+async fn put_remove_password(Path(uuid): Path<Uuid>, headers: Headers) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
 
     enforce_disable_send_policy(&headers, &conn).await?;
 

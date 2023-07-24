@@ -2,7 +2,7 @@ mod emergency;
 
 use std::thread;
 
-use axum_util::errors::{ApiError, ApiResult};
+use axol::{Error, Result};
 use chrono::{Duration, Utc};
 use log::{debug, error, info};
 
@@ -132,7 +132,7 @@ async fn purge_trashed_ciphers() {
     }
 }
 
-async fn send_incomplete_2fa_notifications() -> ApiResult<()> {
+async fn send_incomplete_2fa_notifications() -> Result<()> {
     debug!("Sending notifications for incomplete 2FA logins");
 
     if CONFIG.settings.incomplete_2fa_time_limit <= 0 || !CONFIG.mail_enabled() {
@@ -149,7 +149,7 @@ async fn send_incomplete_2fa_notifications() -> ApiResult<()> {
     let time_before = now - time_limit;
     let incomplete_logins = TwoFactorIncomplete::find_logins_before(&conn, time_before).await?;
     for login in incomplete_logins {
-        let user = User::get(&conn, login.user_uuid).await?.ok_or(ApiError::NotFound)?;
+        let user = User::get(&conn, login.user_uuid).await?.ok_or(Error::NotFound)?;
         info!("User {} did not complete a 2FA login within the configured time limit. IP: {}", user.email, login.ip_address);
         crate::mail::send_incomplete_2fa_login(&user.email, login.ip_address, login.login_time, &login.device_name).await?;
         login.delete(&conn).await?;

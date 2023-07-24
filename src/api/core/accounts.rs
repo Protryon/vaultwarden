@@ -1,13 +1,7 @@
 use std::str::FromStr;
 
-use axum::{
-    extract::{FromRequestParts, Path},
-    response::{IntoResponse, Response},
-    routing, Json, Router,
-};
-use axum_util::errors::{ApiError, ApiResult};
+use axol::prelude::*;
 use chrono::Utc;
-use http::{request::Parts, StatusCode};
 use log::error;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -27,31 +21,31 @@ use crate::{
 
 pub fn route(router: Router) -> Router {
     router
-        .route("/accounts/register", routing::post(register))
-        .route("/accounts/set-password", routing::post(post_set_password))
-        .route("/accounts/profile", routing::get(profile))
-        .route("/accounts/profile", routing::put(post_profile))
-        .route("/accounts/profile", routing::post(post_profile))
-        .route("/accounts/avatar", routing::put(put_avatar))
-        .route("/users/:uuid/public-key", routing::get(get_public_keys))
-        .route("/accounts/keys", routing::post(post_keys))
-        .route("/accounts/password", routing::post(post_password))
-        .route("/accounts/kdf", routing::post(post_kdf))
-        .route("/accounts/key", routing::post(post_rotatekey))
-        .route("/accounts/security-stamp", routing::post(post_sstamp))
-        .route("/accounts/email-token", routing::post(post_email_token))
-        .route("/accounts/email", routing::post(post_email))
-        .route("/accounts/verify-email", routing::post(post_verify_email))
-        .route("/accounts/verify-email-token", routing::post(post_verify_email_token))
-        .route("/accounts/delete-recover", routing::post(post_delete_recover))
-        .route("/accounts/delete-recover-token", routing::post(post_delete_recover_token))
-        .route("/accounts/delete", routing::post(delete_account))
-        .route("/accounts", routing::delete(delete_account))
-        .route("/accounts/revision-date", routing::get(revision_date))
-        .route("/accounts/password-hint", routing::post(password_hint))
-        .route("/accounts/prelogin", routing::post(prelogin))
-        .route("/accounts/api-key", routing::post(api_key))
-        .route("/accounts/rotate-api-key", routing::post(rotate_api_key))
+        .post("/accounts/register", register)
+        .post("/accounts/set-password", post_set_password)
+        .get("/accounts/profile", profile)
+        .put("/accounts/profile", post_profile)
+        .post("/accounts/profile", post_profile)
+        .put("/accounts/avatar", put_avatar)
+        .get("/users/:uuid/public-key", get_public_keys)
+        .post("/accounts/keys", post_keys)
+        .post("/accounts/password", post_password)
+        .post("/accounts/kdf", post_kdf)
+        .post("/accounts/key", post_rotatekey)
+        .post("/accounts/security-stamp", post_sstamp)
+        .post("/accounts/email-token", post_email_token)
+        .post("/accounts/email", post_email)
+        .post("/accounts/verify-email", post_verify_email)
+        .post("/accounts/verify-email-token", post_verify_email_token)
+        .post("/accounts/delete-recover", post_delete_recover)
+        .post("/accounts/delete-recover-token", post_delete_recover_token)
+        .post("/accounts/delete", delete_account)
+        .delete("/accounts", delete_account)
+        .get("/accounts/revision-date", revision_date)
+        .post("/accounts/password-hint", password_hint)
+        .post("/accounts/prelogin", prelogin)
+        .post("/accounts/api-key", api_key)
+        .post("/accounts/rotate-api-key", rotate_api_key)
 }
 
 #[derive(Deserialize, Debug)]
@@ -113,14 +107,14 @@ fn clean_password_hint(password_hint: &Option<String>) -> Option<String> {
     }
 }
 
-fn enforce_password_hint_setting(password_hint: &Option<String>) -> ApiResult<()> {
+fn enforce_password_hint_setting(password_hint: &Option<String>) -> Result<()> {
     if password_hint.is_some() && !CONFIG.settings.password_hints_allowed {
         err!("Password hints have been disabled by the administrator. Remove the hint and try again.");
     }
     Ok(())
 }
 
-pub async fn register(conn: AutoTxn, data: Json<Upcase<RegisterData>>) -> ApiResult<Json<Value>> {
+pub async fn register(conn: AutoTxn, data: Json<Upcase<RegisterData>>) -> Result<Json<Value>> {
     let data: RegisterData = data.0.data;
     let email = data.email.to_lowercase();
 
@@ -226,10 +220,10 @@ pub async fn register(conn: AutoTxn, data: Json<Upcase<RegisterData>>) -> ApiRes
     })))
 }
 
-pub async fn post_set_password(headers: Headers, data: Json<Upcase<SetPasswordData>>) -> ApiResult<Json<Value>> {
+pub async fn post_set_password(headers: Headers, data: Json<Upcase<SetPasswordData>>) -> Result<Json<Value>> {
     let data: SetPasswordData = data.0.data;
     let mut user = headers.user;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     // Check against the password hint setting here so if it fails, the user
     // can retry without losing their invitation below.
@@ -270,8 +264,8 @@ pub async fn post_set_password(headers: Headers, data: Json<Upcase<SetPasswordDa
     })))
 }
 
-pub async fn profile(headers: Headers) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+pub async fn profile(headers: Headers) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
     Ok(Json(headers.user.to_json(&conn).await?))
 }
 
@@ -283,9 +277,9 @@ pub struct ProfileData {
     name: String,
 }
 
-pub async fn post_profile(headers: Headers, data: Json<Upcase<ProfileData>>) -> ApiResult<Json<Value>> {
+pub async fn post_profile(headers: Headers, data: Json<Upcase<ProfileData>>) -> Result<Json<Value>> {
     let data: ProfileData = data.0.data;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     // Check if the length of the username exceeds 50 characters (Same is Upstream Bitwarden)
     // This also prevents issues with very long usernames causing to large JWT's. See #2419
@@ -306,7 +300,7 @@ pub struct AvatarData {
     avatar_color: Option<String>,
 }
 
-pub async fn put_avatar(headers: Headers, data: Json<Upcase<AvatarData>>) -> ApiResult<Json<Value>> {
+pub async fn put_avatar(headers: Headers, data: Json<Upcase<AvatarData>>) -> Result<Json<Value>> {
     let data: AvatarData = data.0.data;
 
     // It looks like it only supports the 6 hex color format.
@@ -317,7 +311,7 @@ pub async fn put_avatar(headers: Headers, data: Json<Upcase<AvatarData>>) -> Api
             err!("The field AvatarColor must be a HTML/Hex color code with a length of 7 characters")
         }
     }
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let mut user = headers.user;
     user.avatar_color = data.avatar_color;
@@ -326,8 +320,8 @@ pub async fn put_avatar(headers: Headers, data: Json<Upcase<AvatarData>>) -> Api
     Ok(Json(user.to_json(&conn).await?))
 }
 
-pub async fn get_public_keys(Path(uuid): Path<Uuid>, _headers: Headers) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+pub async fn get_public_keys(Path(uuid): Path<Uuid>, _headers: Headers) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
     //TODO: does this need authorization
     let user = match User::get(&conn, uuid).await? {
         Some(user) => user,
@@ -341,14 +335,14 @@ pub async fn get_public_keys(Path(uuid): Path<Uuid>, _headers: Headers) -> ApiRe
     })))
 }
 
-pub async fn post_keys(headers: Headers, data: Json<Upcase<KeysData>>) -> ApiResult<Json<Value>> {
+pub async fn post_keys(headers: Headers, data: Json<Upcase<KeysData>>) -> Result<Json<Value>> {
     let data: KeysData = data.0.data;
 
     let mut user = headers.user;
 
     user.private_key = Some(data.encrypted_private_key);
     user.public_key = Some(data.public_key);
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     user.save(&conn).await?;
 
@@ -368,7 +362,7 @@ pub struct ChangePassData {
     key: String,
 }
 
-pub async fn post_password(headers: Headers, data: Json<Upcase<ChangePassData>>) -> ApiResult<()> {
+pub async fn post_password(headers: Headers, data: Json<Upcase<ChangePassData>>) -> Result<()> {
     let data: ChangePassData = data.0.data;
     let mut user = headers.user;
 
@@ -378,7 +372,7 @@ pub async fn post_password(headers: Headers, data: Json<Upcase<ChangePassData>>)
 
     user.password_hint = clean_password_hint(&data.master_password_hint);
     enforce_password_hint_setting(&user.password_hint)?;
-    let mut conn = DB.get().await?;
+    let mut conn = DB.get().await.ise()?;
 
     log_user_event(EventType::UserChangedPassword, user.uuid, headers.device.atype, Utc::now(), headers.ip, &mut conn).await?;
 
@@ -412,7 +406,7 @@ pub struct ChangeKdfData {
     key: String,
 }
 
-pub async fn post_kdf(headers: Headers, data: Json<Upcase<ChangeKdfData>>) -> ApiResult<()> {
+pub async fn post_kdf(headers: Headers, data: Json<Upcase<ChangeKdfData>>) -> Result<()> {
     let data: ChangeKdfData = data.0.data;
     let mut user = headers.user;
 
@@ -451,7 +445,7 @@ pub async fn post_kdf(headers: Headers, data: Json<Upcase<ChangeKdfData>>) -> Ap
     user.client_kdf_iter = data.kdf_iterations;
     user.client_kdf_type = data.kdf;
     user.set_password(&data.new_master_password_hash, Some(data.key), true, None);
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     user.save(&conn).await?;
 
@@ -479,7 +473,7 @@ pub struct KeyData {
     master_password_hash: String,
 }
 
-pub async fn post_rotatekey(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<KeyData>>) -> ApiResult<()> {
+pub async fn post_rotatekey(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<KeyData>>) -> Result<()> {
     let data: KeyData = data.0.data;
 
     if !headers.user.check_valid_password(&data.master_password_hash) {
@@ -509,7 +503,7 @@ pub async fn post_rotatekey(mut conn: AutoTxn, headers: Headers, data: Json<Upca
     use super::ciphers::update_cipher_from_data;
 
     for cipher_data in data.ciphers {
-        let mut saved_cipher = match Cipher::get_for_user_writable(&conn, user_uuid, cipher_data.id.ok_or(ApiError::NotFound)?).await? {
+        let mut saved_cipher = match Cipher::get_for_user_writable(&conn, user_uuid, cipher_data.id.ok_or(Error::NotFound)?).await? {
             Some(cipher) => cipher,
             None => err!("Cipher doesn't exist"),
         };
@@ -538,7 +532,7 @@ pub async fn post_rotatekey(mut conn: AutoTxn, headers: Headers, data: Json<Upca
     Ok(())
 }
 
-pub async fn post_sstamp(headers: Headers, conn: AutoTxn, data: Json<Upcase<PasswordData>>) -> ApiResult<()> {
+pub async fn post_sstamp(headers: Headers, conn: AutoTxn, data: Json<Upcase<PasswordData>>) -> Result<()> {
     let data: PasswordData = data.0.data;
     let mut user = headers.user;
 
@@ -564,14 +558,14 @@ pub struct EmailTokenData {
     new_email: String,
 }
 
-pub async fn post_email_token(headers: Headers, data: Json<Upcase<EmailTokenData>>) -> ApiResult<()> {
+pub async fn post_email_token(headers: Headers, data: Json<Upcase<EmailTokenData>>) -> Result<()> {
     let data: EmailTokenData = data.0.data;
     let mut user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
         err!("Invalid password")
     }
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     if User::find_by_email(&conn, &data.new_email).await?.is_some() {
         err!("Email already in use");
@@ -605,14 +599,14 @@ pub struct ChangeEmailData {
     token: String,
 }
 
-pub async fn post_email(headers: Headers, data: Json<Upcase<ChangeEmailData>>) -> ApiResult<()> {
+pub async fn post_email(headers: Headers, data: Json<Upcase<ChangeEmailData>>) -> Result<()> {
     let data: ChangeEmailData = data.0.data;
     let mut user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
         err!("Invalid password")
     }
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     if User::find_by_email(&conn, &data.new_email).await?.is_some() {
         err!("Email already in use");
@@ -655,7 +649,7 @@ pub async fn post_email(headers: Headers, data: Json<Upcase<ChangeEmailData>>) -
     Ok(())
 }
 
-pub async fn post_verify_email(headers: Headers) -> ApiResult<()> {
+pub async fn post_verify_email(headers: Headers) -> Result<()> {
     let user = headers.user;
 
     if !CONFIG.mail_enabled() {
@@ -676,9 +670,9 @@ pub struct VerifyEmailTokenData {
     token: String,
 }
 
-pub async fn post_verify_email_token(data: Json<Upcase<VerifyEmailTokenData>>) -> ApiResult<()> {
+pub async fn post_verify_email_token(data: Json<Upcase<VerifyEmailTokenData>>) -> Result<()> {
     let data: VerifyEmailTokenData = data.0.data;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let mut user = match User::get(&conn, data.user_id).await? {
         Some(user) => user,
@@ -707,11 +701,11 @@ pub struct DeleteRecoverData {
     email: String,
 }
 
-pub async fn post_delete_recover(data: Json<Upcase<DeleteRecoverData>>) -> ApiResult<()> {
+pub async fn post_delete_recover(data: Json<Upcase<DeleteRecoverData>>) -> Result<()> {
     let data: DeleteRecoverData = data.0.data;
 
     if CONFIG.mail_enabled() {
-        let conn = DB.get().await?;
+        let conn = DB.get().await.ise()?;
 
         if let Some(user) = User::find_by_email(&conn, &data.email).await? {
             if let Err(e) = mail::send_delete_account(&user.email, user.uuid).await {
@@ -735,9 +729,9 @@ pub struct DeleteRecoverTokenData {
     token: String,
 }
 
-pub async fn post_delete_recover_token(data: Json<Upcase<DeleteRecoverTokenData>>) -> ApiResult<()> {
+pub async fn post_delete_recover_token(data: Json<Upcase<DeleteRecoverTokenData>>) -> Result<()> {
     let data: DeleteRecoverTokenData = data.0.data;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let user = match User::get(&conn, data.user_id).await? {
         Some(user) => user,
@@ -755,21 +749,21 @@ pub async fn post_delete_recover_token(data: Json<Upcase<DeleteRecoverTokenData>
     Ok(())
 }
 
-pub async fn delete_account(headers: Headers, data: Json<Upcase<PasswordData>>) -> ApiResult<()> {
+pub async fn delete_account(headers: Headers, data: Json<Upcase<PasswordData>>) -> Result<()> {
     let data: PasswordData = data.0.data;
     let user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
         err!("Invalid password")
     }
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     user.delete(&conn).await?;
     Ok(())
 }
 
-pub async fn revision_date(headers: Headers) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+pub async fn revision_date(headers: Headers) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
     let revision_date = headers.user.last_revision(&conn).await?.timestamp_millis();
     Ok(Json(json!(revision_date)))
 }
@@ -780,7 +774,7 @@ pub struct PasswordHintData {
     email: String,
 }
 
-pub async fn password_hint(data: Json<Upcase<PasswordHintData>>) -> ApiResult<()> {
+pub async fn password_hint(data: Json<Upcase<PasswordHintData>>) -> Result<()> {
     if !CONFIG.mail_enabled() && !CONFIG.settings.show_password_hint {
         err!("This server is not configured to provide password hints.");
     }
@@ -789,7 +783,7 @@ pub async fn password_hint(data: Json<Upcase<PasswordHintData>>) -> ApiResult<()
 
     let data: PasswordHintData = data.0.data;
     let email = &data.email;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     match User::find_by_email(&conn, email).await? {
         None => {
@@ -828,9 +822,9 @@ pub struct PreloginData {
     email: String,
 }
 
-pub async fn prelogin(data: Json<Upcase<PreloginData>>) -> ApiResult<Json<Value>> {
+pub async fn prelogin(data: Json<Upcase<PreloginData>>) -> Result<Json<Value>> {
     let data: PreloginData = data.0.data;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let (kdf_type, kdf_iter, kdf_mem, kdf_para) = match User::find_by_email(&conn, &data.email).await? {
         Some(user) => (user.client_kdf_type, user.client_kdf_iter, user.client_kdf_memory, user.client_kdf_parallelism),
@@ -854,7 +848,7 @@ pub struct SecretVerificationRequest {
     master_password_hash: String,
 }
 
-pub async fn _api_key(data: Json<Upcase<SecretVerificationRequest>>, rotate: bool, headers: Headers) -> ApiResult<Json<Value>> {
+pub async fn _api_key(data: Json<Upcase<SecretVerificationRequest>>, rotate: bool, headers: Headers) -> Result<Json<Value>> {
     use crate::util::format_date;
 
     let data: SecretVerificationRequest = data.0.data;
@@ -864,7 +858,7 @@ pub async fn _api_key(data: Json<Upcase<SecretVerificationRequest>>, rotate: boo
         err!("Invalid password")
     }
 
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
     if rotate || user.api_key.is_none() {
         user.api_key = Some(crypto::generate_api_key());
 
@@ -879,11 +873,11 @@ pub async fn _api_key(data: Json<Upcase<SecretVerificationRequest>>, rotate: boo
     })))
 }
 
-pub async fn api_key(headers: Headers, data: Json<Upcase<SecretVerificationRequest>>) -> ApiResult<Json<Value>> {
+pub async fn api_key(headers: Headers, data: Json<Upcase<SecretVerificationRequest>>) -> Result<Json<Value>> {
     _api_key(data, false, headers).await
 }
 
-pub async fn rotate_api_key(headers: Headers, data: Json<Upcase<SecretVerificationRequest>>) -> ApiResult<Json<Value>> {
+pub async fn rotate_api_key(headers: Headers, data: Json<Upcase<SecretVerificationRequest>>) -> Result<Json<Value>> {
     _api_key(data, true, headers).await
 }
 
@@ -894,17 +888,17 @@ pub struct KnownDevicePath {
 }
 
 // This variant is deprecated: https://github.com/bitwarden/server/pull/2682
-pub async fn get_known_device_from_path(Path(path): Path<KnownDevicePath>) -> ApiResult<Json<Value>> {
+pub async fn get_known_device_from_path(Path(path): Path<KnownDevicePath>) -> Result<Json<Value>> {
     // This endpoint doesn't have auth header
     let mut result = false;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
     if let Some(user) = User::find_by_email(&conn, &path.email).await? {
         result = Device::find_by_uuid_and_user(&conn, path.uuid, user.uuid).await?.is_some();
     }
     Ok(Json(json!(result)))
 }
 
-pub async fn get_known_device(device: KnownDevice) -> ApiResult<Json<Value>> {
+pub async fn get_known_device(device: KnownDevice) -> Result<Json<Value>> {
     get_known_device_from_path(Path(KnownDevicePath {
         email: device.email,
         uuid: device.uuid,
@@ -918,31 +912,29 @@ pub struct KnownDevice {
 }
 
 #[async_trait::async_trait]
-impl<S> FromRequestParts<S> for KnownDevice {
-    type Rejection = Response;
-
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let email = if let Some(email_b64) = parts.headers.get("X-Request-Email").and_then(|x| x.to_str().ok()) {
+impl<'a> FromRequestParts<'a> for KnownDevice {
+    async fn from_request_parts(req: RequestPartsRef<'a>) -> Result<Self> {
+        let email = if let Some(email_b64) = req.headers.get("x-request-email") {
             let email_bytes = match data_encoding::BASE64URL_NOPAD.decode(email_b64.as_bytes()) {
                 Ok(bytes) => bytes,
                 Err(_) => {
-                    return Err((StatusCode::BAD_REQUEST, "X-Request-Email value failed to decode as base64url").into_response());
+                    return Err(Error::bad_request("X-Request-Email value failed to decode as base64url"));
                 }
             };
             match String::from_utf8(email_bytes) {
                 Ok(email) => email,
                 Err(_) => {
-                    return Err((StatusCode::BAD_REQUEST, "X-Request-Email value failed to decode as UTF-8").into_response());
+                    return Err(Error::bad_request("X-Request-Email value failed to decode as UTF-8"));
                 }
             }
         } else {
-            return Err((StatusCode::BAD_REQUEST, "X-Request-Email value is required").into_response());
+            return Err(Error::bad_request("X-Request-Email value is required"));
         };
 
-        let uuid = if let Some(uuid) = parts.headers.get("X-Device-Identifier").and_then(|x| x.to_str().ok()).and_then(|x| Uuid::from_str(x).ok()) {
+        let uuid = if let Some(uuid) = req.headers.get("x-device-identifier").and_then(|x| Uuid::from_str(x).ok()) {
             uuid
         } else {
-            return Err((StatusCode::BAD_REQUEST, "X-Device-Identifier value is required").into_response());
+            return Err(Error::bad_request("X-Device-Identifier value is required"));
         };
 
         Ok(KnownDevice {
@@ -958,11 +950,11 @@ pub struct PushToken {
     push_token: String,
 }
 
-pub async fn put_device_token(Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<PushToken>>) -> ApiResult<()> {
+pub async fn put_device_token(Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<PushToken>>) -> Result<()> {
     if CONFIG.push.is_none() {
         return Ok(());
     }
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let data = data.0.data;
     let token = data.push_token;
@@ -980,7 +972,7 @@ pub async fn put_device_token(Path(uuid): Path<Uuid>, headers: Headers, data: Js
     Ok(())
 }
 
-pub async fn put_clear_device_token(Path(uuid): Path<Uuid>) -> ApiResult<()> {
+pub async fn put_clear_device_token(Path(uuid): Path<Uuid>) -> Result<()> {
     // This only clears push token
     // https://github.com/bitwarden/core/blob/master/src/Api/Controllers/DevicesController.cs#L109
     // https://github.com/bitwarden/core/blob/master/src/Core/Services/Implementations/DeviceService.cs#L37
@@ -988,7 +980,7 @@ pub async fn put_clear_device_token(Path(uuid): Path<Uuid>) -> ApiResult<()> {
     if CONFIG.push.is_none() {
         return Ok(());
     }
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     if let Some(device) = Device::get(&conn, uuid).await? {
         Device::clear_push_token_by_uuid(&conn, uuid).await?;

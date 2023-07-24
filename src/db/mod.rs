@@ -8,8 +8,6 @@ use bb8_postgres::PostgresConnectionManager;
 use log::info;
 use tokio_postgres::{config::SslMode, Client, Config, NoTls};
 
-use anyhow::Result;
-
 use crate::config::CONFIG;
 
 mod embedded {
@@ -25,7 +23,7 @@ pub type ConnOwned = PooledConnection<'static, PostgresConnectionManager<NoTls>>
 
 pub static DB: AlwaysCell<Pool<PostgresConnectionManager<NoTls>>> = AlwaysCell::new();
 
-pub(super) async fn init() -> Result<()> {
+pub(super) async fn init() -> anyhow::Result<()> {
     let mut config = Config::new();
     config
         .host(&CONFIG.db.host)

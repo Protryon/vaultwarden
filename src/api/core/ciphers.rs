@@ -1,11 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
-use axum::{
-    extract::{Path, Query},
-    routing, Json, Router,
-};
-use axum_typed_multipart::{FieldData, TryFromMultipart, TypedMultipart};
-use axum_util::errors::ApiResult;
+use axol::prelude::*;
+use axol::Multipart;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use log::warn;
@@ -29,56 +25,56 @@ use super::{folders::FolderData, GlobalDomainQuery};
 
 pub fn route(router: Router) -> Router {
     router
-        .route("/sync", routing::get(sync))
-        .route("/ciphers", routing::get(get_ciphers))
-        .route("/ciphers/:uuid", routing::get(get_cipher))
-        .route("/ciphers/:uuid/admin", routing::get(get_cipher))
-        .route("/ciphers/:uuid/details", routing::get(get_cipher))
-        .route("/ciphers/admin", routing::post(post_ciphers_create))
-        .route("/ciphers/create", routing::post(post_ciphers_create))
-        .route("/ciphers", routing::post(post_ciphers))
-        .route("/ciphers/import", routing::post(post_ciphers_import))
-        .route("/ciphers/:uuid/admin", routing::put(put_cipher))
-        .route("/ciphers/:uuid/admin", routing::post(put_cipher))
-        .route("/ciphers/:uuid", routing::put(put_cipher))
-        .route("/ciphers/:uuid", routing::post(put_cipher))
-        .route("/ciphers/:uuid/partial", routing::put(put_cipher_partial))
-        .route("/ciphers/:uuid/partial", routing::post(put_cipher_partial))
-        .route("/ciphers/:uuid/collections", routing::put(post_collections))
-        .route("/ciphers/:uuid/collections", routing::post(post_collections))
-        .route("/ciphers/:uuid/collections-admin", routing::put(post_collections))
-        .route("/ciphers/:uuid/collections-admin", routing::post(post_collections))
-        .route("/ciphers/:uuid/share", routing::put(put_cipher_share))
-        .route("/ciphers/:uuid/share", routing::post(put_cipher_share))
-        .route("/ciphers/share", routing::put(put_cipher_share_selected))
-        .route("/ciphers/:uuid/attachment/:attachment_id", routing::get(get_attachment))
-        .route("/ciphers/:uuid/attachment/v2", routing::post(post_attachment_v2))
-        .route("/ciphers/:uuid/attachment/:attachment_id", routing::post(post_attachment_v2_data))
-        .route("/ciphers/:uuid/attachment", routing::post(post_attachment))
-        .route("/ciphers/:uuid/attachment-admin", routing::post(post_attachment))
-        .route("/ciphers/:uuid/attachment/:attachment_id/share", routing::post(post_attachment_share))
-        .route("/ciphers/:uuid/attachment/:attachment_id/delete-admin", routing::post(delete_attachment))
-        .route("/ciphers/:uuid/attachment/:attachment_id/delete", routing::post(delete_attachment))
-        .route("/ciphers/:uuid/attachment/:attachment_id", routing::delete(delete_attachment))
-        .route("/ciphers/:uuid/attachment/:attachment_id/admin", routing::delete(delete_attachment))
-        .route("/ciphers/:uuid/delete", routing::post(delete_cipher_hard))
-        .route("/ciphers/:uuid/delete-admin", routing::post(delete_cipher_hard))
-        .route("/ciphers/:uuid/delete", routing::put(delete_cipher_soft))
-        .route("/ciphers/:uuid/delete-admin", routing::put(delete_cipher_soft))
-        .route("/ciphers/:uuid", routing::delete(delete_cipher_hard))
-        .route("/ciphers/:uuid/admin", routing::delete(delete_cipher_hard))
-        .route("/ciphers", routing::delete(delete_cipher_selected_hard))
-        .route("/ciphers/delete", routing::post(delete_cipher_selected_hard))
-        .route("/ciphers/delete", routing::put(delete_cipher_selected_soft))
-        .route("/ciphers/admin", routing::delete(delete_cipher_selected_hard))
-        .route("/ciphers/delete-admin", routing::post(delete_cipher_selected_hard))
-        .route("/ciphers/delete-admin", routing::put(delete_cipher_selected_soft))
-        .route("/ciphers/:uuid/restore", routing::put(restore_cipher_put))
-        .route("/ciphers/:uuid/restore-admin", routing::put(restore_cipher_put))
-        .route("/ciphers/restore", routing::put(restore_cipher_selected))
-        .route("/ciphers/move", routing::post(move_cipher_selected))
-        .route("/ciphers/move", routing::put(move_cipher_selected))
-        .route("/ciphers/purge", routing::post(delete_all))
+        .get("/sync", sync)
+        .get("/ciphers", get_ciphers)
+        .get("/ciphers/:uuid", get_cipher)
+        .get("/ciphers/:uuid/admin", get_cipher)
+        .get("/ciphers/:uuid/details", get_cipher)
+        .post("/ciphers/admin", post_ciphers_create)
+        .post("/ciphers/create", post_ciphers_create)
+        .post("/ciphers", post_ciphers)
+        .post("/ciphers/import", post_ciphers_import)
+        .put("/ciphers/:uuid/admin", put_cipher)
+        .post("/ciphers/:uuid/admin", put_cipher)
+        .put("/ciphers/:uuid", put_cipher)
+        .post("/ciphers/:uuid", put_cipher)
+        .put("/ciphers/:uuid/partial", put_cipher_partial)
+        .post("/ciphers/:uuid/partial", put_cipher_partial)
+        .put("/ciphers/:uuid/collections", post_collections)
+        .post("/ciphers/:uuid/collections", post_collections)
+        .put("/ciphers/:uuid/collections-admin", post_collections)
+        .post("/ciphers/:uuid/collections-admin", post_collections)
+        .put("/ciphers/:uuid/share", put_cipher_share)
+        .post("/ciphers/:uuid/share", put_cipher_share)
+        .put("/ciphers/share", put_cipher_share_selected)
+        .get("/ciphers/:uuid/attachment/:attachment_id", get_attachment)
+        .post("/ciphers/:uuid/attachment/v2", post_attachment_v2)
+        .post("/ciphers/:uuid/attachment/:attachment_id", post_attachment_v2_data)
+        .post("/ciphers/:uuid/attachment", post_attachment)
+        .post("/ciphers/:uuid/attachment-admin", post_attachment)
+        .post("/ciphers/:uuid/attachment/:attachment_id/share", post_attachment_share)
+        .post("/ciphers/:uuid/attachment/:attachment_id/delete-admin", delete_attachment)
+        .post("/ciphers/:uuid/attachment/:attachment_id/delete", delete_attachment)
+        .delete("/ciphers/:uuid/attachment/:attachment_id", delete_attachment)
+        .delete("/ciphers/:uuid/attachment/:attachment_id/admin", delete_attachment)
+        .post("/ciphers/:uuid/delete", delete_cipher_hard)
+        .post("/ciphers/:uuid/delete-admin", delete_cipher_hard)
+        .put("/ciphers/:uuid/delete", delete_cipher_soft)
+        .put("/ciphers/:uuid/delete-admin", delete_cipher_soft)
+        .delete("/ciphers/:uuid", delete_cipher_hard)
+        .delete("/ciphers/:uuid/admin", delete_cipher_hard)
+        .delete("/ciphers", delete_cipher_selected_hard)
+        .post("/ciphers/delete", delete_cipher_selected_hard)
+        .put("/ciphers/delete", delete_cipher_selected_soft)
+        .delete("/ciphers/admin", delete_cipher_selected_hard)
+        .post("/ciphers/delete-admin", delete_cipher_selected_hard)
+        .put("/ciphers/delete-admin", delete_cipher_selected_soft)
+        .put("/ciphers/:uuid/restore", restore_cipher_put)
+        .put("/ciphers/:uuid/restore-admin", restore_cipher_put)
+        .put("/ciphers/restore", restore_cipher_selected)
+        .post("/ciphers/move", move_cipher_selected)
+        .put("/ciphers/move", move_cipher_selected)
+        .post("/ciphers/purge", delete_all)
 }
 
 #[derive(Deserialize, Default)]
@@ -87,8 +83,8 @@ pub struct SyncData {
     exclude_domains: bool,
 }
 
-pub async fn sync(Query(data): Query<SyncData>, headers: Headers) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+pub async fn sync(Query(data): Query<SyncData>, headers: Headers) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
     let user_json = headers.user.to_json(&conn).await?;
 
     let ciphers_json = FullCipher::find_by_user(&conn, headers.user.uuid).await?.iter().map(|x| x.to_json(true)).collect::<Vec<_>>();
@@ -129,8 +125,8 @@ pub async fn sync(Query(data): Query<SyncData>, headers: Headers) -> ApiResult<J
     })))
 }
 
-pub async fn get_ciphers(headers: Headers) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+pub async fn get_ciphers(headers: Headers) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
 
     let ciphers_json = FullCipher::find_by_user(&conn, headers.user.uuid).await?.iter().map(|x| x.to_json(true)).collect::<Vec<_>>();
 
@@ -141,8 +137,8 @@ pub async fn get_ciphers(headers: Headers) -> ApiResult<Json<Value>> {
     })))
 }
 
-pub async fn get_cipher(Path(uuid): Path<Uuid>, headers: Headers) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+pub async fn get_cipher(Path(uuid): Path<Uuid>, headers: Headers) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
     let cipher = match Cipher::get_for_user(&conn, headers.user.uuid, uuid).await? {
         Some(cipher) => cipher,
         None => err!("Cipher doesn't exist"),
@@ -217,7 +213,7 @@ pub struct Attachments2Data {
 /// Called when creating a new org-owned cipher, or cloning a cipher (whether
 /// user- or org-owned). When cloning a cipher to a user-owned cipher,
 /// `organizationId` is null.
-pub async fn post_ciphers_create(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<ShareCipherData>>) -> ApiResult<Json<Value>> {
+pub async fn post_ciphers_create(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<ShareCipherData>>) -> Result<Json<Value>> {
     let mut data: ShareCipherData = data.0.data;
 
     // Check if there are one more more collections selected when this cipher is part of an organization.
@@ -250,7 +246,7 @@ pub async fn post_ciphers_create(mut conn: AutoTxn, headers: Headers, data: Json
 }
 
 /// Called when creating a new user-owned cipher.
-pub async fn post_ciphers(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<CipherData>>) -> ApiResult<Json<Value>> {
+pub async fn post_ciphers(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<CipherData>>) -> Result<Json<Value>> {
     let mut data: CipherData = data.0.data;
 
     // The web/browser clients set this field to null as expected, but the
@@ -274,7 +270,7 @@ pub async fn post_ciphers(mut conn: AutoTxn, headers: Headers, data: Json<Upcase
 /// allowed to delete or share such ciphers to an org, however.
 ///
 /// Ref: https://bitwarden.com/help/article/policies/#personal-ownership
-async fn enforce_personal_ownership_policy(data: Option<&CipherData>, headers: &Headers, conn: &Conn) -> ApiResult<()> {
+async fn enforce_personal_ownership_policy(data: Option<&CipherData>, headers: &Headers, conn: &Conn) -> Result<()> {
     if data.is_none() || data.unwrap().organization_id.is_none() {
         let user_uuid = headers.user.uuid;
         let policy_type = OrgPolicyType::PersonalOwnership;
@@ -292,7 +288,7 @@ pub async fn update_cipher_from_data(
     shared_to_collection: bool,
     conn: &mut AutoTxn,
     ut: UpdateType,
-) -> ApiResult<()> {
+) -> Result<()> {
     enforce_personal_ownership_policy(Some(&data), headers, conn).await?;
 
     // Check that the client isn't updating an existing cipher with stale data.
@@ -412,7 +408,7 @@ pub async fn update_cipher_from_data(
     cipher.notes = data.notes;
     cipher.fields = data.fields.map(|f| _clean_cipher_data(f));
     cipher.data = type_data;
-    cipher.password_history = data.password_history.map(|f| serde_json::from_value(f)).transpose()?.unwrap_or_default();
+    cipher.password_history = data.password_history.map(|f| serde_json::from_value(f)).transpose().ise()?.unwrap_or_default();
     cipher.reprompt = data.reprompt;
 
     cipher.save(conn).await?;
@@ -463,7 +459,7 @@ pub struct RelationsData {
     value: usize,
 }
 
-pub async fn post_ciphers_import(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<ImportData>>) -> ApiResult<()> {
+pub async fn post_ciphers_import(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<ImportData>>) -> Result<()> {
     enforce_personal_ownership_policy(None, &headers, &conn).await?;
 
     let data: ImportData = data.0.data;
@@ -505,7 +501,7 @@ pub async fn post_ciphers_import(mut conn: AutoTxn, headers: Headers, data: Json
     Ok(())
 }
 
-pub async fn put_cipher(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<CipherData>>) -> ApiResult<Json<Value>> {
+pub async fn put_cipher(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<CipherData>>) -> Result<Json<Value>> {
     let data: CipherData = data.0.data;
 
     let mut cipher = match Cipher::get_for_user_writable(&conn, headers.user.uuid, uuid).await? {
@@ -526,7 +522,7 @@ pub async fn put_cipher(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Head
 }
 
 // Only update the folder and favorite for the user, since this cipher is read-only
-pub async fn put_cipher_partial(conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<PartialCipherData>>) -> ApiResult<Json<Value>> {
+pub async fn put_cipher_partial(conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<PartialCipherData>>) -> Result<Json<Value>> {
     let data: PartialCipherData = data.0.data;
 
     let cipher = match Cipher::get_for_user(&conn, headers.user.uuid, uuid).await? {
@@ -557,7 +553,7 @@ pub struct CollectionsAdminData {
     collection_ids: Vec<Uuid>,
 }
 
-pub async fn post_collections(conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<CollectionsAdminData>>) -> ApiResult<()> {
+pub async fn post_collections(conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<CollectionsAdminData>>) -> Result<()> {
     let data: CollectionsAdminData = data.0.data;
 
     let cipher = match Cipher::get_for_user_writable(&conn, headers.user.uuid, uuid).await? {
@@ -616,7 +612,7 @@ pub struct ShareCipherData {
     collection_ids: Vec<Uuid>,
 }
 
-pub async fn put_cipher_share(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<ShareCipherData>>) -> ApiResult<Json<Value>> {
+pub async fn put_cipher_share(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<ShareCipherData>>) -> Result<Json<Value>> {
     let data: ShareCipherData = data.0.data;
 
     let out = share_cipher_by_uuid(uuid, data, &headers, &mut conn).await?;
@@ -631,7 +627,7 @@ pub struct ShareSelectedCipherData {
     collection_ids: Vec<Uuid>,
 }
 
-pub async fn put_cipher_share_selected(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<ShareSelectedCipherData>>) -> ApiResult<()> {
+pub async fn put_cipher_share_selected(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<ShareSelectedCipherData>>) -> Result<()> {
     let mut data: ShareSelectedCipherData = data.0.data;
     let mut cipher_ids: Vec<Uuid> = Vec::new();
 
@@ -666,7 +662,7 @@ pub async fn put_cipher_share_selected(mut conn: AutoTxn, headers: Headers, data
     Ok(())
 }
 
-async fn share_cipher_by_uuid(uuid: Uuid, data: ShareCipherData, headers: &Headers, conn: &mut AutoTxn) -> ApiResult<Json<Value>> {
+async fn share_cipher_by_uuid(uuid: Uuid, data: ShareCipherData, headers: &Headers, conn: &mut AutoTxn) -> Result<Json<Value>> {
     let mut cipher = match Cipher::get_for_user_writable(conn, headers.user.uuid, uuid).await? {
         Some(cipher) => cipher,
         None => err!("Cipher doesn't exist"),
@@ -710,8 +706,8 @@ pub struct AttachmentPath {
 /// Upstream added this v2 API to support direct download of attachments from
 /// their object storage service. For self-hosted instances, it basically just
 /// redirects to the same location as before the v2 API.
-pub async fn get_attachment(Path(path): Path<AttachmentPath>, headers: Headers) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+pub async fn get_attachment(Path(path): Path<AttachmentPath>, headers: Headers) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
     match Attachment::get_with_cipher_and_user(&conn, path.attachment_id, path.uuid, headers.user.uuid).await? {
         Some(attachment) => Ok(Json(attachment.to_json())),
         None => err!("Attachment doesn't exist"),
@@ -736,8 +732,8 @@ pub enum FileUploadType {
 /// This redirects the client to the API it should use to upload the attachment.
 /// For upstream's cloud-hosted service, it's an Azure object storage API.
 /// For self-hosted instances, it's another API on the local instance.
-pub async fn post_attachment_v2(Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<AttachmentRequestData>>) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+pub async fn post_attachment_v2(Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<AttachmentRequestData>>) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
     let cipher = match Cipher::get_for_user_writable(&conn, headers.user.uuid, uuid).await? {
         Some(cipher) => cipher,
         None => err!("Cipher doesn't exist"),
@@ -763,10 +759,45 @@ pub async fn post_attachment_v2(Path(uuid): Path<Uuid>, headers: Headers, data: 
     })))
 }
 
-#[derive(TryFromMultipart)]
 pub struct UploadData {
     key: Option<String>,
-    data: FieldData<Bytes>,
+    filename: Option<String>,
+    data: Bytes,
+}
+
+impl UploadData {
+    pub async fn read(mut multipart: Multipart) -> Result<Self> {
+        let mut key = None::<String>;
+        let mut filename = None::<String>;
+        let mut data = None::<Bytes>;
+        while let Some(field) = multipart.next_field().await? {
+            match field.name() {
+                Some("key") => {
+                    if key.is_some() {
+                        return Err(Error::bad_request("duplicated multipart field"));
+                    }
+                    key = Some(String::from_utf8(field.bytes().await.ise()?.to_vec()).ok().ok_or_else(|| Error::bad_request("invalid utf-8 in key"))?);
+                }
+                Some("data") => {
+                    if data.is_some() {
+                        return Err(Error::bad_request("duplicated multipart field"));
+                    }
+                    filename = field.file_name().map(|x| x.to_string());
+                    data = Some(field.bytes().await?);
+                }
+                _ => return Err(Error::bad_request("unknown multipart field")),
+            }
+        }
+        if let Some(data) = data {
+            Ok(Self {
+                key,
+                filename,
+                data,
+            })
+        } else {
+            Err(Error::bad_request("missing fields"))
+        }
+    }
 }
 
 /// Saves the data content of an attachment to a file. This is common code
@@ -777,13 +808,7 @@ pub struct UploadData {
 ///
 /// When used with the v2 API, post_attachment_v2() has already created the
 /// database record, which is passed in as `attachment`.
-async fn save_attachment(
-    mut attachment: Option<Attachment>,
-    cipher_uuid: Uuid,
-    TypedMultipart(data): TypedMultipart<UploadData>,
-    headers: &Headers,
-    conn: &mut AutoTxn,
-) -> ApiResult<Cipher> {
+async fn save_attachment(mut attachment: Option<Attachment>, cipher_uuid: Uuid, data: UploadData, headers: &Headers, conn: &mut AutoTxn) -> Result<Cipher> {
     let cipher = match Cipher::get_for_user_writable(conn, headers.user.uuid, cipher_uuid).await? {
         Some(cipher) => cipher,
         None => err!("Cipher doesn't exist"),
@@ -825,7 +850,7 @@ async fn save_attachment(
     };
 
     if let Some(size_limit) = size_limit {
-        if data.data.contents.len() as u64 > size_limit {
+        if data.data.len() as u64 > size_limit {
             err!("Attachment storage limit exceeded with this file");
         }
     }
@@ -839,7 +864,7 @@ async fn save_attachment(
     let file_path = folder_path.join(file_id.to_string());
     tokio::fs::create_dir_all(&folder_path).await?;
 
-    let size = data.data.contents.len() as i32;
+    let size = data.data.len() as i32;
     if let Some(attachment) = &mut attachment {
         // v2 API
 
@@ -863,7 +888,7 @@ async fn save_attachment(
         }
     } else {
         // Legacy API
-        let encrypted_filename = data.data.metadata.file_name;
+        let encrypted_filename = data.filename;
 
         if encrypted_filename.is_none() {
             err!("No filename provided")
@@ -875,7 +900,7 @@ async fn save_attachment(
         attachment.save(conn).await?;
     }
 
-    tokio::fs::write(&file_path, &data.data.contents).await?;
+    tokio::fs::write(&file_path, &data.data).await?;
 
     let cipher2 = cipher.clone();
     let acting_device_uuid = headers.device.uuid;
@@ -899,7 +924,8 @@ async fn save_attachment(
 /// This route needs a rank specified so that Rocket prioritizes the
 /// /ciphers/<uuid>/attachment/v2 route, which would otherwise conflict
 /// with this one.
-pub async fn post_attachment_v2_data(mut conn: AutoTxn, Path(path): Path<AttachmentPath>, headers: Headers, data: TypedMultipart<UploadData>) -> ApiResult<()> {
+pub async fn post_attachment_v2_data(mut conn: AutoTxn, Path(path): Path<AttachmentPath>, headers: Headers, data: Multipart) -> Result<()> {
+    let data = UploadData::read(data).await?;
     let attachment = match Attachment::get_with_cipher_and_user(&conn, path.attachment_id, path.uuid, headers.user.uuid).await? {
         Some(attachment) => Some(attachment),
         None => err!("Attachment doesn't exist"),
@@ -911,7 +937,8 @@ pub async fn post_attachment_v2_data(mut conn: AutoTxn, Path(path): Path<Attachm
     Ok(())
 }
 
-async fn do_attachment_post(conn: &mut AutoTxn, uuid: Uuid, headers: Headers, data: TypedMultipart<UploadData>) -> ApiResult<Json<Value>> {
+async fn do_attachment_post(conn: &mut AutoTxn, uuid: Uuid, headers: Headers, data: Multipart) -> Result<Json<Value>> {
+    let data = UploadData::read(data).await?;
     // Setting this as None signifies to save_attachment() that it should create
     // the attachment database record as well as saving the data to disk.
     let attachment = None;
@@ -922,37 +949,32 @@ async fn do_attachment_post(conn: &mut AutoTxn, uuid: Uuid, headers: Headers, da
 }
 
 /// Legacy API for creating an attachment associated with a cipher.
-pub async fn post_attachment(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: TypedMultipart<UploadData>) -> ApiResult<Json<Value>> {
+pub async fn post_attachment(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Multipart) -> Result<Json<Value>> {
     let out = do_attachment_post(&mut conn, uuid, headers, data).await?;
     conn.commit().await?;
     Ok(out)
 }
 
-pub async fn post_attachment_share(
-    mut conn: AutoTxn,
-    Path(path): Path<AttachmentPath>,
-    headers: Headers,
-    data: TypedMultipart<UploadData>,
-) -> ApiResult<Json<Value>> {
+pub async fn post_attachment_share(mut conn: AutoTxn, Path(path): Path<AttachmentPath>, headers: Headers, data: Multipart) -> Result<Json<Value>> {
     _delete_cipher_attachment_by_id(path.uuid, path.attachment_id, &headers, &mut conn).await?;
     let out = do_attachment_post(&mut conn, path.uuid, headers, data).await?;
     conn.commit().await?;
     Ok(out)
 }
 
-pub async fn delete_attachment(mut conn: AutoTxn, Path(path): Path<AttachmentPath>, headers: Headers) -> ApiResult<()> {
+pub async fn delete_attachment(mut conn: AutoTxn, Path(path): Path<AttachmentPath>, headers: Headers) -> Result<()> {
     _delete_cipher_attachment_by_id(path.uuid, path.attachment_id, &headers, &mut conn).await?;
     conn.commit().await?;
     Ok(())
 }
 
-pub async fn delete_cipher_soft(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers) -> ApiResult<()> {
+pub async fn delete_cipher_soft(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers) -> Result<()> {
     _delete_cipher_by_uuid(uuid, &headers, &mut conn, true).await?;
     conn.commit().await?;
     Ok(())
 }
 
-pub async fn delete_cipher_hard(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers) -> ApiResult<()> {
+pub async fn delete_cipher_hard(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers) -> Result<()> {
     _delete_cipher_by_uuid(uuid, &headers, &mut conn, false).await?;
     conn.commit().await?;
     Ok(())
@@ -964,21 +986,21 @@ pub struct IdData {
     ids: Vec<Uuid>,
 }
 
-pub async fn delete_cipher_selected_hard(conn: AutoTxn, headers: Headers, data: Json<Upcase<IdData>>) -> ApiResult<()> {
+pub async fn delete_cipher_selected_hard(conn: AutoTxn, headers: Headers, data: Json<Upcase<IdData>>) -> Result<()> {
     _delete_multiple_ciphers(conn, headers, false, data).await
 }
 
-pub async fn delete_cipher_selected_soft(conn: AutoTxn, headers: Headers, data: Json<Upcase<IdData>>) -> ApiResult<()> {
+pub async fn delete_cipher_selected_soft(conn: AutoTxn, headers: Headers, data: Json<Upcase<IdData>>) -> Result<()> {
     _delete_multiple_ciphers(conn, headers, true, data).await
 }
 
-pub async fn restore_cipher_put(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers) -> ApiResult<Json<Value>> {
+pub async fn restore_cipher_put(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers) -> Result<Json<Value>> {
     let out = _restore_cipher_by_uuid(uuid, &headers, &mut conn).await?;
     conn.commit().await?;
     Ok(out)
 }
 
-pub async fn restore_cipher_selected(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<IdData>>) -> ApiResult<Json<Value>> {
+pub async fn restore_cipher_selected(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<IdData>>) -> Result<Json<Value>> {
     let uuids = data.0.data.ids;
 
     let mut ciphers: Vec<Value> = Vec::new();
@@ -1002,7 +1024,7 @@ pub struct MoveCipherData {
     ids: Vec<Uuid>,
 }
 
-pub async fn move_cipher_selected(conn: AutoTxn, headers: Headers, data: Json<Upcase<MoveCipherData>>) -> ApiResult<()> {
+pub async fn move_cipher_selected(conn: AutoTxn, headers: Headers, data: Json<Upcase<MoveCipherData>>) -> Result<()> {
     let data = data.0.data;
     let user_uuid = headers.user.uuid;
 
@@ -1038,12 +1060,7 @@ pub struct OrganizationId {
     organization_id: Uuid,
 }
 
-pub async fn delete_all(
-    conn: AutoTxn,
-    Query(organization): Query<Option<OrganizationId>>,
-    headers: Headers,
-    data: Json<Upcase<PasswordData>>,
-) -> ApiResult<()> {
+pub async fn delete_all(conn: AutoTxn, Query(organization): Query<Option<OrganizationId>>, headers: Headers, data: Json<Upcase<PasswordData>>) -> Result<()> {
     let data: PasswordData = data.0.data;
     let password_hash = data.master_password_hash;
 
@@ -1095,7 +1112,7 @@ pub async fn delete_all(
     Ok(())
 }
 
-async fn _delete_cipher_by_uuid(uuid: Uuid, headers: &Headers, conn: &mut AutoTxn, soft_delete: bool) -> ApiResult<()> {
+async fn _delete_cipher_by_uuid(uuid: Uuid, headers: &Headers, conn: &mut AutoTxn, soft_delete: bool) -> Result<()> {
     let mut cipher = match Cipher::get_for_user_writable(conn, headers.user.uuid, uuid).await? {
         Some(cipher) => cipher,
         None => err!("Cipher doesn't exist"),
@@ -1133,7 +1150,7 @@ async fn _delete_cipher_by_uuid(uuid: Uuid, headers: &Headers, conn: &mut AutoTx
     Ok(())
 }
 
-async fn _delete_multiple_ciphers(mut conn: AutoTxn, headers: Headers, soft_delete: bool, data: Json<Upcase<IdData>>) -> ApiResult<()> {
+async fn _delete_multiple_ciphers(mut conn: AutoTxn, headers: Headers, soft_delete: bool, data: Json<Upcase<IdData>>) -> Result<()> {
     let uuids = data.0.data.ids;
 
     for uuid in uuids {
@@ -1144,7 +1161,7 @@ async fn _delete_multiple_ciphers(mut conn: AutoTxn, headers: Headers, soft_dele
     Ok(())
 }
 
-async fn _restore_cipher_by_uuid(uuid: Uuid, headers: &Headers, conn: &mut AutoTxn) -> ApiResult<Json<Value>> {
+async fn _restore_cipher_by_uuid(uuid: Uuid, headers: &Headers, conn: &mut AutoTxn) -> Result<Json<Value>> {
     let mut cipher = match Cipher::get_for_user_writable(conn, headers.user.uuid, uuid).await? {
         Some(cipher) => cipher,
         None => err!("Cipher doesn't exist"),
@@ -1171,7 +1188,7 @@ async fn _restore_cipher_by_uuid(uuid: Uuid, headers: &Headers, conn: &mut AutoT
     Ok(Json(cipher.to_json(conn, headers.user.uuid, true).await?))
 }
 
-async fn _delete_cipher_attachment_by_id(uuid: Uuid, attachment_id: Uuid, headers: &Headers, conn: &mut AutoTxn) -> ApiResult<()> {
+async fn _delete_cipher_attachment_by_id(uuid: Uuid, attachment_id: Uuid, headers: &Headers, conn: &mut AutoTxn) -> Result<()> {
     let attachment = match Attachment::get_with_cipher_and_user_writable(conn, attachment_id, uuid, headers.user.uuid).await? {
         Some(attachment) => attachment,
         None => err!("Attachment doesn't exist"),

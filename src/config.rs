@@ -33,6 +33,13 @@ pub struct Config {
     pub duo: Option<DuoConfig>,
     pub smtp: Option<SmtpConfig>,
     pub email_2fa: Option<Email2FaConfig>,
+    pub opentelemetry: Option<OtelConfig>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct OtelConfig {
+    pub endpoint: Url,
+    pub timeout_sec: f64,
 }
 
 fn default_port() -> u16 {

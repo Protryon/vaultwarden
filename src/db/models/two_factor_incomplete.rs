@@ -1,6 +1,6 @@
 use std::net::IpAddr;
 
-use axum_util::errors::ApiResult;
+use axol::{ErrorExt, Result};
 use chrono::{DateTime, Utc};
 use tokio_postgres::Row;
 use uuid::Uuid;
@@ -34,7 +34,7 @@ impl From<Row> for TwoFactorIncomplete {
 }
 
 impl TwoFactorIncomplete {
-    pub async fn mark_incomplete(conn: &Conn, user_uuid: Uuid, device_uuid: Uuid, device_name: &str, ip: IpAddr) -> ApiResult<Option<Uuid>> {
+    pub async fn mark_incomplete(conn: &Conn, user_uuid: Uuid, device_uuid: Uuid, device_name: &str, ip: IpAddr) -> Result<Option<Uuid>> {
         if CONFIG.settings.incomplete_2fa_time_limit <= 0 || !CONFIG.mail_enabled() {
             return Ok(None);
         }
@@ -46,25 +46,28 @@ impl TwoFactorIncomplete {
             r"INSERT INTO twofactor_incomplete (uuid, user_uuid, device_uuid, device_name, login_time, ip_address) VALUES ($1, $2, $3, $4, $5, $6)",
             &[&uuid, &user_uuid, &device_uuid, &device_name, &login_time, &ip.to_string()],
         )
-        .await?;
+        .await
+        .ise()?;
         Ok(Some(uuid))
     }
 
-    pub async fn mark_complete(conn: &Conn, uuid: Uuid, user_uuid: Uuid, device_uuid: Uuid) -> ApiResult<()> {
+    pub async fn mark_complete(conn: &Conn, uuid: Uuid, user_uuid: Uuid, device_uuid: Uuid) -> Result<()> {
         if CONFIG.settings.incomplete_2fa_time_limit <= 0 || !CONFIG.mail_enabled() {
             return Ok(());
         }
-        conn.execute(r"DELETE FROM twofactor_incomplete WHERE uuid = $1 AND user_uuid = $2 AND device_uuid = $3", &[&uuid, &user_uuid, &device_uuid]).await?;
+        conn.execute(r"DELETE FROM twofactor_incomplete WHERE uuid = $1 AND user_uuid = $2 AND device_uuid = $3", &[&uuid, &user_uuid, &device_uuid])
+            .await
+            .ise()?;
 
         Ok(())
     }
 
-    pub async fn find_logins_before(conn: &Conn, when: DateTime<Utc>) -> ApiResult<Vec<Self>> {
-        Ok(conn.query(r"SELECT * FROM twofactor_incomplete WHERE login_time < $1", &[&when]).await?.into_iter().map(|x| x.into()).collect())
+    pub async fn find_logins_before(conn: &Conn, when: DateTime<Utc>) -> Result<Vec<Self>> {
+        Ok(conn.query(r"SELECT * FROM twofactor_incomplete WHERE login_time < $1", &[&when]).await.ise()?.into_iter().map(|x| x.into()).collect())
     }
 
-    pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
-        conn.execute(r"DELETE FROM twofactor_incomplete WHERE uuid = $1", &[&self.uuid]).await?;
+    pub async fn delete(&self, conn: &Conn) -> Result<()> {
+        conn.execute(r"DELETE FROM twofactor_incomplete WHERE uuid = $1", &[&self.uuid]).await.ise()?;
         Ok(())
     }
 }

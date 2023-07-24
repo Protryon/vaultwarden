@@ -1,4 +1,4 @@
-use axum_util::errors::ApiResult;
+use axol::{ErrorExt, Result};
 use chrono::{DateTime, Utc};
 use tokio_postgres::Row;
 
@@ -30,22 +30,22 @@ impl From<Row> for SsoNonce {
 
 /// Database methods
 impl SsoNonce {
-    pub async fn save(&self, conn: &Conn) -> ApiResult<()> {
-        conn.execute(r"INSERT INTO sso_nonces (nonce, created_at) VALUES ($1, $2)", &[&self.nonce, &self.created_at]).await?;
+    pub async fn save(&self, conn: &Conn) -> Result<()> {
+        conn.execute(r"INSERT INTO sso_nonces (nonce, created_at) VALUES ($1, $2)", &[&self.nonce, &self.created_at]).await.ise()?;
         Ok(())
     }
 
-    pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
-        conn.execute(r"DELETE FROM sso_nonces WHERE nonce = $1", &[&self.nonce]).await?;
+    pub async fn delete(&self, conn: &Conn) -> Result<()> {
+        conn.execute(r"DELETE FROM sso_nonces WHERE nonce = $1", &[&self.nonce]).await.ise()?;
         Ok(())
     }
 
-    pub async fn purge_expired(conn: &Conn, expire_before: DateTime<Utc>) -> ApiResult<()> {
-        conn.execute(r"DELETE FROM sso_nonces WHERE created_at < $1", &[&expire_before]).await?;
+    pub async fn purge_expired(conn: &Conn, expire_before: DateTime<Utc>) -> Result<()> {
+        conn.execute(r"DELETE FROM sso_nonces WHERE created_at < $1", &[&expire_before]).await.ise()?;
         Ok(())
     }
 
-    pub async fn get(conn: &Conn, nonce: &str) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM sso_nonces WHERE nonce = $1", &[&nonce]).await?.map(Into::into))
+    pub async fn get(conn: &Conn, nonce: &str) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM sso_nonces WHERE nonce = $1", &[&nonce]).await.ise()?.map(Into::into))
     }
 }

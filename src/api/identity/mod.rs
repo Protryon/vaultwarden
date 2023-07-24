@@ -1,9 +1,4 @@
-use axum::response::IntoResponse;
-use axum::response::{Redirect, Response};
-use axum::{extract::Query, routing, Form, Json, Router};
-use axum_extra::extract::cookie::Cookie;
-use axum_extra::extract::CookieJar;
-use axum_util::errors::ApiError;
+use axol::{prelude::*, Cookie, CookieJar, Form};
 use chrono::Utc;
 use jsonwebtoken::DecodingKey;
 use log::{error, info};
@@ -15,14 +10,14 @@ use openidconnect::reqwest::async_http_client;
 use openidconnect::reqwest::http_client;
 use openidconnect::OAuth2TokenResponse;
 use openidconnect::{AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl, Nonce, RedirectUrl, Scope};
+use url::Url;
 use uuid::Uuid;
 
 use crate::api::core::two_factor::email::{self, EmailTokenData};
 use crate::api::core::two_factor::{duo, yubikey};
 use crate::config::SSO_CALLBACK_URL;
-use crate::db::SsoNonce;
+use crate::db::{Event, SsoNonce};
 use crate::{
-    api::ApiResult,
     auth::{encode_jwt, generate_organization_api_key_login_claims, generate_ssotoken_claims, ClientHeaders, ClientIp},
     db::{Conn, Device, EventType, Organization, OrganizationApiKey, TwoFactor, TwoFactorIncomplete, TwoFactorType, User, UserOrgStatus, UserOrganization, DB},
     error::MapResult,
@@ -39,18 +34,18 @@ use super::core::accounts::{prelogin, register};
 
 pub fn route() -> Router {
     Router::new()
-        .route("/connect/token", routing::post(login))
-        .route("/accounts/prelogin", routing::post(prelogin))
-        .route("/accounts/register", routing::post(register))
-        .route("/account/prevalidate", routing::get(prevalidate))
-        .route("/connect/oidc-signin", routing::get(oidc_signin))
-        .route("/connect/authorize", routing::get(authorize))
+        .post("/connect/token", login)
+        .post("/accounts/prelogin", prelogin)
+        .post("/accounts/register", register)
+        .get("/account/prevalidate", prevalidate)
+        .get("/connect/oidc-signin", oidc_signin)
+        .get("/connect/authorize", authorize)
 }
 
-async fn login(client_header: ClientHeaders, data: Form<ConnectData>) -> ApiResult<Json<Value>> {
+async fn login(client_header: ClientHeaders, data: Form<ConnectData>) -> Result<Json<Value>> {
     let data = data.0;
 
-    let mut conn = DB.get().await?;
+    let mut conn = DB.get().await.ise()?;
 
     let mut user_uuid: Option<Uuid> = None;
 
@@ -125,7 +120,7 @@ async fn login(client_header: ClientHeaders, data: Form<ConnectData>) -> ApiResu
     login_result
 }
 
-async fn refresh_login(data: ConnectData, conn: &Conn) -> ApiResult<Json<Value>> {
+async fn refresh_login(data: ConnectData, conn: &Conn) -> Result<Json<Value>> {
     // Extract token
     let token = data.refresh_token.unwrap();
 
@@ -167,7 +162,7 @@ struct TokenPayload {
     nonce: String,
 }
 
-async fn authorization_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &Conn, ip: &ClientIp) -> ApiResult<Json<Value>> {
+async fn authorization_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &Conn, ip: &ClientIp) -> Result<Json<Value>> {
     let scope = data.scope.as_ref().unwrap();
     if scope != "api offline_access" {
         err!("Scope not supported")
@@ -272,7 +267,7 @@ async fn authorization_login(data: ConnectData, user_uuid: &mut Option<Uuid>, co
     Ok(Json(result))
 }
 
-async fn password_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &Conn, ip: &ClientIp) -> ApiResult<Json<Value>> {
+async fn password_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &Conn, ip: &ClientIp) -> Result<Json<Value>> {
     // Validate scope
     let scope = data.scope.as_ref().unwrap();
     if scope != "api offline_access" {
@@ -300,13 +295,8 @@ async fn password_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &
     // Check password
     let password = data.password.as_ref().unwrap();
     if !user.check_valid_password(password) {
-        err!(
-            "Username or password is incorrect. Try again",
-            format!("IP: {}. Username: {}.", ip.ip, username),
-            ErrorEvent {
-                event: EventType::UserFailedLogIn,
-            }
-        )
+        Event::new(EventType::UserFailedLogIn, None).with_user_uuid(user.uuid).save(conn).await?;
+        err!("Username or password is incorrect. Try again", format!("IP: {}. Username: {}.", ip.ip, username))
     }
 
     // Change the KDF Iterations
@@ -321,13 +311,8 @@ async fn password_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &
 
     // Check if the user is disabled
     if !user.enabled {
-        err!(
-            "This user has been disabled",
-            format!("IP: {}. Username: {}.", ip.ip, username),
-            ErrorEvent {
-                event: EventType::UserFailedLogIn
-            }
-        )
+        Event::new(EventType::UserFailedLogIn, None).with_user_uuid(user.uuid).save(conn).await?;
+        err!("This user has been disabled", format!("IP: {}. Username: {}.", ip.ip, username))
     }
 
     let now = Utc::now();
@@ -354,13 +339,8 @@ async fn password_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &
         }
 
         // We still want the login to fail until they actually verified the email address
-        err!(
-            "Please verify your email before trying again.",
-            format!("IP: {}. Username: {}.", ip.ip, username),
-            ErrorEvent {
-                event: EventType::UserFailedLogIn
-            }
-        )
+        Event::new(EventType::UserFailedLogIn, None).with_user_uuid(user.uuid).save(conn).await?;
+        err!("Please verify your email before trying again.", format!("IP: {}. Username: {}.", ip.ip, username))
     }
 
     let (mut device, new_device) = get_device(&data, conn, &user).await?;
@@ -372,12 +352,8 @@ async fn password_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &
             error!("Error sending new device email: {:#?}", e);
 
             if CONFIG.advanced.require_device_email {
-                err!(
-                    "Could not send login notification email. Please contact your administrator.",
-                    ErrorEvent {
-                        event: EventType::UserFailedLogIn
-                    }
-                )
+                Event::new(EventType::UserFailedLogIn, None).with_user_uuid(user.uuid).save(conn).await?;
+                err!("Could not send login notification email. Please contact your administrator.")
             }
         }
     }
@@ -413,7 +389,7 @@ async fn password_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &
     Ok(Json(result))
 }
 
-async fn api_key_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &Conn, ip: &ClientIp) -> ApiResult<Json<Value>> {
+async fn api_key_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &Conn, ip: &ClientIp) -> Result<Json<Value>> {
     // Ratelimit the login
     crate::ratelimit::check_limit_login(&ip.ip)?;
 
@@ -425,7 +401,7 @@ async fn api_key_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &C
     }
 }
 
-async fn user_api_key_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &Conn, ip: &ClientIp) -> ApiResult<Json<Value>> {
+async fn user_api_key_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &Conn, ip: &ClientIp) -> Result<Json<Value>> {
     // Get the user via the client_id
     let client_id = data.client_id.as_ref().unwrap();
     let client_user_uuid = match client_id.strip_prefix("user.").and_then(|x| Uuid::parse_str(x).ok()) {
@@ -442,25 +418,15 @@ async fn user_api_key_login(data: ConnectData, user_uuid: &mut Option<Uuid>, con
 
     // Check if the user is disabled
     if !user.enabled {
-        err!(
-            "This user has been disabled (API key login)",
-            format!("IP: {}. Username: {}.", ip.ip, user.email),
-            ErrorEvent {
-                event: EventType::UserFailedLogIn
-            }
-        )
+        Event::new(EventType::UserFailedLogIn, None).with_user_uuid(user.uuid).save(conn).await?;
+        err!("This user has been disabled (API key login)", format!("IP: {}. Username: {}.", ip.ip, user.email))
     }
 
     // Check API key. Note that API key logins bypass 2FA.
     let client_secret = data.client_secret.as_ref().unwrap();
     if !user.check_valid_api_key(client_secret) {
-        err!(
-            "Incorrect client_secret",
-            format!("IP: {}. Username: {}.", ip.ip, user.email),
-            ErrorEvent {
-                event: EventType::UserFailedLogIn
-            }
-        )
+        Event::new(EventType::UserFailedLogIn, None).with_user_uuid(user.uuid).save(conn).await?;
+        err!("Incorrect client_secret", format!("IP: {}. Username: {}.", ip.ip, user.email))
     }
 
     let (mut device, new_device) = get_device(&data, conn, &user).await?;
@@ -471,12 +437,8 @@ async fn user_api_key_login(data: ConnectData, user_uuid: &mut Option<Uuid>, con
             error!("Error sending new device email: {:#?}", e);
 
             if CONFIG.advanced.require_device_email {
-                err!(
-                    "Could not send login notification email. Please contact your administrator.",
-                    ErrorEvent {
-                        event: EventType::UserFailedLogIn
-                    }
-                )
+                Event::new(EventType::UserFailedLogIn, None).with_user_uuid(user.uuid).save(conn).await?;
+                err!("Could not send login notification email. Please contact your administrator.")
             }
         }
     }
@@ -510,7 +472,7 @@ async fn user_api_key_login(data: ConnectData, user_uuid: &mut Option<Uuid>, con
     Ok(Json(result))
 }
 
-async fn organization_api_key_login(data: ConnectData, conn: &Conn, ip: &ClientIp) -> ApiResult<Json<Value>> {
+async fn organization_api_key_login(data: ConnectData, conn: &Conn, ip: &ClientIp) -> Result<Json<Value>> {
     // Get the org via the client_id
     let client_id = data.client_id.as_ref().unwrap();
     let org_uuid = match client_id.strip_prefix("organization.").and_then(|x| Uuid::parse_str(x).ok()) {
@@ -541,7 +503,7 @@ async fn organization_api_key_login(data: ConnectData, conn: &Conn, ip: &ClientI
 }
 
 /// Retrieves an existing device or creates a new device from ConnectData and the User
-async fn get_device(data: &ConnectData, conn: &Conn, user: &User) -> ApiResult<(Device, bool)> {
+async fn get_device(data: &ConnectData, conn: &Conn, user: &User) -> Result<(Device, bool)> {
     // On iOS, device_type sends "iOS", on others it sends a number
     // When unknown or unable to parse, return 14, which is 'Unknown Browser'
     let device_type = util::try_parse_string(data.device_type.as_ref()).unwrap_or(14);
@@ -561,7 +523,7 @@ async fn get_device(data: &ConnectData, conn: &Conn, user: &User) -> ApiResult<(
     Ok((device, new_device))
 }
 
-async fn twofactor_auth(user_uuid: Uuid, data: &ConnectData, device: &mut Device, ip: &ClientIp, conn: &Conn) -> ApiResult<Option<String>> {
+async fn twofactor_auth(user_uuid: Uuid, data: &ConnectData, device: &mut Device, ip: &ClientIp, conn: &Conn) -> Result<Option<String>> {
     let twofactors = TwoFactor::find_by_user_official(conn, user_uuid).await?;
 
     // No twofactor token if twofactor is disabled
@@ -591,7 +553,7 @@ async fn twofactor_auth(user_uuid: Uuid, data: &ConnectData, device: &mut Device
         TwoFactorType::Authenticator => _tf::authenticator::validate_totp_code_str(user_uuid, twofactor_code, selected_data, ip.ip, conn).await?,
         TwoFactorType::Webauthn => _tf::webauthn::validate_webauthn_login(user_uuid, twofactor_code, conn).await?,
         TwoFactorType::YubiKey => _tf::yubikey::validate_yubikey_login(twofactor_code, selected_data).await?,
-        TwoFactorType::Duo => _tf::duo::validate_duo_login(data.username.as_ref().unwrap().trim(), twofactor_code, conn).await?,
+        TwoFactorType::Duo => _tf::duo::validate_duo_login(user_uuid, data.username.as_ref().unwrap().trim(), twofactor_code, conn).await?,
         TwoFactorType::Email => _tf::email::validate_email_code_str(user_uuid, twofactor_code, selected_data).await?,
 
         TwoFactorType::Remember => {
@@ -604,12 +566,10 @@ async fn twofactor_auth(user_uuid: Uuid, data: &ConnectData, device: &mut Device
                 }
             }
         }
-        _ => err!(
-            "Invalid two factor provider",
-            ErrorEvent {
-                event: EventType::UserFailedLogIn2fa
-            }
-        ),
+        _ => {
+            Event::new(EventType::UserFailedLogIn2fa, None).with_user_uuid(user_uuid).save(conn).await?;
+            err!("Invalid two factor provider")
+        }
     }
 
     if let Some(incomplete_uuid) = incomplete_uuid {
@@ -624,11 +584,11 @@ async fn twofactor_auth(user_uuid: Uuid, data: &ConnectData, device: &mut Device
     }
 }
 
-fn selected_data(tf: Option<TwoFactor>) -> ApiResult<Value> {
+fn selected_data(tf: Option<TwoFactor>) -> Result<Value> {
     tf.map(|t| t.data).map_res("Two factor doesn't exist").map_err(Into::into)
 }
 
-async fn json_err_twofactor(providers: &[TwoFactorType], user_uuid: Uuid, conn: &Conn) -> ApiResult<Value> {
+async fn json_err_twofactor(providers: &[TwoFactorType], user_uuid: Uuid, conn: &Conn) -> Result<Value> {
     use crate::api::core::two_factor;
 
     let mut result = json!({
@@ -669,7 +629,8 @@ async fn json_err_twofactor(providers: &[TwoFactorType], user_uuid: Uuid, conn: 
                     None => err!("No YubiKey devices registered"),
                 };
 
-                let yubikey_metadata: yubikey::YubikeyMetadata = serde_json::from_value(twofactor.data)?;
+                let yubikey_metadata: yubikey::YubikeyMetadata =
+                    serde_json::from_value(twofactor.data).map_err(|e| Error::bad_request(format!("malformed data: {e}")))?;
 
                 result["TwoFactorProviders2"][(provider as i32).to_string()] = json!({
                     "Nfc": yubikey_metadata.nfc,
@@ -689,7 +650,7 @@ async fn json_err_twofactor(providers: &[TwoFactorType], user_uuid: Uuid, conn: 
                     _tf::email::send_token(user_uuid, conn).await?
                 }
 
-                let email_data: EmailTokenData = serde_json::from_value(twofactor.data)?;
+                let email_data: EmailTokenData = serde_json::from_value(twofactor.data).map_err(|e| Error::bad_request(format!("malformed token: {e}")))?;
                 result["TwoFactorProviders2"][(provider as i32).to_string()] = json!({
                     "Email": email::obscure_email(&email_data.email),
                 })
@@ -742,7 +703,7 @@ struct ConnectData {
     code: Option<String>,
 }
 
-fn check_is_some<T>(value: &Option<T>, msg: &str) -> ApiResult<()> {
+fn check_is_some<T>(value: &Option<T>, msg: &str) -> Result<()> {
     if value.is_none() {
         err!(msg)
     }
@@ -755,8 +716,8 @@ struct PrevalidateQuery {
     domain_hint: String,
 }
 
-async fn prevalidate(Query(query): Query<PrevalidateQuery>) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+async fn prevalidate(Query(query): Query<PrevalidateQuery>) -> Result<Json<Value>> {
+    let conn = DB.get().await.map_err(Error::internal)?;
     info!("prevalidate domain name: {}", query.domain_hint);
     //TODO: this isn't properly unique and so is probably incorrect
     match Organization::find_by_name(&conn, &query.domain_hint).await? {
@@ -802,14 +763,14 @@ struct OidcSigninQuery {
     code: String,
 }
 
-async fn oidc_signin(Query(query): Query<OidcSigninQuery>, mut jar: CookieJar) -> ApiResult<Response> {
-    let redirect_uri = jar.get("redirect_uri").ok_or_else(|| ApiError::BadRequest("missing redirect_uri cookie".to_string()))?.value().to_string();
-    let orig_state = jar.get("state").ok_or_else(|| ApiError::BadRequest("missing state cookie".to_string()))?.value().to_string();
+async fn oidc_signin(Query(query): Query<OidcSigninQuery>, mut jar: CookieJar) -> Result<Response> {
+    let redirect_uri = jar.get("redirect_uri").ok_or_else(|| Error::bad_request("missing redirect_uri cookie"))?.value().to_string();
+    let orig_state = jar.get("state").ok_or_else(|| Error::bad_request("missing state cookie"))?.value().to_string();
 
     jar = jar.remove(Cookie::named("redirect_uri"));
     jar = jar.remove(Cookie::named("state"));
 
-    Ok((jar, Redirect::temporary(&format!("{redirect_uri}?code={}&state={orig_state}", query.code))).into_response())
+    (jar, Url::parse(&format!("{redirect_uri}?code={}&state={orig_state}", query.code)).map_err(Error::internal)?).into_response()
 }
 
 #[derive(Deserialize)]
@@ -836,7 +797,7 @@ struct AuthorizeData {
     sso_token: Option<String>,
 }
 
-async fn authorize(Query(data): Query<AuthorizeData>, mut jar: CookieJar) -> ApiResult<Response> {
+async fn authorize(Query(data): Query<AuthorizeData>, mut jar: CookieJar) -> Result<Response> {
     match get_client_from_sso_config().await {
         Ok(client) => {
             let (auth_url, _csrf_state, nonce) = client
@@ -845,7 +806,7 @@ async fn authorize(Query(data): Query<AuthorizeData>, mut jar: CookieJar) -> Api
                 .add_scope(Scope::new("profile".to_string()))
                 .url();
 
-            let conn = DB.get().await?;
+            let conn = DB.get().await.map_err(Error::internal)?;
             let sso_nonce = SsoNonce::new(nonce.secret().to_string());
             sso_nonce.save(&conn).await?;
 
@@ -856,7 +817,7 @@ async fn authorize(Query(data): Query<AuthorizeData>, mut jar: CookieJar) -> Api
             cookie.set_value(data.state);
             jar = jar.add(cookie);
 
-            Ok((jar, Redirect::temporary(&auth_url.as_str())).into_response())
+            (jar, (RedirectMode::TemporaryRedirect, auth_url)).into_response()
         }
         Err(err) => err!("Unable to find client from identifier {}", err),
     }

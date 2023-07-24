@@ -1,4 +1,4 @@
-use axum_util::errors::ApiResult;
+use axol::{ErrorExt, Result};
 use serde_json::{json, Value};
 
 use tokio_postgres::Row;
@@ -101,7 +101,7 @@ impl CollectionWithAccess {
         json_object
     }
 
-    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<Vec<Self>> {
+    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid) -> Result<Vec<Self>> {
         Ok(conn
             .query(
                 r"
@@ -111,7 +111,8 @@ impl CollectionWithAccess {
         ",
                 &[&user_uuid],
             )
-            .await?
+            .await
+            .ise()?
             .into_iter()
             .map(|row| {
                 let collection: Collection = RowSlice::new(&row).slice_from(2..).into();
@@ -128,7 +129,7 @@ impl CollectionWithAccess {
 }
 
 impl Collection {
-    pub async fn save(&self, conn: &Conn) -> ApiResult<()> {
+    pub async fn save(&self, conn: &Conn) -> Result<()> {
         conn.execute(
             r"INSERT INTO collections (uuid, organization_uuid, name) VALUES ($1, $2, $3) ON CONFLICT (uuid) DO UPDATE
         SET
@@ -136,39 +137,41 @@ impl Collection {
         name = EXCLUDED.name",
             &[&self.uuid, &self.organization_uuid, &self.name],
         )
-        .await?;
-        Self::flag_revision(conn, self.uuid).await?;
+        .await
+        .ise()?;
+        Self::flag_revision(conn, self.uuid).await.ise()?;
         Ok(())
     }
 
-    pub async fn flag_revision(conn: &Conn, uuid: Uuid) -> ApiResult<()> {
+    pub async fn flag_revision(conn: &Conn, uuid: Uuid) -> Result<()> {
         conn.execute(
             r"UPDATE user_revisions u SET updated_at = now() FROM user_collection_auth uca WHERE uca.collection_uuid = $1 AND uca.user_uuid = u.uuid",
             &[&uuid],
         )
-        .await?;
+        .await
+        .ise()?;
         Ok(())
     }
 
-    pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
-        Self::flag_revision(conn, self.uuid).await?;
-        conn.execute(r"DELETE FROM collections WHERE uuid = $1", &[&self.uuid]).await?;
+    pub async fn delete(&self, conn: &Conn) -> Result<()> {
+        Self::flag_revision(conn, self.uuid).await.ise()?;
+        conn.execute(r"DELETE FROM collections WHERE uuid = $1", &[&self.uuid]).await.ise()?;
         Ok(())
     }
 
-    pub async fn get(conn: &Conn, uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM collections WHERE uuid = $1", &[&uuid]).await?.map(Into::into))
+    pub async fn get(conn: &Conn, uuid: Uuid) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM collections WHERE uuid = $1", &[&uuid]).await.ise()?.map(Into::into))
     }
 
-    pub async fn get_for_org(conn: &Conn, organization_uuid: Uuid, uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM collections c WHERE uuid = $2 AND organization_uuid = $1", &[&organization_uuid, &uuid]).await?.map(Into::into))
+    pub async fn get_for_org(conn: &Conn, organization_uuid: Uuid, uuid: Uuid) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM collections c WHERE uuid = $2 AND organization_uuid = $1", &[&organization_uuid, &uuid]).await.ise()?.map(Into::into))
     }
 
-    pub async fn get_for_user_writable(conn: &Conn, user_uuid: Uuid, uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM collections c INNER JOIN user_collection_auth uca ON uca.collection_uuid = c.uuid AND uca.user_uuid = $1 WHERE uuid = $2 AND NOT uca.read_only", &[&user_uuid, &uuid]).await?.map(Into::into))
+    pub async fn get_for_user_writable(conn: &Conn, user_uuid: Uuid, uuid: Uuid) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM collections c INNER JOIN user_collection_auth uca ON uca.collection_uuid = c.uuid AND uca.user_uuid = $1 WHERE uuid = $2 AND NOT uca.read_only", &[&user_uuid, &uuid]).await.ise()?.map(Into::into))
     }
 
-    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid, visible_only: bool) -> ApiResult<Vec<Self>> {
+    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid, _visible_only: bool) -> Result<Vec<Self>> {
         //TODO: implement visible_only
         Ok(conn
             .query(
@@ -179,13 +182,14 @@ impl Collection {
         ",
                 &[&user_uuid],
             )
-            .await?
+            .await
+            .ise()?
             .into_iter()
             .map(|x| x.into())
             .collect())
     }
 
-    pub async fn find_by_organization(conn: &Conn, organization_uuid: Uuid) -> ApiResult<Vec<Self>> {
+    pub async fn find_by_organization(conn: &Conn, organization_uuid: Uuid) -> Result<Vec<Self>> {
         Ok(conn
             .query(
                 r"
@@ -195,21 +199,22 @@ impl Collection {
         ",
                 &[&organization_uuid],
             )
-            .await?
+            .await
+            .ise()?
             .into_iter()
             .map(|x| x.into())
             .collect())
     }
 
-    pub async fn count_by_org(conn: &Conn, organization_uuid: Uuid) -> ApiResult<i64> {
-        Ok(conn.query_one(r"SELECT count(1) FROM collections WHERE organization_uuid = $1", &[&organization_uuid]).await?.get(0))
+    pub async fn count_by_org(conn: &Conn, organization_uuid: Uuid) -> Result<i64> {
+        Ok(conn.query_one(r"SELECT count(1) FROM collections WHERE organization_uuid = $1", &[&organization_uuid]).await.ise()?.get(0))
     }
 
-    pub async fn find_by_uuid_and_org(conn: &Conn, uuid: Uuid, organization_uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM collections WHERE uuid = $1 AND organization_uuid = $2", &[&uuid, &organization_uuid]).await?.map(Into::into))
+    pub async fn find_by_uuid_and_org(conn: &Conn, uuid: Uuid, organization_uuid: Uuid) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM collections WHERE uuid = $1 AND organization_uuid = $2", &[&uuid, &organization_uuid]).await.ise()?.map(Into::into))
     }
 
-    pub async fn find_by_uuid_and_user(conn: &Conn, uuid: Uuid, user_uuid: Uuid) -> ApiResult<Option<Self>> {
+    pub async fn find_by_uuid_and_user(conn: &Conn, uuid: Uuid, user_uuid: Uuid) -> Result<Option<Self>> {
         Ok(conn
             .query_opt(
                 r"
@@ -220,11 +225,12 @@ impl Collection {
         ",
                 &[&user_uuid, &uuid],
             )
-            .await?
+            .await
+            .ise()?
             .map(Into::into))
     }
 
-    pub async fn find_by_uuid_and_user_writable(conn: &Conn, uuid: Uuid, user_uuid: Uuid) -> ApiResult<Option<Self>> {
+    pub async fn find_by_uuid_and_user_writable(conn: &Conn, uuid: Uuid, user_uuid: Uuid) -> Result<Option<Self>> {
         Ok(conn
             .query_opt(
                 r"
@@ -235,13 +241,14 @@ impl Collection {
         ",
                 &[&user_uuid, &uuid],
             )
-            .await?
+            .await
+            .ise()?
             .map(Into::into))
     }
 }
 
 impl CollectionUser {
-    pub async fn find_by_organization_and_user_uuid(conn: &Conn, organization_uuid: Uuid, user_uuid: Uuid) -> ApiResult<Vec<Self>> {
+    pub async fn find_by_organization_and_user_uuid(conn: &Conn, organization_uuid: Uuid, user_uuid: Uuid) -> Result<Vec<Self>> {
         Ok(conn
             .query(
                 r"
@@ -253,13 +260,14 @@ impl CollectionUser {
         ",
                 &[&user_uuid, &organization_uuid],
             )
-            .await?
+            .await
+            .ise()?
             .into_iter()
             .map(|x| x.into())
             .collect())
     }
 
-    pub async fn find_by_organization(conn: &Conn, organization_uuid: Uuid) -> ApiResult<Vec<Self>> {
+    pub async fn find_by_organization(conn: &Conn, organization_uuid: Uuid) -> Result<Vec<Self>> {
         Ok(conn
             .query(
                 r"
@@ -270,13 +278,14 @@ impl CollectionUser {
         ",
                 &[&organization_uuid],
             )
-            .await?
+            .await
+            .ise()?
             .into_iter()
             .map(|x| x.into())
             .collect())
     }
 
-    pub async fn save(&self, conn: &Conn) -> ApiResult<()> {
+    pub async fn save(&self, conn: &Conn) -> Result<()> {
         conn.execute(r"INSERT INTO collection_users (user_uuid, collection_uuid, read_only, hide_passwords) VALUES ($1, $2, $3, $4) ON CONFLICT (user_uuid, collection_uuid) DO UPDATE
         SET
         read_only = EXCLUDED.read_only,
@@ -285,55 +294,58 @@ impl CollectionUser {
             &self.collection_uuid,
             &self.read_only,
             &self.hide_passwords,
-        ]).await?;
-        User::flag_revision_for(conn, self.user_uuid).await?;
+        ]).await.ise()?;
+        User::flag_revision_for(conn, self.user_uuid).await.ise()?;
         Ok(())
     }
 
-    pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
-        User::flag_revision_for(conn, self.user_uuid).await?;
-        conn.execute(r"DELETE FROM collection_users WHERE user_uuid = $1 AND collection_uuid = $2", &[&self.user_uuid, &self.collection_uuid]).await?;
+    pub async fn delete(&self, conn: &Conn) -> Result<()> {
+        User::flag_revision_for(conn, self.user_uuid).await.ise()?;
+        conn.execute(r"DELETE FROM collection_users WHERE user_uuid = $1 AND collection_uuid = $2", &[&self.user_uuid, &self.collection_uuid]).await.ise()?;
         Ok(())
     }
 
-    pub async fn find_by_collection(conn: &Conn, collection_uuid: Uuid) -> ApiResult<Vec<Self>> {
+    pub async fn find_by_collection(conn: &Conn, collection_uuid: Uuid) -> Result<Vec<Self>> {
         Ok(conn
             .query(r"SELECT cu.* FROM collection_users cu WHERE cu.collection_uuid = $1", &[&collection_uuid])
-            .await?
+            .await
+            .ise()?
             .into_iter()
             .map(|x| x.into())
             .collect())
     }
 
-    pub async fn find_by_collection_and_user(conn: &Conn, collection_uuid: Uuid, user_uuid: Uuid) -> ApiResult<Option<Self>> {
+    pub async fn find_by_collection_and_user(conn: &Conn, collection_uuid: Uuid, user_uuid: Uuid) -> Result<Option<Self>> {
         Ok(conn
             .query_opt(r"SELECT cu.* FROM collection_users cu WHERE cu.collection_uuid = $1 AND cu.user_uuid = $2", &[&collection_uuid, &user_uuid])
-            .await?
+            .await
+            .ise()?
             .map(Into::into))
     }
 
-    pub async fn delete_all_by_collection(conn: &Conn, collection_uuid: Uuid) -> ApiResult<()> {
-        Collection::flag_revision(conn, collection_uuid).await?;
-        conn.execute(r"DELETE FROM collection_users WHERE collection_uuid = $1", &[&collection_uuid]).await?;
+    pub async fn delete_all_by_collection(conn: &Conn, collection_uuid: Uuid) -> Result<()> {
+        Collection::flag_revision(conn, collection_uuid).await.ise()?;
+        conn.execute(r"DELETE FROM collection_users WHERE collection_uuid = $1", &[&collection_uuid]).await.ise()?;
         Ok(())
     }
 }
 
 /// Database methods
 impl CollectionCipher {
-    pub async fn save(conn: &Conn, cipher_uuid: Uuid, collection_uuid: Uuid) -> ApiResult<()> {
+    pub async fn save(conn: &Conn, cipher_uuid: Uuid, collection_uuid: Uuid) -> Result<()> {
         conn.execute(
             "INSERT INTO collection_ciphers (cipher_uuid, collection_uuid) VALUES ($1, $2) ON CONFLICT (cipher_uuid, collection_uuid) DO NOTHING",
             &[&cipher_uuid, &collection_uuid],
         )
-        .await?;
-        Collection::flag_revision(conn, collection_uuid).await?;
+        .await
+        .ise()?;
+        Collection::flag_revision(conn, collection_uuid).await.ise()?;
         Ok(())
     }
 
-    pub async fn delete(conn: &Conn, cipher_uuid: Uuid, collection_uuid: Uuid) -> ApiResult<()> {
-        Collection::flag_revision(conn, collection_uuid).await?;
-        conn.execute(r"DELETE FROM collection_ciphers WHERE cipher_uuid = $1 AND collection_uuid = $2", &[&cipher_uuid, &collection_uuid]).await?;
+    pub async fn delete(conn: &Conn, cipher_uuid: Uuid, collection_uuid: Uuid) -> Result<()> {
+        Collection::flag_revision(conn, collection_uuid).await.ise()?;
+        conn.execute(r"DELETE FROM collection_ciphers WHERE cipher_uuid = $1 AND collection_uuid = $2", &[&cipher_uuid, &collection_uuid]).await.ise()?;
         Ok(())
     }
 }

@@ -1,18 +1,11 @@
 use std::{net::IpAddr, sync::Arc, time::Duration};
 
 use anyhow::Result;
-use axum::{
-    extract::{
-        ws::{Message, WebSocket},
-        Query, WebSocketUpgrade,
-    },
-    response::Response,
-    routing, Router,
-};
-use axum_util::errors::ApiResult;
+use axol::http::response::Response;
+use axol::http::StatusCode;
+use axol::{Error, Message, Query, Router, WebSocket, WebSocketUpgrade};
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
-use http::StatusCode;
 use log::{debug, error, info};
 use rmpv::encode::write_value;
 use rmpv::{decode::read_value, Value};
@@ -74,7 +67,7 @@ impl Drop for WSEntryMapGuard {
 }
 
 pub fn route() -> Router {
-    Router::new().route("/hub", routing::get(start_websocket))
+    Router::new().get("/hub", start_websocket)
 }
 
 async fn start_websocket(Query(data): Query<WsAccessToken>, ip: ClientIp, ws: WebSocketUpgrade) -> Response {
@@ -85,12 +78,12 @@ async fn start_websocket(Query(data): Query<WsAccessToken>, ip: ClientIp, ws: We
     })
 }
 
-async fn init_websocket(ws: WebSocket, data: WsAccessToken, ip: ClientIp) -> ApiResult<()> {
+async fn init_websocket(ws: WebSocket, data: WsAccessToken, ip: ClientIp) -> Result<(), Error> {
     let addr = ip.ip;
     info!("Accepting WS connection from {addr}");
 
-    let Some(token) = data.access_token else { err_code!("Invalid claim", StatusCode::UNAUTHORIZED) };
-    let Ok(claims) = crate::auth::decode_login(&token) else { err_code!("Invalid token", StatusCode::UNAUTHORIZED) };
+    let Some(token) = data.access_token else { err_code!("Invalid claim", StatusCode::Unauthorized) };
+    let Ok(claims) = crate::auth::decode_login(&token) else { err_code!("Invalid token", StatusCode::Unauthorized) };
 
     let (rx, guard) = {
         let users = Arc::clone(&WS_USERS);
@@ -264,7 +257,7 @@ impl WebSocketUsers {
     }
 
     // NOTE: The last modified date needs to be updated before calling these methods
-    pub async fn send_user_update(&self, ut: UpdateType, conn: &Conn, user: &User) -> ApiResult<()> {
+    pub async fn send_user_update(&self, ut: UpdateType, conn: &Conn, user: &User) -> Result<()> {
         let data =
             create_update(vec![("UserId".into(), user.uuid.to_string().into()), ("Date".into(), serialize_date(user.last_revision(conn).await?))], ut, None);
 
@@ -276,7 +269,7 @@ impl WebSocketUsers {
         Ok(())
     }
 
-    pub async fn send_logout(&self, user: &User, conn: &Conn, acting_device_uuid: Option<Uuid>) -> ApiResult<()> {
+    pub async fn send_logout(&self, user: &User, conn: &Conn, acting_device_uuid: Option<Uuid>) -> Result<()> {
         let data = create_update(
             vec![("UserId".into(), user.uuid.to_string().into()), ("Date".into(), serialize_date(user.last_revision(conn).await?))],
             UpdateType::LogOut,
@@ -291,7 +284,7 @@ impl WebSocketUsers {
         Ok(())
     }
 
-    pub async fn send_folder_update(&self, ut: UpdateType, folder: &Folder, acting_device_uuid: Uuid, conn: &Conn) -> ApiResult<()> {
+    pub async fn send_folder_update(&self, ut: UpdateType, folder: &Folder, acting_device_uuid: Uuid, conn: &Conn) -> Result<()> {
         let data = create_update(
             vec![
                 ("Id".into(), folder.uuid.to_string().into()),
@@ -331,7 +324,7 @@ impl WebSocketUsers {
         acting_device_uuid: Uuid,
         collection_uuids: Option<Vec<Uuid>>,
         conn: &Conn,
-    ) -> ApiResult<()> {
+    ) -> Result<()> {
         let org_uuid = convert_option(cipher.organization_uuid.map(|x| x.to_string()));
         // Depending if there are collections provided or not, we need to have different values for the following variables.
         // The user_uuid should be `null`, and the revision date should be set to now, else the clients won't sync the collection change.
@@ -363,7 +356,7 @@ impl WebSocketUsers {
         Ok(())
     }
 
-    pub async fn send_send_update(&self, ut: UpdateType, send: &DbSend, user_uuids: &[Uuid], acting_device_uuid: Uuid, conn: &Conn) -> ApiResult<()> {
+    pub async fn send_send_update(&self, ut: UpdateType, send: &DbSend, user_uuids: &[Uuid], acting_device_uuid: Uuid, conn: &Conn) -> Result<()> {
         let user_uuid = convert_option(send.user_uuid.map(|x| x.to_string()));
 
         let data = create_update(

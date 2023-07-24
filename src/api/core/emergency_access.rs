@@ -1,5 +1,4 @@
-use axum::{extract::Path, routing, Json, Router};
-use axum_util::errors::ApiResult;
+use axol::prelude::*;
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -19,28 +18,28 @@ use crate::{
 
 pub fn route(router: Router) -> Router {
     router
-        .route("/emergency-access/trusted", routing::get(get_contacts))
-        .route("/emergency-access/granted", routing::get(get_grantees))
-        .route("/emergency-access/:emergency_id", routing::get(get_emergency_access))
-        .route("/emergency-access/:emergency_id", routing::put(post_emergency_access))
-        .route("/emergency-access/:emergency_id", routing::delete(delete_emergency_access))
-        .route("/emergency-access/:emergency_id/delete", routing::post(delete_emergency_access))
-        .route("/emergency-access/invite", routing::post(send_invite))
-        .route("/emergency-access/:emergency_id/reinvite", routing::post(resend_invite))
-        .route("/emergency-access/:emergency_id/accept", routing::post(accept_invite))
-        .route("/emergency-access/:emergency_id/confirm", routing::post(confirm_emergency_access))
-        .route("/emergency-access/:emergency_id/initiate", routing::post(initiate_emergency_access))
-        .route("/emergency-access/:emergency_id/approve", routing::post(approve_emergency_access))
-        .route("/emergency-access/:emergency_id/reject", routing::post(reject_emergency_access))
-        .route("/emergency-access/:emergency_id/view", routing::post(view_emergency_access))
-        .route("/emergency-access/:emergency_id/takeover", routing::post(takeover_emergency_access))
-        .route("/emergency-access/:emergency_id/password", routing::post(password_emergency_access))
-        .route("/emergency-access/:emergency_id/policies", routing::get(policies_emergency_access))
+        .get("/emergency-access/trusted", get_contacts)
+        .get("/emergency-access/granted", get_grantees)
+        .get("/emergency-access/:emergency_id", get_emergency_access)
+        .put("/emergency-access/:emergency_id", post_emergency_access)
+        .delete("/emergency-access/:emergency_id", delete_emergency_access)
+        .post("/emergency-access/:emergency_id/delete", delete_emergency_access)
+        .post("/emergency-access/invite", send_invite)
+        .post("/emergency-access/:emergency_id/reinvite", resend_invite)
+        .post("/emergency-access/:emergency_id/accept", accept_invite)
+        .post("/emergency-access/:emergency_id/confirm", confirm_emergency_access)
+        .post("/emergency-access/:emergency_id/initiate", initiate_emergency_access)
+        .post("/emergency-access/:emergency_id/approve", approve_emergency_access)
+        .post("/emergency-access/:emergency_id/reject", reject_emergency_access)
+        .post("/emergency-access/:emergency_id/view", view_emergency_access)
+        .post("/emergency-access/:emergency_id/takeover", takeover_emergency_access)
+        .post("/emergency-access/:emergency_id/password", password_emergency_access)
+        .get("/emergency-access/:emergency_id/policies", policies_emergency_access)
 }
 
-async fn get_contacts(headers: Headers) -> ApiResult<Json<Value>> {
+async fn get_contacts(headers: Headers) -> Result<Json<Value>> {
     check_emergency_access_allowed()?;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let emergency_access_list = EmergencyAccess::find_all_by_grantor_uuid(&conn, headers.user.uuid).await?;
     let mut emergency_access_list_json = Vec::with_capacity(emergency_access_list.len());
@@ -55,9 +54,9 @@ async fn get_contacts(headers: Headers) -> ApiResult<Json<Value>> {
     })))
 }
 
-async fn get_grantees(headers: Headers) -> ApiResult<Json<Value>> {
+async fn get_grantees(headers: Headers) -> Result<Json<Value>> {
     check_emergency_access_allowed()?;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let emergency_access_list = EmergencyAccess::find_all_by_grantee_uuid(&conn, headers.user.uuid).await?;
     let mut emergency_access_list_json = Vec::with_capacity(emergency_access_list.len());
@@ -72,9 +71,9 @@ async fn get_grantees(headers: Headers) -> ApiResult<Json<Value>> {
     })))
 }
 
-async fn get_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers) -> ApiResult<Json<Value>> {
+async fn get_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers) -> Result<Json<Value>> {
     check_emergency_access_allowed()?;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     match EmergencyAccess::get_with_grantor(&conn, emergency_id, headers.user.uuid).await? {
         Some(emergency_access) => Ok(Json(emergency_access.to_json_grantee_details(&conn).await?)),
@@ -92,11 +91,11 @@ struct EmergencyAccessUpdateData {
     key_encrypted: Option<String>,
 }
 
-async fn post_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers, data: Json<Upcase<EmergencyAccessUpdateData>>) -> ApiResult<Json<Value>> {
+async fn post_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers, data: Json<Upcase<EmergencyAccessUpdateData>>) -> Result<Json<Value>> {
     check_emergency_access_allowed()?;
 
     let data: EmergencyAccessUpdateData = data.0.data;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let mut emergency_access = match EmergencyAccess::get_with_grantor(&conn, emergency_id, headers.user.uuid).await? {
         Some(emergency_access) => emergency_access,
@@ -113,11 +112,11 @@ async fn post_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers,
     Ok(Json(emergency_access.to_json()))
 }
 
-async fn delete_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers) -> ApiResult<()> {
+async fn delete_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers) -> Result<()> {
     check_emergency_access_allowed()?;
 
     let grantor_user = headers.user;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let emergency_access = match EmergencyAccess::get_with_grantor(&conn, emergency_id, grantor_user.uuid).await? {
         Some(emer) => {
@@ -142,7 +141,7 @@ struct EmergencyAccessInviteData {
     wait_time_days: i32,
 }
 
-async fn send_invite(conn: AutoTxn, headers: Headers, data: Json<Upcase<EmergencyAccessInviteData>>) -> ApiResult<()> {
+async fn send_invite(conn: AutoTxn, headers: Headers, data: Json<Upcase<EmergencyAccessInviteData>>) -> Result<()> {
     check_emergency_access_allowed()?;
 
     let data: EmergencyAccessInviteData = data.0.data;
@@ -209,9 +208,9 @@ async fn send_invite(conn: AutoTxn, headers: Headers, data: Json<Upcase<Emergenc
     Ok(())
 }
 
-async fn resend_invite(Path(emergency_id): Path<Uuid>, headers: Headers) -> ApiResult<()> {
+async fn resend_invite(Path(emergency_id): Path<Uuid>, headers: Headers) -> Result<()> {
     check_emergency_access_allowed()?;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let mut emergency_access = match EmergencyAccess::get_with_grantor(&conn, emergency_id, headers.user.uuid).await? {
         Some(emer) => emer,
@@ -259,7 +258,7 @@ struct AcceptData {
     token: String,
 }
 
-async fn accept_invite(Path(emergency_id): Path<Uuid>, headers: Headers, data: Json<Upcase<AcceptData>>) -> ApiResult<()> {
+async fn accept_invite(Path(emergency_id): Path<Uuid>, headers: Headers, data: Json<Upcase<AcceptData>>) -> Result<()> {
     check_emergency_access_allowed()?;
 
     let data: AcceptData = data.0.data;
@@ -271,7 +270,7 @@ async fn accept_invite(Path(emergency_id): Path<Uuid>, headers: Headers, data: J
     if claims.email != headers.user.email {
         err!("Claim email does not match current users email")
     }
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let grantee_user = match User::find_by_email(&conn, &claims.email).await? {
         Some(user) => {
@@ -305,7 +304,7 @@ async fn accept_invite(Path(emergency_id): Path<Uuid>, headers: Headers, data: J
     }
 }
 
-async fn accept_invite_process(grantee_uuid: Uuid, emergency_access: &mut EmergencyAccess, grantee_email: &str, conn: &Conn) -> ApiResult<()> {
+async fn accept_invite_process(grantee_uuid: Uuid, emergency_access: &mut EmergencyAccess, grantee_email: &str, conn: &Conn) -> Result<()> {
     if emergency_access.email.is_none() || emergency_access.email.as_ref().unwrap() != grantee_email {
         err!("User email does not match invite.");
     }
@@ -326,13 +325,13 @@ struct ConfirmData {
     Key: String,
 }
 
-async fn confirm_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers, data: Json<Upcase<ConfirmData>>) -> ApiResult<Json<Value>> {
+async fn confirm_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers, data: Json<Upcase<ConfirmData>>) -> Result<Json<Value>> {
     check_emergency_access_allowed()?;
 
     let confirming_user = headers.user;
     let data: ConfirmData = data.0.data;
     let key = data.Key;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let mut emergency_access = match EmergencyAccess::get_with_grantor(&conn, emergency_id, confirming_user.uuid).await? {
         Some(emer) => emer,
@@ -369,11 +368,11 @@ async fn confirm_emergency_access(Path(emergency_id): Path<Uuid>, headers: Heade
     }
 }
 
-async fn initiate_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers) -> ApiResult<Json<Value>> {
+async fn initiate_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers) -> Result<Json<Value>> {
     check_emergency_access_allowed()?;
 
     let initiating_user = headers.user;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let mut emergency_access = match EmergencyAccess::get_with_grantee(&conn, emergency_id, initiating_user.uuid).await? {
         Some(emer) => emer,
@@ -408,9 +407,9 @@ async fn initiate_emergency_access(Path(emergency_id): Path<Uuid>, headers: Head
     Ok(Json(emergency_access.to_json()))
 }
 
-async fn approve_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers) -> ApiResult<Json<Value>> {
+async fn approve_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers) -> Result<Json<Value>> {
     check_emergency_access_allowed()?;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let mut emergency_access = match EmergencyAccess::get_with_grantor(&conn, emergency_id, headers.user.uuid).await? {
         Some(emer) => emer,
@@ -444,9 +443,9 @@ async fn approve_emergency_access(Path(emergency_id): Path<Uuid>, headers: Heade
     }
 }
 
-async fn reject_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers) -> ApiResult<Json<Value>> {
+async fn reject_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers) -> Result<Json<Value>> {
     check_emergency_access_allowed()?;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let mut emergency_access = match EmergencyAccess::get_with_grantor(&conn, emergency_id, headers.user.uuid).await? {
         Some(emer) => emer,
@@ -482,9 +481,9 @@ async fn reject_emergency_access(Path(emergency_id): Path<Uuid>, headers: Header
     }
 }
 
-async fn view_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers) -> ApiResult<Json<Value>> {
+async fn view_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers) -> Result<Json<Value>> {
     check_emergency_access_allowed()?;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let emergency_access = match EmergencyAccess::get_with_grantee(&conn, emergency_id, headers.user.uuid).await? {
         Some(emer) => emer,
@@ -504,9 +503,9 @@ async fn view_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers)
     })))
 }
 
-async fn takeover_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers) -> ApiResult<Json<Value>> {
+async fn takeover_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers) -> Result<Json<Value>> {
     check_emergency_access_allowed()?;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let requesting_user = headers.user;
     let emergency_access = match EmergencyAccess::get_with_grantee(&conn, emergency_id, requesting_user.uuid).await? {
@@ -547,7 +546,7 @@ async fn password_emergency_access(
     Path(emergency_id): Path<Uuid>,
     headers: Headers,
     data: Json<Upcase<EmergencyAccessPasswordData>>,
-) -> ApiResult<()> {
+) -> Result<()> {
     check_emergency_access_allowed()?;
 
     let data: EmergencyAccessPasswordData = data.0.data;
@@ -585,9 +584,9 @@ async fn password_emergency_access(
     Ok(())
 }
 
-async fn policies_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers) -> ApiResult<Json<Value>> {
+async fn policies_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers) -> Result<Json<Value>> {
     let requesting_user = headers.user;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let emergency_access = match EmergencyAccess::get_with_grantee(&conn, emergency_id, requesting_user.uuid).await? {
         Some(emer) => emer,
@@ -620,7 +619,7 @@ fn is_valid_request(emergency_access: &EmergencyAccess, requesting_user_uuid: Uu
         && emergency_access.atype == requested_access_type
 }
 
-fn check_emergency_access_allowed() -> ApiResult<()> {
+fn check_emergency_access_allowed() -> Result<()> {
     if !CONFIG.settings.emergency_access_allowed {
         err!("Emergency access is not allowed.")
     }

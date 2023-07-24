@@ -1,5 +1,4 @@
-use axum::{routing, Json, Router};
-use axum_util::errors::{ApiError, ApiResult};
+use axol::prelude::*;
 use chrono::Utc;
 use data_encoding::BASE32;
 use serde::Deserialize;
@@ -24,34 +23,34 @@ pub mod yubikey;
 
 pub fn route(router: Router) -> Router {
     router
-        .route("/two-factor", routing::get(get_twofactor))
-        .route("/two-factor/get-recover", routing::post(get_recover))
-        .route("/two-factor/recover", routing::post(recover))
-        .route("/two-factor/disable", routing::post(disable_twofactor))
-        .route("/two-factor/disable", routing::put(disable_twofactor))
-        .route("/two-factor/get-device-verification-settings", routing::get(get_device_verification_settings))
-        .route("/two-factor/send-email-login", routing::post(email::send_email_login))
-        .route("/two-factor/get-email", routing::post(email::get_email))
-        .route("/two-factor/send-email", routing::post(email::send_email))
-        .route("/two-factor/email", routing::put(email::email))
-        .route("/two-factor/get-authenticator", routing::post(authenticator::generate_authenticator))
-        .route("/two-factor/authenticator", routing::post(authenticator::activate_authenticator))
-        .route("/two-factor/authenticator", routing::put(authenticator::activate_authenticator))
-        .route("/two-factor/get-yubikey", routing::post(yubikey::generate_yubikey))
-        .route("/two-factor/yubikey", routing::post(yubikey::activate_yubikey))
-        .route("/two-factor/yubikey", routing::put(yubikey::activate_yubikey))
-        .route("/two-factor/get-webauthn", routing::post(webauthn::get_webauthn))
-        .route("/two-factor/webauthn", routing::post(webauthn::activate_webauthn))
-        .route("/two-factor/webauthn", routing::put(webauthn::activate_webauthn))
-        .route("/two-factor/webauthn", routing::delete(webauthn::delete_webauthn))
-        .route("/two-factor/get-webauthn-challenge", routing::post(webauthn::generate_webauthn_challenge))
-        .route("/two-factor/get-duo", routing::post(duo::get_duo))
-        .route("/two-factor/duo", routing::post(duo::activate_duo))
-        .route("/two-factor/duo", routing::put(duo::activate_duo))
+        .get("/two-factor", get_twofactor)
+        .post("/two-factor/get-recover", get_recover)
+        .post("/two-factor/recover", recover)
+        .post("/two-factor/disable", disable_twofactor)
+        .put("/two-factor/disable", disable_twofactor)
+        .get("/two-factor/get-device-verification-settings", get_device_verification_settings)
+        .post("/two-factor/send-email-login", email::send_email_login)
+        .post("/two-factor/get-email", email::get_email)
+        .post("/two-factor/send-email", email::send_email)
+        .put("/two-factor/email", email::email)
+        .post("/two-factor/get-authenticator", authenticator::generate_authenticator)
+        .post("/two-factor/authenticator", authenticator::activate_authenticator)
+        .put("/two-factor/authenticator", authenticator::activate_authenticator)
+        .post("/two-factor/get-yubikey", yubikey::generate_yubikey)
+        .post("/two-factor/yubikey", yubikey::activate_yubikey)
+        .put("/two-factor/yubikey", yubikey::activate_yubikey)
+        .post("/two-factor/get-webauthn", webauthn::get_webauthn)
+        .post("/two-factor/webauthn", webauthn::activate_webauthn)
+        .put("/two-factor/webauthn", webauthn::activate_webauthn)
+        .delete("/two-factor/webauthn", webauthn::delete_webauthn)
+        .post("/two-factor/get-webauthn-challenge", webauthn::generate_webauthn_challenge)
+        .post("/two-factor/get-duo", duo::get_duo)
+        .post("/two-factor/duo", duo::activate_duo)
+        .put("/two-factor/duo", duo::activate_duo)
 }
 
-pub async fn get_twofactor(headers: Headers) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+pub async fn get_twofactor(headers: Headers) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
     let twofactors = TwoFactor::find_by_user_official(&conn, headers.user.uuid).await?;
     let twofactors_json: Vec<Value> = twofactors.iter().map(TwoFactor::to_json_provider).collect();
 
@@ -62,7 +61,7 @@ pub async fn get_twofactor(headers: Headers) -> ApiResult<Json<Value>> {
     })))
 }
 
-pub async fn get_recover(headers: Headers, data: Json<Upcase<PasswordData>>) -> ApiResult<Json<Value>> {
+pub async fn get_recover(headers: Headers, data: Json<Upcase<PasswordData>>) -> Result<Json<Value>> {
     let data: PasswordData = data.0.data;
     let user = headers.user;
 
@@ -84,9 +83,9 @@ pub struct RecoverTwoFactor {
     recovery_code: String,
 }
 
-pub async fn recover(client_headers: ClientHeaders, data: Json<Upcase<RecoverTwoFactor>>) -> ApiResult<Json<Value>> {
+pub async fn recover(client_headers: ClientHeaders, data: Json<Upcase<RecoverTwoFactor>>) -> Result<Json<Value>> {
     let data: RecoverTwoFactor = data.0.data;
-    let mut conn = DB.get().await?;
+    let mut conn = DB.get().await.ise()?;
 
     // Get the user
     let mut user = match User::find_by_email(&conn, &data.email).await? {
@@ -115,7 +114,7 @@ pub async fn recover(client_headers: ClientHeaders, data: Json<Upcase<RecoverTwo
     Ok(Json(Value::Object(serde_json::Map::new())))
 }
 
-pub async fn _generate_recover_code(user: &mut User, conn: &Conn) -> ApiResult<()> {
+pub async fn _generate_recover_code(user: &mut User, conn: &Conn) -> Result<()> {
     if user.totp_recover.is_none() {
         let totp_recover = crypto::encode_random_bytes::<20>(BASE32);
         user.totp_recover = Some(totp_recover);
@@ -132,7 +131,7 @@ pub struct DisableTwoFactorData {
     r#type: i32,
 }
 
-pub async fn disable_twofactor(headers: Headers, data: Json<Upcase<DisableTwoFactorData>>) -> ApiResult<Json<Value>> {
+pub async fn disable_twofactor(headers: Headers, data: Json<Upcase<DisableTwoFactorData>>) -> Result<Json<Value>> {
     let data: DisableTwoFactorData = data.0.data;
     let password_hash = data.master_password_hash;
     let user = headers.user;
@@ -141,8 +140,8 @@ pub async fn disable_twofactor(headers: Headers, data: Json<Upcase<DisableTwoFac
         err!("Invalid password");
     }
 
-    let type_ = TwoFactorType::from_repr(data.r#type).ok_or(ApiError::NotFound)?;
-    let mut conn = DB.get().await?;
+    let type_ = TwoFactorType::from_repr(data.r#type).ok_or(Error::NotFound)?;
+    let mut conn = DB.get().await.ise()?;
 
     if let Some(twofactor) = TwoFactor::find_by_user_and_type(&conn, user.uuid, type_).await? {
         twofactor.delete(&conn).await?;
@@ -155,7 +154,7 @@ pub async fn disable_twofactor(headers: Headers, data: Json<Upcase<DisableTwoFac
         for user_org in UserOrganization::find_by_user_and_policy(&conn, user.uuid, OrgPolicyType::TwoFactorAuthentication).await?.into_iter() {
             if user_org.atype < UserOrgType::Admin {
                 if CONFIG.mail_enabled() {
-                    let org = Organization::get(&conn, user_org.organization_uuid).await?.ok_or(ApiError::NotFound)?;
+                    let org = Organization::get(&conn, user_org.organization_uuid).await?.ok_or(Error::NotFound)?;
                     mail::send_2fa_removed_from_org(&user.email, &org.name).await?;
                 }
                 user_org.delete(&mut conn).await?;

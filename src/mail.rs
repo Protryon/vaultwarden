@@ -1,6 +1,6 @@
 use std::{net::IpAddr, str::FromStr};
 
-use axum_util::errors::ApiResult;
+use axol::{Error, Result};
 use chrono::{DateTime, Utc};
 use log::debug;
 use percent_encoding::{percent_encode, NON_ALPHANUMERIC};
@@ -72,13 +72,13 @@ lazy_static::lazy_static! {
     };
 }
 
-fn get_text(template_name: &'static str, data: serde_json::Value) -> ApiResult<(String, String, String)> {
+fn get_text(template_name: &'static str, data: serde_json::Value) -> Result<(String, String, String)> {
     let (subject_html, body_html) = get_template(&format!("{template_name}.html"), &data)?;
     let (_subject_text, body_text) = get_template(template_name, &data)?;
     Ok((subject_html, body_html, body_text))
 }
 
-fn get_template(template_name: &str, data: &serde_json::Value) -> ApiResult<(String, String)> {
+fn get_template(template_name: &str, data: &serde_json::Value) -> Result<(String, String)> {
     let text = crate::templates::render_template(template_name, data)?;
     let mut text_split = text.split("<!---------------->");
 
@@ -95,7 +95,7 @@ fn get_template(template_name: &str, data: &serde_json::Value) -> ApiResult<(Str
     Ok((subject, body))
 }
 
-pub async fn send_password_hint(address: &str, hint: Option<String>) -> ApiResult<()> {
+pub async fn send_password_hint(address: &str, hint: Option<String>) -> Result<()> {
     let template_name = if hint.is_some() {
         "email/pw_hint_some"
     } else {
@@ -114,7 +114,7 @@ pub async fn send_password_hint(address: &str, hint: Option<String>) -> ApiResul
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_delete_account(address: &str, uuid: Uuid) -> ApiResult<()> {
+pub async fn send_delete_account(address: &str, uuid: Uuid) -> Result<()> {
     let claims = generate_delete_claims(uuid.to_string());
     let delete_token = encode_jwt(&claims);
 
@@ -132,7 +132,7 @@ pub async fn send_delete_account(address: &str, uuid: Uuid) -> ApiResult<()> {
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_verify_email(address: &str, uuid: Uuid) -> ApiResult<()> {
+pub async fn send_verify_email(address: &str, uuid: Uuid) -> Result<()> {
     let claims = generate_verify_email_claims(uuid.to_string());
     let verify_email_token = encode_jwt(&claims);
 
@@ -150,7 +150,7 @@ pub async fn send_verify_email(address: &str, uuid: Uuid) -> ApiResult<()> {
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_welcome(address: &str) -> ApiResult<()> {
+pub async fn send_welcome(address: &str) -> Result<()> {
     let (subject, body_html, body_text) = get_text(
         "email/welcome",
         json!({
@@ -162,7 +162,7 @@ pub async fn send_welcome(address: &str) -> ApiResult<()> {
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_welcome_must_verify(address: &str, uuid: Uuid) -> ApiResult<()> {
+pub async fn send_welcome_must_verify(address: &str, uuid: Uuid) -> Result<()> {
     let claims = generate_verify_email_claims(uuid.to_string());
     let verify_email_token = encode_jwt(&claims);
 
@@ -179,7 +179,7 @@ pub async fn send_welcome_must_verify(address: &str, uuid: Uuid) -> ApiResult<()
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_2fa_removed_from_org(address: &str, org_name: &str) -> ApiResult<()> {
+pub async fn send_2fa_removed_from_org(address: &str, org_name: &str) -> Result<()> {
     let (subject, body_html, body_text) = get_text(
         "email/send_2fa_removed_from_org",
         json!({
@@ -192,7 +192,7 @@ pub async fn send_2fa_removed_from_org(address: &str, org_name: &str) -> ApiResu
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_single_org_removed_from_org(address: &str, org_name: &str) -> ApiResult<()> {
+pub async fn send_single_org_removed_from_org(address: &str, org_name: &str) -> Result<()> {
     let (subject, body_html, body_text) = get_text(
         "email/send_single_org_removed_from_org",
         json!({
@@ -205,7 +205,7 @@ pub async fn send_single_org_removed_from_org(address: &str, org_name: &str) -> 
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_invite(address: &str, user_uuid: Uuid, org_id: Option<Uuid>, org_name: &str, invited_by_email: Option<String>) -> ApiResult<()> {
+pub async fn send_invite(address: &str, user_uuid: Uuid, org_id: Option<Uuid>, org_name: &str, invited_by_email: Option<String>) -> Result<()> {
     let claims = generate_invite_claims(user_uuid, String::from(address), org_id, invited_by_email);
     let invite_token = encode_jwt(&claims);
 
@@ -225,7 +225,7 @@ pub async fn send_invite(address: &str, user_uuid: Uuid, org_id: Option<Uuid>, o
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_emergency_access_invite(address: &str, uuid: Uuid, emer_id: Uuid, grantor_name: &str, grantor_email: &str) -> ApiResult<()> {
+pub async fn send_emergency_access_invite(address: &str, uuid: Uuid, emer_id: Uuid, grantor_name: &str, grantor_email: &str) -> Result<()> {
     let claims =
         generate_emergency_access_invite_claims(uuid.to_string(), String::from(address), emer_id, String::from(grantor_name), String::from(grantor_email));
 
@@ -246,7 +246,7 @@ pub async fn send_emergency_access_invite(address: &str, uuid: Uuid, emer_id: Uu
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_emergency_access_invite_accepted(address: &str, grantee_email: &str) -> ApiResult<()> {
+pub async fn send_emergency_access_invite_accepted(address: &str, grantee_email: &str) -> Result<()> {
     let (subject, body_html, body_text) = get_text(
         "email/emergency_access_invite_accepted",
         json!({
@@ -259,7 +259,7 @@ pub async fn send_emergency_access_invite_accepted(address: &str, grantee_email:
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_emergency_access_invite_confirmed(address: &str, grantor_name: &str) -> ApiResult<()> {
+pub async fn send_emergency_access_invite_confirmed(address: &str, grantor_name: &str) -> Result<()> {
     let (subject, body_html, body_text) = get_text(
         "email/emergency_access_invite_confirmed",
         json!({
@@ -272,7 +272,7 @@ pub async fn send_emergency_access_invite_confirmed(address: &str, grantor_name:
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_emergency_access_recovery_approved(address: &str, grantor_name: &str) -> ApiResult<()> {
+pub async fn send_emergency_access_recovery_approved(address: &str, grantor_name: &str) -> Result<()> {
     let (subject, body_html, body_text) = get_text(
         "email/emergency_access_recovery_approved",
         json!({
@@ -285,7 +285,7 @@ pub async fn send_emergency_access_recovery_approved(address: &str, grantor_name
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_emergency_access_recovery_initiated(address: &str, grantee_name: &str, atype: &str, wait_time_days: &i32) -> ApiResult<()> {
+pub async fn send_emergency_access_recovery_initiated(address: &str, grantee_name: &str, atype: &str, wait_time_days: &i32) -> Result<()> {
     let (subject, body_html, body_text) = get_text(
         "email/emergency_access_recovery_initiated",
         json!({
@@ -300,7 +300,7 @@ pub async fn send_emergency_access_recovery_initiated(address: &str, grantee_nam
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_emergency_access_recovery_reminder(address: &str, grantee_name: &str, atype: &str, days_left: &str) -> ApiResult<()> {
+pub async fn send_emergency_access_recovery_reminder(address: &str, grantee_name: &str, atype: &str, days_left: &str) -> Result<()> {
     let (subject, body_html, body_text) = get_text(
         "email/emergency_access_recovery_reminder",
         json!({
@@ -315,7 +315,7 @@ pub async fn send_emergency_access_recovery_reminder(address: &str, grantee_name
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_emergency_access_recovery_rejected(address: &str, grantor_name: &str) -> ApiResult<()> {
+pub async fn send_emergency_access_recovery_rejected(address: &str, grantor_name: &str) -> Result<()> {
     let (subject, body_html, body_text) = get_text(
         "email/emergency_access_recovery_rejected",
         json!({
@@ -328,7 +328,7 @@ pub async fn send_emergency_access_recovery_rejected(address: &str, grantor_name
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_emergency_access_recovery_timed_out(address: &str, grantee_name: &str, atype: &str) -> ApiResult<()> {
+pub async fn send_emergency_access_recovery_timed_out(address: &str, grantee_name: &str, atype: &str) -> Result<()> {
     let (subject, body_html, body_text) = get_text(
         "email/emergency_access_recovery_timed_out",
         json!({
@@ -342,7 +342,7 @@ pub async fn send_emergency_access_recovery_timed_out(address: &str, grantee_nam
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_invite_accepted(new_user_email: &str, address: &str, org_name: &str) -> ApiResult<()> {
+pub async fn send_invite_accepted(new_user_email: &str, address: &str, org_name: &str) -> Result<()> {
     let (subject, body_html, body_text) = get_text(
         "email/invite_accepted",
         json!({
@@ -356,7 +356,7 @@ pub async fn send_invite_accepted(new_user_email: &str, address: &str, org_name:
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_invite_confirmed(address: &str, org_name: &str) -> ApiResult<()> {
+pub async fn send_invite_confirmed(address: &str, org_name: &str) -> Result<()> {
     let (subject, body_html, body_text) = get_text(
         "email/invite_confirmed",
         json!({
@@ -369,7 +369,7 @@ pub async fn send_invite_confirmed(address: &str, org_name: &str) -> ApiResult<(
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_new_device_logged_in(address: &str, ip: IpAddr, dt: DateTime<Utc>, device: &str) -> ApiResult<()> {
+pub async fn send_new_device_logged_in(address: &str, ip: IpAddr, dt: DateTime<Utc>, device: &str) -> Result<()> {
     use crate::util::upcase_first;
     let device = upcase_first(device);
 
@@ -388,7 +388,7 @@ pub async fn send_new_device_logged_in(address: &str, ip: IpAddr, dt: DateTime<U
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_incomplete_2fa_login(address: &str, ip: IpAddr, dt: DateTime<Utc>, device: &str) -> ApiResult<()> {
+pub async fn send_incomplete_2fa_login(address: &str, ip: IpAddr, dt: DateTime<Utc>, device: &str) -> Result<()> {
     use crate::util::upcase_first;
     let device = upcase_first(device);
 
@@ -408,7 +408,7 @@ pub async fn send_incomplete_2fa_login(address: &str, ip: IpAddr, dt: DateTime<U
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_token(address: &str, token: &str) -> ApiResult<()> {
+pub async fn send_token(address: &str, token: &str) -> Result<()> {
     let (subject, body_html, body_text) = get_text(
         "email/twofactor_email",
         json!({
@@ -421,7 +421,7 @@ pub async fn send_token(address: &str, token: &str) -> ApiResult<()> {
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_change_email(address: &str, token: &str) -> ApiResult<()> {
+pub async fn send_change_email(address: &str, token: &str) -> Result<()> {
     let (subject, body_html, body_text) = get_text(
         "email/change_email",
         json!({
@@ -434,7 +434,7 @@ pub async fn send_change_email(address: &str, token: &str) -> ApiResult<()> {
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_set_password(address: &str, user_name: &str) -> ApiResult<()> {
+pub async fn send_set_password(address: &str, user_name: &str) -> Result<()> {
     let (subject, body_html, body_text) = get_text(
         "email/set_password",
         json!({
@@ -446,7 +446,7 @@ pub async fn send_set_password(address: &str, user_name: &str) -> ApiResult<()> 
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_test(address: &str) -> ApiResult<()> {
+pub async fn send_test(address: &str) -> Result<()> {
     let (subject, body_html, body_text) = get_text(
         "email/smtp_test",
         json!({
@@ -458,7 +458,7 @@ pub async fn send_test(address: &str) -> ApiResult<()> {
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_admin_reset_password(address: &str, user_name: &str, org_name: &str) -> ApiResult<()> {
+pub async fn send_admin_reset_password(address: &str, user_name: &str, org_name: &str) -> Result<()> {
     let (subject, body_html, body_text) = get_text(
         "email/admin_reset_password",
         json!({
@@ -471,7 +471,7 @@ pub async fn send_admin_reset_password(address: &str, user_name: &str, org_name:
     send_email(address, &subject, body_html, body_text).await
 }
 
-async fn send_with_selected_transport(email: Message) -> ApiResult<()> {
+async fn send_with_selected_transport(email: Message) -> Result<()> {
     match SMTP_TRANSPORT.as_ref().unwrap().send(email).await {
         Ok(_) => Ok(()),
         // Match some common errors and make them more user friendly
@@ -504,7 +504,7 @@ async fn send_with_selected_transport(email: Message) -> ApiResult<()> {
     }
 }
 
-async fn send_email(address: &str, subject: &str, body_html: String, body_text: String) -> ApiResult<()> {
+async fn send_email(address: &str, subject: &str, body_html: String, body_text: String) -> Result<()> {
     let Some(smtp) = &CONFIG.smtp else {
         return Ok(());
     };
@@ -524,10 +524,11 @@ async fn send_email(address: &str, subject: &str, body_html: String, body_text: 
 
     let email = Message::builder()
         .message_id(Some(format!("<{}@{}>", uuid::Uuid::new_v4(), smtp.from_address.split('@').collect::<Vec<&str>>()[1])))
-        .to(Mailbox::new(None, Address::from_str(address)?))
-        .from(Mailbox::new(Some(smtp.from_name.clone()), Address::from_str(&smtp.from_address)?))
+        .to(Mailbox::new(None, Address::from_str(address).map_err(Error::internal)?))
+        .from(Mailbox::new(Some(smtp.from_name.clone()), Address::from_str(&smtp.from_address).map_err(Error::internal)?))
         .subject(subject)
-        .multipart(body)?;
+        .multipart(body)
+        .map_err(Error::internal)?;
 
     send_with_selected_transport(email).await
 }

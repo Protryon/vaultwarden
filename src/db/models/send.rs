@@ -1,4 +1,4 @@
-use axum_util::errors::{ApiError, ApiResult};
+use axol::{Error, ErrorExt, Result};
 use chrono::{DateTime, Utc};
 use data_encoding::BASE64URL_NOPAD;
 use log::error;
@@ -129,7 +129,7 @@ impl Send {
         }
     }
 
-    pub async fn creator_identifier(&self, conn: &Conn) -> ApiResult<Option<String>> {
+    pub async fn creator_identifier(&self, conn: &Conn) -> Result<Option<String>> {
         if let Some(hide_email) = self.hide_email {
             if hide_email {
                 return Ok(None);
@@ -137,7 +137,7 @@ impl Send {
         }
 
         if let Some(user_uuid) = self.user_uuid {
-            if let Some(user) = User::get(conn, user_uuid).await? {
+            if let Some(user) = User::get(conn, user_uuid).await.ise()? {
                 return Ok(Some(user.email));
             }
         }
@@ -172,7 +172,7 @@ impl Send {
         })
     }
 
-    pub async fn to_json_access(&self, conn: &Conn) -> ApiResult<Value> {
+    pub async fn to_json_access(&self, conn: &Conn) -> Result<Value> {
         use crate::util::format_date;
 
         Ok(json!({
@@ -184,23 +184,23 @@ impl Send {
             "File": if self.atype == SendType::File { Some(&self.data) } else { None },
 
             "ExpirationDate": self.expiration_date.as_ref().map(format_date),
-            "CreatorIdentifier": self.creator_identifier(conn).await?,
+            "CreatorIdentifier": self.creator_identifier(conn).await.ise()?,
             "Object": "send-access",
         }))
     }
 }
 
 impl Send {
-    pub fn decode_access_id(access_id: &str) -> ApiResult<Uuid> {
+    pub fn decode_access_id(access_id: &str) -> Result<Uuid> {
         let uuid_vec = match BASE64URL_NOPAD.decode(access_id.as_bytes()) {
             Ok(v) => v,
-            Err(_) => return Err(ApiError::BadRequest("invalid access id".to_string())),
+            Err(_) => return Err(Error::bad_request("invalid access id")),
         };
 
-        Uuid::from_slice(&uuid_vec).map_err(|_| ApiError::BadRequest("invalid access id".to_string()))
+        Uuid::from_slice(&uuid_vec).map_err(|_| Error::bad_request("invalid access id"))
     }
 
-    pub async fn save(&mut self, conn: &Conn) -> ApiResult<()> {
+    pub async fn save(&mut self, conn: &Conn) -> Result<()> {
         self.revision_date = Utc::now();
 
         conn.execute(r"INSERT INTO sends (uuid, user_uuid, organization_uuid, name, notes, atype, data, akey, password_hash, password_salt, password_iter, max_access_count, access_count, creation_date, revision_date, expiration_date, deletion_date, disabled, hide_email) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) ON CONFLICT (uuid) DO UPDATE
@@ -243,29 +243,29 @@ impl Send {
             &self.deletion_date,
             &self.disabled,
             &self.hide_email,
-        ]).await?;
+        ]).await.ise()?;
         if let Some(uuid) = self.user_uuid {
-            User::flag_revision_for(conn, uuid).await?;
+            User::flag_revision_for(conn, uuid).await.ise()?;
         }
         Ok(())
     }
 
-    pub async fn delete(&self, conn: &mut Conn) -> ApiResult<()> {
-        let txn = conn.transaction().await?;
-        txn.execute(r"DELETE FROM sends WHERE uuid = $1", &[&self.uuid]).await?;
+    pub async fn delete(&self, conn: &mut Conn) -> Result<()> {
+        let txn = conn.transaction().await.ise()?;
+        txn.execute(r"DELETE FROM sends WHERE uuid = $1", &[&self.uuid]).await.ise()?;
         if self.atype == SendType::File {
-            tokio::fs::remove_dir_all(CONFIG.folders.sends().join(self.uuid.to_string())).await?;
+            tokio::fs::remove_dir_all(CONFIG.folders.sends().join(self.uuid.to_string())).await.ise()?;
         }
         if let Some(uuid) = self.user_uuid {
-            User::flag_revision_for(txn.client(), uuid).await?;
+            User::flag_revision_for(txn.client(), uuid).await.ise()?;
         }
-        txn.commit().await?;
+        txn.commit().await.ise()?;
         Ok(())
     }
 
     /// Purge all sends that are past their deletion date.
-    pub async fn purge(conn: &mut Conn) -> ApiResult<()> {
-        for send in Self::find_by_past_deletion_date(conn).await? {
+    pub async fn purge(conn: &mut Conn) -> Result<()> {
+        for send in Self::find_by_past_deletion_date(conn).await.ise()? {
             if let Err(e) = send.delete(conn).await {
                 error!("failed to purge send {}: {e}", send.uuid);
             }
@@ -273,19 +273,19 @@ impl Send {
         Ok(())
     }
 
-    pub async fn find_by_past_deletion_date(conn: &Conn) -> ApiResult<Vec<Self>> {
-        Ok(conn.query(r"SELECT * FROM sends WHERE deletion_date < $1", &[&Utc::now()]).await?.into_iter().map(|x| x.into()).collect())
+    pub async fn find_by_past_deletion_date(conn: &Conn) -> Result<Vec<Self>> {
+        Ok(conn.query(r"SELECT * FROM sends WHERE deletion_date < $1", &[&Utc::now()]).await.ise()?.into_iter().map(|x| x.into()).collect())
     }
 
-    pub async fn get(conn: &Conn, uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM sends WHERE uuid = $1", &[&uuid]).await?.map(Into::into))
+    pub async fn get(conn: &Conn, uuid: Uuid) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM sends WHERE uuid = $1", &[&uuid]).await.ise()?.map(Into::into))
     }
 
-    pub async fn get_for_user(conn: &Conn, uuid: Uuid, user_uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM sends WHERE uuid = $1 AND user_uuid = $2", &[&uuid, &user_uuid]).await?.map(Into::into))
+    pub async fn get_for_user(conn: &Conn, uuid: Uuid, user_uuid: Uuid) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM sends WHERE uuid = $1 AND user_uuid = $2", &[&uuid, &user_uuid]).await.ise()?.map(Into::into))
     }
 
-    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<Vec<Self>> {
-        Ok(conn.query(r"SELECT * FROM sends WHERE user_uuid = $1", &[&user_uuid]).await?.into_iter().map(|x| x.into()).collect())
+    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid) -> Result<Vec<Self>> {
+        Ok(conn.query(r"SELECT * FROM sends WHERE user_uuid = $1", &[&user_uuid]).await.ise()?.into_iter().map(|x| x.into()).collect())
     }
 }

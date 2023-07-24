@@ -1,5 +1,4 @@
-use axum::{extract::Path, Json};
-use axum_util::errors::ApiResult;
+use axol::prelude::*;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -11,8 +10,8 @@ use crate::{
     util::Upcase,
 };
 
-pub async fn get_folders(headers: Headers) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+pub async fn get_folders(headers: Headers) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
     let folders = Folder::find_by_user(&conn, headers.user.uuid).await?;
     let folders_json: Vec<Value> = folders.iter().map(Folder::to_json).collect();
 
@@ -23,8 +22,8 @@ pub async fn get_folders(headers: Headers) -> ApiResult<Json<Value>> {
     })))
 }
 
-pub async fn get_folder(Path(uuid): Path<Uuid>, headers: Headers) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+pub async fn get_folder(Path(uuid): Path<Uuid>, headers: Headers) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
     let folder = match Folder::get_with_user(&conn, uuid, headers.user.uuid).await? {
         Some(folder) => folder,
         _ => err!("Invalid folder"),
@@ -39,11 +38,11 @@ pub struct FolderData {
     pub name: String,
 }
 
-pub async fn post_folders(headers: Headers, data: Json<Upcase<FolderData>>) -> ApiResult<Json<Value>> {
+pub async fn post_folders(headers: Headers, data: Json<Upcase<FolderData>>) -> Result<Json<Value>> {
     let data: FolderData = data.0.data;
 
     let mut folder = Folder::new(headers.user.uuid, data.name);
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     folder.save(&conn).await?;
     ws_users().send_folder_update(UpdateType::SyncFolderCreate, &folder, headers.device.uuid, &conn).await?;
@@ -51,9 +50,9 @@ pub async fn post_folders(headers: Headers, data: Json<Upcase<FolderData>>) -> A
     Ok(Json(folder.to_json()))
 }
 
-pub async fn put_folder(Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<FolderData>>) -> ApiResult<Json<Value>> {
+pub async fn put_folder(Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<FolderData>>) -> Result<Json<Value>> {
     let data: FolderData = data.0.data;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let mut folder = match Folder::get_with_user(&conn, uuid, headers.user.uuid).await? {
         Some(folder) => folder,
@@ -68,8 +67,8 @@ pub async fn put_folder(Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upc
     Ok(Json(folder.to_json()))
 }
 
-pub async fn delete_folder(Path(uuid): Path<Uuid>, headers: Headers) -> ApiResult<()> {
-    let conn = DB.get().await?;
+pub async fn delete_folder(Path(uuid): Path<Uuid>, headers: Headers) -> Result<()> {
+    let conn = DB.get().await.ise()?;
 
     let folder = match Folder::get_with_user(&conn, uuid, headers.user.uuid).await? {
         Some(folder) => folder,

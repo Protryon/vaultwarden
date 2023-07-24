@@ -1,7 +1,4 @@
-use axum::extract::{ConnectInfo, FromRequestParts, MatchedPath, Path, Query};
-use axum::http::request::Parts;
-use axum::response::IntoResponse;
-use axum_util::errors::{ApiError, ApiResult};
+use axol::{prelude::*, ConnectInfo, MatchedPath};
 use chrono::{Duration, Utc};
 use log::{error, warn};
 use once_cell::sync::Lazy;
@@ -50,7 +47,7 @@ pub fn encode_jwt<T: Serialize>(claims: &T) -> String {
     }
 }
 
-fn decode_jwt<T: DeserializeOwned>(token: &str, issuer: String) -> ApiResult<T> {
+fn decode_jwt<T: DeserializeOwned>(token: &str, issuer: String) -> Result<T> {
     let mut validation = jsonwebtoken::Validation::new(JWT_ALGORITHM);
     validation.leeway = 30; // 30 seconds
     validation.validate_exp = true;
@@ -69,35 +66,35 @@ fn decode_jwt<T: DeserializeOwned>(token: &str, issuer: String) -> ApiResult<T> 
     }
 }
 
-pub fn decode_login(token: &str) -> ApiResult<LoginJwtClaims> {
+pub fn decode_login(token: &str) -> Result<LoginJwtClaims> {
     decode_jwt(token, JWT_LOGIN_ISSUER.to_string())
 }
 
-pub fn decode_invite(token: &str) -> ApiResult<InviteJwtClaims> {
+pub fn decode_invite(token: &str) -> Result<InviteJwtClaims> {
     decode_jwt(token, JWT_INVITE_ISSUER.to_string())
 }
 
-pub fn decode_emergency_access_invite(token: &str) -> ApiResult<EmergencyAccessInviteJwtClaims> {
+pub fn decode_emergency_access_invite(token: &str) -> Result<EmergencyAccessInviteJwtClaims> {
     decode_jwt(token, JWT_EMERGENCY_ACCESS_INVITE_ISSUER.to_string())
 }
 
-pub fn decode_delete(token: &str) -> ApiResult<BasicJwtClaims> {
+pub fn decode_delete(token: &str) -> Result<BasicJwtClaims> {
     decode_jwt(token, JWT_DELETE_ISSUER.to_string())
 }
 
-pub fn decode_verify_email(token: &str) -> ApiResult<BasicJwtClaims> {
+pub fn decode_verify_email(token: &str) -> Result<BasicJwtClaims> {
     decode_jwt(token, JWT_VERIFYEMAIL_ISSUER.to_string())
 }
 
-pub fn decode_admin(token: &str) -> ApiResult<BasicJwtClaims> {
+pub fn decode_admin(token: &str) -> Result<BasicJwtClaims> {
     decode_jwt(token, JWT_ADMIN_ISSUER.to_string())
 }
 
-pub fn decode_send(token: &str) -> ApiResult<BasicJwtClaims> {
+pub fn decode_send(token: &str) -> Result<BasicJwtClaims> {
     decode_jwt(token, JWT_SEND_ISSUER.to_string())
 }
 
-pub fn decode_api_org(token: &str) -> ApiResult<OrgApiKeyLoginJwtClaims> {
+pub fn decode_api_org(token: &str) -> Result<OrgApiKeyLoginJwtClaims> {
     decode_jwt(token, JWT_ORG_API_KEY_ISSUER.to_string())
 }
 
@@ -317,13 +314,11 @@ pub struct ClientHeaders {
 }
 
 #[async_trait::async_trait]
-impl<S: Send + Sync> FromRequestParts<S> for ClientHeaders {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(req: &mut Parts, state: &S) -> ApiResult<Self> {
-        let ip = ClientIp::from_request_parts(req, state).await?;
+impl<'a> FromRequestParts<'a> for ClientHeaders {
+    async fn from_request_parts(req: RequestPartsRef<'a>) -> Result<Self> {
+        let ip = ClientIp::from_request_parts(req).await?;
         // When unknown or unable to parse, return 14, which is 'Unknown Browser'
-        let device_type: i32 = req.headers.get("device-type").and_then(|x| x.to_str().ok()).map(|d| d.parse().unwrap_or(14)).unwrap_or_else(|| 14);
+        let device_type: i32 = req.headers.get("device-type").map(|d| d.parse().unwrap_or(14)).unwrap_or_else(|| 14);
 
         Ok(ClientHeaders {
             device_type,
@@ -339,43 +334,37 @@ pub struct Headers {
 }
 
 #[async_trait::async_trait]
-impl<S: Send + Sync> FromRequestParts<S> for Headers {
-    type Rejection = ApiError;
+impl<'a> FromRequestParts<'a> for Headers {
+    async fn from_request_parts(req: RequestPartsRef<'a>) -> Result<Self> {
+        let ip = ClientIp::from_request_parts(req).await?.ip;
 
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let ip = ClientIp::from_request_parts(parts, state).await?.ip;
-
-        let access_token = parts
-            .headers
-            .get("authorization")
-            .and_then(|x| x.to_str().ok())
-            .and_then(|x| x.strip_prefix("Bearer "))
-            .ok_or(ApiError::Unauthorized("missing authorization header".to_string()))?;
+        let access_token =
+            req.headers.get("authorization").and_then(|x| x.strip_prefix("Bearer ")).ok_or(Error::unauthorized("missing authorization header"))?;
 
         // Check JWT token is valid and get device and user from it
         let claims = match decode_login(access_token) {
             Ok(claims) => claims,
-            Err(_) => return Err(ApiError::Unauthorized("invalid token".to_string())),
+            Err(_) => return Err(Error::unauthorized("invalid token")),
         };
 
         let device_uuid = claims.device;
         let user_uuid = claims.sub;
 
-        let conn = DB.get().await?;
+        let conn = DB.get().await.ise()?;
 
         let device = match Device::find_by_uuid_and_user(&conn, device_uuid, user_uuid).await? {
             Some(device) => device,
-            None => return Err(ApiError::Unauthorized("device not found".to_string())),
+            None => return Err(Error::unauthorized("device not found")),
         };
 
         let user = match User::get(&conn, user_uuid).await? {
             Some(user) => user,
-            None => return Err(ApiError::Unauthorized("user not found".to_string())),
+            None => return Err(Error::unauthorized("user not found")),
         };
 
         if user.security_stamp != claims.sstamp {
             if let Some(stamp_exception) = user.stamp_exception.as_deref().and_then(|s| serde_json::from_str::<UserStampException>(s).ok()) {
-                let matched_path = MatchedPath::from_request_parts(parts, state).await.map_err(|e| ApiError::Response(e.into_response()))?;
+                let matched_path = MatchedPath::from_request_parts(req).await?;
 
                 // Check if the stamp exception has expired first.
                 // Then, check if the current route matches any of the allowed routes.
@@ -388,14 +377,14 @@ impl<S: Send + Sync> FromRequestParts<S> for Headers {
                     if let Err(e) = user.save(&conn).await {
                         error!("Error updating user: {:#?}", e);
                     }
-                    return Err(ApiError::Unauthorized("Stamp exception is expired".to_string()));
-                } else if !stamp_exception.routes.iter().any(|x| x == matched_path.as_str()) {
-                    return Err(ApiError::Unauthorized("Invalid security stamp: Current route and exception route do not match".to_string()));
+                    return Err(Error::unauthorized("Stamp exception is expired"));
+                } else if !stamp_exception.routes.iter().any(|x| x == &*matched_path.0) {
+                    return Err(Error::unauthorized("Invalid security stamp: Current route and exception route do not match"));
                 } else if stamp_exception.security_stamp != claims.sstamp {
-                    return Err(ApiError::Unauthorized("Invalid security stamp for matched stamp exception".to_string()));
+                    return Err(Error::unauthorized("Invalid security stamp for matched stamp exception"));
                 }
             } else {
-                return Err(ApiError::Unauthorized("Invalid security stamp".to_string()));
+                return Err(Error::unauthorized("Invalid security stamp"));
             }
         }
 
@@ -428,11 +417,9 @@ struct OrgIdQuery {
 }
 
 #[async_trait::async_trait]
-impl<S: Send + Sync> FromRequestParts<S> for OrgHeaders {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let headers = Headers::from_request_parts(parts, state).await?;
+impl<'a> FromRequestParts<'a> for OrgHeaders {
+    async fn from_request_parts(req: RequestPartsRef<'a>) -> Result<Self> {
+        let headers = Headers::from_request_parts(req).await?;
 
         // org_id is usually the second path param ("/organizations/<org_id>"),
         // but there are cases where it is a query value.
@@ -441,10 +428,10 @@ impl<S: Send + Sync> FromRequestParts<S> for OrgHeaders {
         //TODO: this is error prone, and should be _deleted_! REFACTOR THIS AWAY!
         let url_org_id: Option<Uuid> = {
             let mut url_org_id = None;
-            if let Some(path) = Path::<OrgIdPath>::from_request_parts(parts, state).await.ok() {
+            if let Some(path) = Path::<OrgIdPath>::from_request_parts(req).await.ok() {
                 url_org_id = Some(path.org_uuid);
             }
-            if let Some(query) = Query::<OrgIdQuery>::from_request_parts(parts, state).await.ok() {
+            if let Some(query) = Query::<OrgIdQuery>::from_request_parts(req).await.ok() {
                 url_org_id = Some(query.organization_id);
             }
 
@@ -453,7 +440,7 @@ impl<S: Send + Sync> FromRequestParts<S> for OrgHeaders {
 
         match url_org_id {
             Some(org_id) => {
-                let conn = DB.get().await?;
+                let conn = DB.get().await.ise()?;
 
                 let user = headers.user;
                 let org_user = match UserOrganization::get(&conn, user.uuid, org_id).await? {
@@ -461,11 +448,11 @@ impl<S: Send + Sync> FromRequestParts<S> for OrgHeaders {
                         if user.status() == UserOrgStatus::Confirmed {
                             user
                         } else {
-                            return Err(ApiError::Forbidden("The current user isn't confirmed member of the organization".to_string()));
+                            return Err(Error::forbidden("The current user isn't confirmed member of the organization"));
                         }
                     }
                     None => {
-                        return Err(ApiError::Forbidden("The current user isn't member of the organization".to_string()));
+                        return Err(Error::forbidden("The current user isn't member of the organization"));
                     }
                 };
 
@@ -478,7 +465,7 @@ impl<S: Send + Sync> FromRequestParts<S> for OrgHeaders {
                     ip: headers.ip,
                 })
             }
-            _ => Err(ApiError::Other(anyhow::anyhow!("Error getting the organization id"))),
+            _ => Err(Error::internal(anyhow::anyhow!("Error getting the organization id"))),
         }
     }
 }
@@ -492,12 +479,10 @@ pub struct OrgAdminHeaders {
 }
 
 #[async_trait::async_trait]
-impl<S: Send + Sync> FromRequestParts<S> for OrgAdminHeaders {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let headers = OrgHeaders::from_request_parts(parts, state).await?;
-        let client_version = parts.headers.get("bitwarden-client-version").and_then(|x| x.to_str().ok()).map(|x| x.to_string());
+impl<'a> FromRequestParts<'a> for OrgAdminHeaders {
+    async fn from_request_parts(req: RequestPartsRef<'a>) -> Result<Self> {
+        let headers = OrgHeaders::from_request_parts(req).await?;
+        let client_version = req.headers.get("bitwarden-client-version").map(|x| x.to_string());
         if headers.org_user_type < UserOrgType::Admin {
             err!("You need to be Admin or Owner to call this endpoint");
         }
@@ -535,12 +520,12 @@ struct ColIdQuery {
 // col_id is usually the fourth path param ("/organizations/<org_id>/collections/<col_id>"),
 // but there could be cases where it is a query value.
 // First check the path, if this is not a valid uuid, try the query values.
-async fn get_col_id<S: Send + Sync>(parts: &mut Parts, state: &S) -> Option<Uuid> {
-    if let Ok(Path(col_id)) = Path::<ColIdPath>::from_request_parts(parts, state).await {
+async fn get_col_id(req: RequestPartsRef<'_>) -> Option<Uuid> {
+    if let Ok(Path(col_id)) = Path::<ColIdPath>::from_request_parts(req).await {
         return Some(col_id.col_id);
     }
 
-    if let Ok(col_id) = Query::<ColIdQuery>::from_request_parts(parts, state).await {
+    if let Ok(col_id) = Query::<ColIdQuery>::from_request_parts(req).await {
         return Some(col_id.collection_id);
     }
 
@@ -558,16 +543,14 @@ pub struct ManagerHeaders {
 }
 
 #[async_trait::async_trait]
-impl<S: Send + Sync> FromRequestParts<S> for ManagerHeaders {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let headers = OrgHeaders::from_request_parts(parts, state).await?;
+impl<'a> FromRequestParts<'a> for ManagerHeaders {
+    async fn from_request_parts(req: RequestPartsRef<'a>) -> Result<Self> {
+        let headers = OrgHeaders::from_request_parts(req).await?;
         if headers.org_user_type < UserOrgType::Manager {
             err!("You need to be Admin or Owner or Manager with sufficient permissions to call this endpoint")
         }
-        let conn = DB.get().await?;
-        let Some(col_id) = get_col_id(parts, state).await else {
+        let conn = DB.get().await.map_err(Error::internal)?;
+        let Some(col_id) = get_col_id(req).await else {
             err!("Error getting the collection id");
         };
         if Collection::find_by_uuid_and_user(&conn, col_id, headers.user.uuid).await?.is_none() {
@@ -603,11 +586,9 @@ pub struct ManagerHeadersLoose {
 }
 
 #[async_trait::async_trait]
-impl<S: Send + Sync> FromRequestParts<S> for ManagerHeadersLoose {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let headers = OrgHeaders::from_request_parts(parts, state).await?;
+impl<'a> FromRequestParts<'a> for ManagerHeadersLoose {
+    async fn from_request_parts(req: RequestPartsRef<'a>) -> Result<Self> {
+        let headers = OrgHeaders::from_request_parts(req).await?;
         if headers.org_user_type < UserOrgType::Manager {
             err!("You need to be Admin or Owner or Manager to call this endpoint")
         }
@@ -632,7 +613,7 @@ impl From<ManagerHeadersLoose> for Headers {
 }
 
 impl ManagerHeaders {
-    pub async fn from_loose(h: ManagerHeadersLoose, collections: &[Uuid], conn: &Conn) -> ApiResult<ManagerHeaders> {
+    pub async fn from_loose(h: ManagerHeadersLoose, collections: &[Uuid], conn: &Conn) -> Result<ManagerHeaders> {
         for col_id in collections {
             if Collection::find_by_uuid_and_user(&conn, *col_id, h.user.uuid).await?.is_none() {
                 err!("Collection not found");
@@ -655,11 +636,9 @@ pub struct OrgOwnerHeaders {
 }
 
 #[async_trait::async_trait]
-impl<S: Send + Sync> FromRequestParts<S> for OrgOwnerHeaders {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let headers = OrgHeaders::from_request_parts(parts, state).await?;
+impl<'a> FromRequestParts<'a> for OrgOwnerHeaders {
+    async fn from_request_parts(req: RequestPartsRef<'a>) -> Result<Self> {
+        let headers = OrgHeaders::from_request_parts(req).await?;
         if headers.org_user_type != UserOrgType::Owner {
             err!("You need to be Owner to call this endpoint")
         }
@@ -674,18 +653,16 @@ impl<S: Send + Sync> FromRequestParts<S> for OrgOwnerHeaders {
 //
 // Client IP address detection
 //
-use std::net::{IpAddr, SocketAddr};
+use std::net::IpAddr;
 
 pub struct ClientIp {
     pub ip: IpAddr,
 }
 
 #[async_trait::async_trait]
-impl<S: Send + Sync> FromRequestParts<S> for ClientIp {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(req: &mut Parts, state: &S) -> ApiResult<Self> {
-        let ip = req.headers.get(&CONFIG.advanced.ip_header).and_then(|x| x.to_str().ok()).and_then(|ip| {
+impl<'a> FromRequestParts<'a> for ClientIp {
+    async fn from_request_parts(req: RequestPartsRef<'a>) -> Result<Self> {
+        let ip = req.headers.get(&CONFIG.advanced.ip_header).and_then(|ip| {
             match ip.find(',') {
                 Some(idx) => &ip[..idx],
                 None => ip,
@@ -701,7 +678,7 @@ impl<S: Send + Sync> FromRequestParts<S> for ClientIp {
             });
         }
 
-        let info = ConnectInfo::<SocketAddr>::from_request_parts(req, state).await?;
+        let info = ConnectInfo::from_request_parts(req).await?;
 
         Ok(ClientIp {
             ip: info.0.ip(),

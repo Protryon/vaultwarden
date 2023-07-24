@@ -1,16 +1,5 @@
-use axum::{
-    extract::{FromRequestParts, Path},
-    http::request::Parts,
-    response::{Html, IntoResponse, Redirect, Response},
-    routing, Form, Json, Router,
-};
-use axum_extra::extract::{
-    cookie::{Cookie, SameSite},
-    CookieJar,
-};
-use axum_util::errors::ApiError;
+use axol::{prelude::*, Cookie, CookieJar, Form, Html, SameSite};
 use chrono::Utc;
-use http::StatusCode;
 use log::error;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -20,7 +9,6 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::{
-    api::ApiResult,
     auth::{decode_admin, encode_jwt, generate_admin_claims, ClientIp},
     config::PUBLIC_NO_TRAILING_SLASH,
     db::{
@@ -36,30 +24,30 @@ use crate::{
 
 pub fn route() -> Router {
     if !CONFIG.advanced.disable_admin_token && CONFIG.settings.admin_token.is_none() {
-        return Router::new().fallback(admin_disabled);
+        return Router::new().fallback("/", admin_disabled);
     }
 
     Router::new()
-        .route("/", routing::post(post_admin_login))
-        .route("/", routing::get(admin_page))
-        .route("/invite", routing::post(invite_user))
-        .route("/test/smtp", routing::post(test_smtp))
-        .route("/logout", routing::get(logout))
-        .route("/users", routing::get(get_users_json))
-        .route("/users/overview", routing::get(users_overview))
-        .route("/users/by-mail/:mail", routing::get(get_user_by_mail_json))
-        .route("/users/:uuid", routing::get(get_user_json))
-        .route("/users/:uuid/delete", routing::post(delete_user))
-        .route("/users/:uuid/deauth", routing::post(deauth_user))
-        .route("/users/:uuid/disable", routing::post(disable_user))
-        .route("/users/:uuid/enable", routing::post(enable_user))
-        .route("/users/:uuid/remove-2fa", routing::post(remove_2fa))
-        .route("/users/:uuid/invite/resend", routing::post(resend_user_invite))
-        .route("/users/org_type", routing::post(update_user_org_type))
-        .route("/organizations/overview", routing::get(organizations_overview))
-        .route("/organizations/:uuid/delete", routing::post(delete_organization))
-        .route("/diagnostics", routing::get(diagnostics))
-        .route("/diagnostics/config", routing::get(get_diagnostics_config))
+        .post("/", post_admin_login)
+        .get("/", admin_page)
+        .post("/invite", invite_user)
+        .post("/test/smtp", test_smtp)
+        .get("/logout", logout)
+        .get("/users", get_users_json)
+        .get("/users/overview", users_overview)
+        .get("/users/by-mail/:mail", get_user_by_mail_json)
+        .get("/users/:uuid", get_user_json)
+        .post("/users/:uuid/delete", delete_user)
+        .post("/users/:uuid/deauth", deauth_user)
+        .post("/users/:uuid/disable", disable_user)
+        .post("/users/:uuid/enable", enable_user)
+        .post("/users/:uuid/remove-2fa", remove_2fa)
+        .post("/users/:uuid/invite/resend", resend_user_invite)
+        .post("/users/org_type", update_user_org_type)
+        .get("/organizations/overview", organizations_overview)
+        .post("/organizations/:uuid/delete", delete_organization)
+        .get("/diagnostics", diagnostics)
+        .get("/diagnostics/config", get_diagnostics_config)
 }
 
 async fn admin_disabled() -> &'static str {
@@ -81,10 +69,8 @@ fn admin_path() -> Url {
 struct IpHeader(Option<String>);
 
 #[async_trait::async_trait]
-impl<S> FromRequestParts<S> for IpHeader {
-    type Rejection = ();
-
-    async fn from_request_parts(req: &mut http::request::Parts, _state: &S) -> Result<Self, Self::Rejection> {
+impl<'a> FromRequestParts<'a> for IpHeader {
+    async fn from_request_parts(req: RequestPartsRef<'a>) -> Result<Self> {
         if req.headers.get(&CONFIG.advanced.ip_header).is_some() {
             Ok(IpHeader(Some(CONFIG.advanced.ip_header.clone())))
         } else if req.headers.get("X-Client-IP").is_some() {
@@ -99,7 +85,7 @@ impl<S> FromRequestParts<S> for IpHeader {
     }
 }
 
-fn render_admin_login(msg: Option<&str>, redirect: Option<String>) -> ApiResult<Html<String>> {
+fn render_admin_login(msg: Option<&str>, redirect: Option<String>) -> Result<Html<String>> {
     // If there is an error, show it
 
     let msg = msg.map(|msg| format!("Error: {msg}"));
@@ -122,18 +108,18 @@ struct LoginForm {
     redirect: Option<String>,
 }
 
-async fn post_admin_login(mut jar: CookieJar, ip: ClientIp, data: Form<LoginForm>) -> Response {
+async fn post_admin_login(mut jar: CookieJar, ip: ClientIp, data: Form<LoginForm>) -> Result<Response> {
     let data = data.0;
     let redirect = data.redirect;
 
     if crate::ratelimit::check_limit_admin(&ip.ip).is_err() {
-        return (StatusCode::TOO_MANY_REQUESTS, render_admin_login(Some("Too many requests, try again later."), redirect)).into_response();
+        return Err(Error::too_many_requests(render_admin_login(Some("Too many requests, try again later."), redirect)));
     }
 
     // If the token is invalid, redirect to login page
     if !validate_token(&data.token) {
         error!("Invalid admin token. IP: {}", ip.ip);
-        return (StatusCode::UNAUTHORIZED, render_admin_login(Some("Invalid admin token, please try again."), redirect)).into_response();
+        return Err(Error::unauthorized(render_admin_login(Some("Invalid admin token, please try again."), redirect)));
     }
     // If the token received is valid, generate JWT and save it as a cookie
     let claims = generate_admin_claims();
@@ -148,7 +134,7 @@ async fn post_admin_login(mut jar: CookieJar, ip: ClientIp, data: Form<LoginForm
 
     jar = jar.add(cookie);
     if let Some(redirect) = redirect {
-        (jar, Redirect::to(&format!("{}{}", admin_path(), redirect))).into_response()
+        (jar, Url::parse(&format!("{}{}", admin_path(), redirect)).ise()?).into_response()
     } else {
         (jar, render_admin_page()).into_response()
     }
@@ -192,7 +178,7 @@ impl AdminTemplateData {
         }
     }
 
-    fn render(self) -> ApiResult<String> {
+    fn render(self) -> Result<String> {
         crate::templates::render_template(BASE_TEMPLATE, &self)
     }
 }
@@ -359,7 +345,7 @@ lazy_static::lazy_static! {
     ];
 }
 
-fn render_admin_page() -> ApiResult<Html<String>> {
+fn render_admin_page() -> Result<Html<String>> {
     let settings_json = json!({
         "config": [
             {
@@ -406,7 +392,7 @@ fn render_admin_page() -> ApiResult<Html<String>> {
     Ok(Html(text))
 }
 
-async fn admin_page(token: Option<AdminToken>) -> ApiResult<Html<String>> {
+async fn admin_page(token: Option<AdminToken>) -> Result<Html<String>> {
     if token.is_none() {
         return render_admin_login(None, None);
     }
@@ -419,23 +405,23 @@ struct InviteData {
     email: String,
 }
 
-async fn get_user_or_404(uuid: Uuid, conn: &Conn) -> ApiResult<User> {
-    User::get(conn, uuid).await?.ok_or(ApiError::NotFound)
+async fn get_user_or_404(uuid: Uuid, conn: &Conn) -> Result<User> {
+    User::get(conn, uuid).await?.ok_or(Error::NotFound)
 }
 
-async fn invite_user(_token: AdminToken, data: Json<InviteData>) -> ApiResult<Json<Value>> {
+async fn invite_user(_token: AdminToken, data: Json<InviteData>) -> Result<Json<Value>> {
     let data: InviteData = data.0;
     let email = data.email.clone();
 
-    let conn = DB.get().await?;
+    let conn = DB.get().await.map_err(Error::internal)?;
 
     if User::find_by_email(&conn, &data.email).await?.is_some() {
-        err_code!("User already exists", StatusCode::CONFLICT)
+        err_code!("User already exists", StatusCode::Conflict)
     }
 
     let mut user = User::new(email);
 
-    async fn generate_invite(user: &User, conn: &Conn) -> ApiResult<()> {
+    async fn generate_invite(user: &User, conn: &Conn) -> Result<()> {
         if CONFIG.mail_enabled() {
             mail::send_invite(&user.email, user.uuid, None, &CONFIG.settings.invitation_org_name, None).await?;
         } else {
@@ -451,7 +437,7 @@ async fn invite_user(_token: AdminToken, data: Json<InviteData>) -> ApiResult<Js
     Ok(Json(user.to_json(&conn).await?))
 }
 
-async fn test_smtp(_token: AdminToken, data: Json<InviteData>) -> ApiResult<()> {
+async fn test_smtp(_token: AdminToken, data: Json<InviteData>) -> Result<()> {
     let data: InviteData = data.0;
 
     if CONFIG.mail_enabled() {
@@ -461,13 +447,13 @@ async fn test_smtp(_token: AdminToken, data: Json<InviteData>) -> ApiResult<()> 
     }
 }
 
-async fn logout(mut cookies: CookieJar) -> (CookieJar, Redirect) {
+async fn logout(mut cookies: CookieJar) -> (CookieJar, Url) {
     cookies = cookies.remove(Cookie::build(COOKIE_NAME, "").path(admin_path().to_string()).finish());
-    (cookies, Redirect::to(admin_path().as_str()))
+    (cookies, admin_path())
 }
 
-async fn get_users_json(_token: AdminToken) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+async fn get_users_json(_token: AdminToken) -> Result<Json<Value>> {
+    let conn = DB.get().await.map_err(Error::internal)?;
     let users = User::get_all(&conn).await?;
     let mut users_json = Vec::with_capacity(users.len());
     //TODO: N+1 query here
@@ -481,8 +467,8 @@ async fn get_users_json(_token: AdminToken) -> ApiResult<Json<Value>> {
     Ok(Json(Value::Array(users_json)))
 }
 
-async fn users_overview(_token: AdminToken) -> ApiResult<Html<String>> {
-    let conn = DB.get().await?;
+async fn users_overview(_token: AdminToken) -> Result<Html<String>> {
+    let conn = DB.get().await.map_err(Error::internal)?;
     let users = User::get_all(&conn).await?;
     let mut users_json = Vec::with_capacity(users.len());
     //TODO: N+1 query here
@@ -505,8 +491,8 @@ async fn users_overview(_token: AdminToken) -> ApiResult<Html<String>> {
     Ok(Html(text))
 }
 
-async fn get_user_by_mail_json(Path(mail): Path<String>, _token: AdminToken) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+async fn get_user_by_mail_json(Path(mail): Path<String>, _token: AdminToken) -> Result<Json<Value>> {
+    let conn = DB.get().await.map_err(Error::internal)?;
 
     if let Some(u) = User::find_by_email(&conn, &mail).await? {
         let mut usr = u.to_json(&conn).await?;
@@ -514,12 +500,12 @@ async fn get_user_by_mail_json(Path(mail): Path<String>, _token: AdminToken) -> 
         usr["CreatedAt"] = json!(format_naive_datetime_local(u.created_at, DT_FMT));
         Ok(Json(usr))
     } else {
-        err_code!("User doesn't exist", StatusCode::NOT_FOUND);
+        err_code!("User doesn't exist", StatusCode::NotFound);
     }
 }
 
-async fn get_user_json(Path(uuid): Path<Uuid>, _token: AdminToken) -> ApiResult<Json<Value>> {
-    let conn = DB.get().await?;
+async fn get_user_json(Path(uuid): Path<Uuid>, _token: AdminToken) -> Result<Json<Value>> {
+    let conn = DB.get().await.map_err(Error::internal)?;
 
     let u = get_user_or_404(uuid, &conn).await?;
     let mut usr = u.to_json(&conn).await?;
@@ -528,7 +514,7 @@ async fn get_user_json(Path(uuid): Path<Uuid>, _token: AdminToken) -> ApiResult<
     Ok(Json(usr))
 }
 
-async fn delete_user(Path(uuid): Path<Uuid>, token: AdminToken, conn: AutoTxn) -> ApiResult<()> {
+async fn delete_user(Path(uuid): Path<Uuid>, token: AdminToken, conn: AutoTxn) -> Result<()> {
     let user = get_user_or_404(uuid, &conn).await?;
 
     // Get the user_org records before deleting the actual user
@@ -553,8 +539,8 @@ async fn delete_user(Path(uuid): Path<Uuid>, token: AdminToken, conn: AutoTxn) -
     Ok(())
 }
 
-async fn deauth_user(Path(uuid): Path<Uuid>, _token: AdminToken) -> ApiResult<()> {
-    let conn = DB.get().await?;
+async fn deauth_user(Path(uuid): Path<Uuid>, _token: AdminToken) -> Result<()> {
+    let conn = DB.get().await.map_err(Error::internal)?;
     let mut user = get_user_or_404(uuid, &conn).await?;
 
     ws_users().send_logout(&user, &conn, None).await?;
@@ -574,8 +560,8 @@ async fn deauth_user(Path(uuid): Path<Uuid>, _token: AdminToken) -> ApiResult<()
     user.save(&conn).await
 }
 
-async fn disable_user(Path(uuid): Path<Uuid>, _token: AdminToken) -> ApiResult<()> {
-    let conn = DB.get().await?;
+async fn disable_user(Path(uuid): Path<Uuid>, _token: AdminToken) -> Result<()> {
+    let conn = DB.get().await.map_err(Error::internal)?;
     let mut user = get_user_or_404(uuid, &conn).await?;
     Device::delete_all_by_user(&conn, user.uuid).await?;
     user.reset_security_stamp();
@@ -588,8 +574,8 @@ async fn disable_user(Path(uuid): Path<Uuid>, _token: AdminToken) -> ApiResult<(
     save_result
 }
 
-async fn enable_user(Path(uuid): Path<Uuid>, _token: AdminToken) -> ApiResult<()> {
-    let conn = DB.get().await?;
+async fn enable_user(Path(uuid): Path<Uuid>, _token: AdminToken) -> Result<()> {
+    let conn = DB.get().await.map_err(Error::internal)?;
 
     let mut user = get_user_or_404(uuid, &conn).await?;
     user.enabled = true;
@@ -597,7 +583,7 @@ async fn enable_user(Path(uuid): Path<Uuid>, _token: AdminToken) -> ApiResult<()
     user.save(&conn).await
 }
 
-async fn remove_2fa(Path(uuid): Path<Uuid>, _token: AdminToken, conn: AutoTxn) -> ApiResult<()> {
+async fn remove_2fa(Path(uuid): Path<Uuid>, _token: AdminToken, conn: AutoTxn) -> Result<()> {
     let mut user = get_user_or_404(uuid, &conn).await?;
     TwoFactor::delete_all_by_user(&conn, user.uuid).await?;
     user.totp_recover = None;
@@ -607,16 +593,16 @@ async fn remove_2fa(Path(uuid): Path<Uuid>, _token: AdminToken, conn: AutoTxn) -
     Ok(())
 }
 
-async fn resend_user_invite(Path(uuid): Path<Uuid>, _token: AdminToken) -> ApiResult<()> {
-    let conn = DB.get().await?;
+async fn resend_user_invite(Path(uuid): Path<Uuid>, _token: AdminToken) -> Result<()> {
+    let conn = DB.get().await.map_err(Error::internal)?;
 
     let Some(user) = User::get(&conn, uuid).await? else {
-        err_code!("User doesn't exist", StatusCode::NOT_FOUND);
+        err_code!("User doesn't exist", StatusCode::NotFound);
     };
 
     //TODO: replace this with user.status check when it will be available (PR#3397)
     if !user.password_hash.is_empty() {
-        err_code!("User already accepted invitation", StatusCode::BAD_REQUEST);
+        err_code!("User already accepted invitation", StatusCode::BadRequest);
     }
 
     if CONFIG.mail_enabled() {
@@ -634,8 +620,8 @@ struct UserOrgTypeData {
     org_uuid: Uuid,
 }
 
-async fn update_user_org_type(token: AdminToken, data: Json<UserOrgTypeData>) -> ApiResult<()> {
-    let conn = DB.get().await?;
+async fn update_user_org_type(token: AdminToken, data: Json<UserOrgTypeData>) -> Result<()> {
+    let conn = DB.get().await.map_err(Error::internal)?;
 
     let data: UserOrgTypeData = data.0;
 
@@ -683,8 +669,8 @@ async fn update_user_org_type(token: AdminToken, data: Json<UserOrgTypeData>) ->
     user_to_edit.save(&conn).await
 }
 
-async fn organizations_overview(_token: AdminToken) -> ApiResult<Html<String>> {
-    let conn = DB.get().await?;
+async fn organizations_overview(_token: AdminToken) -> Result<Html<String>> {
+    let conn = DB.get().await.map_err(Error::internal)?;
 
     let organizations = Organization::get_all(&conn).await?;
     let mut organizations_json = Vec::with_capacity(organizations.len());
@@ -706,10 +692,10 @@ async fn organizations_overview(_token: AdminToken) -> ApiResult<Html<String>> {
     Ok(Html(text))
 }
 
-async fn delete_organization(Path(uuid): Path<Uuid>, _token: AdminToken) -> ApiResult<()> {
-    let conn = DB.get().await?;
+async fn delete_organization(Path(uuid): Path<Uuid>, _token: AdminToken) -> Result<()> {
+    let conn = DB.get().await.map_err(Error::internal)?;
 
-    let org = Organization::get(&conn, uuid).await?.ok_or(ApiError::NotFound)?;
+    let org = Organization::get(&conn, uuid).await?.ok_or(Error::NotFound)?;
     org.delete(&conn).await
 }
 
@@ -738,10 +724,10 @@ struct TimeApi {
     seconds: u8,
 }
 
-async fn get_json_api<T: DeserializeOwned>(url: &str) -> ApiResult<T> {
+async fn get_json_api<T: DeserializeOwned>(url: &str) -> Result<T> {
     let json_api = get_reqwest_client();
 
-    Ok(json_api.get(url).send().await?.error_for_status()?.json::<T>().await?)
+    Ok(json_api.get(url).send().await.map_err(Error::internal)?.error_for_status().map_err(Error::internal)?.json::<T>().await.map_err(Error::internal)?)
 }
 
 async fn has_http_access() -> bool {
@@ -807,15 +793,15 @@ async fn get_ntp_time(has_http_access: bool) -> String {
     String::from("Unable to fetch NTP time.")
 }
 
-async fn diagnostics(_token: AdminToken, ip_header: IpHeader) -> ApiResult<Html<String>> {
+async fn diagnostics(_token: AdminToken, ip_header: IpHeader) -> Result<Html<String>> {
     use chrono::prelude::*;
     use std::net::ToSocketAddrs;
 
     // Get current running versions
     let web_vault_version: WebVaultVersion = match tokio::fs::read_to_string(format!("{}/{}", CONFIG.folders.web_vault().display(), "vw-version.json")).await {
-        Ok(s) => serde_json::from_str(&s)?,
+        Ok(s) => serde_json::from_str(&s).map_err(Error::internal)?,
         _ => match tokio::fs::read_to_string(format!("{}/{}", CONFIG.folders.web_vault().display(), "version.json")).await {
-            Ok(s) => serde_json::from_str(&s)?,
+            Ok(s) => serde_json::from_str(&s).map_err(Error::internal)?,
             _ => WebVaultVersion {
                 version: String::from("Version file missing"),
             },
@@ -844,8 +830,8 @@ async fn diagnostics(_token: AdminToken, ip_header: IpHeader) -> ApiResult<Html<
     };
 
     let db_version = {
-        let conn = DB.get().await?;
-        conn.query_one("SELECT version()", &[]).await?.get::<_, String>(0)
+        let conn = DB.get().await.map_err(Error::internal)?;
+        conn.query_one("SELECT version()", &[]).await.map_err(Error::internal)?.get::<_, String>(0)
     };
     let admin_url = {
         let mut url = admin_path();
@@ -931,13 +917,13 @@ async fn get_diagnostics_config(_token: AdminToken) -> Json<Value> {
 //TODO?
 
 // #[post("/config", data = "<data>")]
-// fn post_config(data: Json<ConfigBuilder>, _token: AdminToken) -> ApiResult<()> {
+// fn post_config(data: Json<ConfigBuilder>, _token: AdminToken) -> Result<()> {
 //     let data: ConfigBuilder = data.into_inner();
 //     CONFIG.update_config(data)
 // }
 
 // #[post("/config/delete")]
-// fn delete_config(_token: AdminToken) -> ApiResult<()> {
+// fn delete_config(_token: AdminToken) -> Result<()> {
 //     CONFIG.delete_user_config()
 // }
 
@@ -946,18 +932,16 @@ pub struct AdminToken {
 }
 
 #[async_trait::async_trait]
-impl<S: Send + Sync> FromRequestParts<S> for AdminToken {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(req: &mut Parts, state: &S) -> ApiResult<Self> {
-        let ip = ClientIp::from_request_parts(req, state).await?;
+impl<'a> FromRequestParts<'a> for AdminToken {
+    async fn from_request_parts(req: RequestPartsRef<'a>) -> Result<Self> {
+        let ip = ClientIp::from_request_parts(req).await?;
 
         if CONFIG.advanced.disable_admin_token {
             return Ok(Self {
                 ip,
             });
         }
-        let mut cookies = CookieJar::from_request_parts(req, state).await?;
+        let mut cookies = CookieJar::from_request_parts(req).await?;
 
         let access_token = match cookies.get(COOKIE_NAME) {
             Some(cookie) => cookie.value(),
@@ -966,7 +950,7 @@ impl<S: Send + Sync> FromRequestParts<S> for AdminToken {
                 // let requested_page = req.headers.get(":path").and_then(|x| x.to_str().ok()).unwrap_or("/");
                 // When the requested page is empty, it is `/admin`, in that case, Forward, so it will render the login page
                 // Else, return a 401 failure, which will be caught
-                return Err(ApiError::Response(Redirect::to(&admin_path().as_str()).into_response()));
+                return Err(Error::RedirectUrl(RedirectMode::TemporaryRedirect, admin_path()));
             }
         };
 
@@ -974,7 +958,7 @@ impl<S: Send + Sync> FromRequestParts<S> for AdminToken {
             // Remove admin cookie
             cookies = cookies.remove(Cookie::build(COOKIE_NAME, "").path(admin_path().to_string()).finish());
             error!("Invalid or expired admin JWT. IP: {}.", &ip.ip);
-            return Err(ApiError::Response((cookies, Redirect::to(&admin_path().as_str())).into_response()));
+            return Err(Error::response((cookies, admin_path())));
         }
 
         Ok(Self {

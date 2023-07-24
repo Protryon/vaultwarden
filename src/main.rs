@@ -34,10 +34,12 @@
 // If you go above 128 it will cause rust-analyzer to fail,
 #![recursion_limit = "103"]
 
-use std::{panic, path::Path, process::exit, str::FromStr, thread};
+use std::{panic, path::Path, process::exit, str::FromStr, thread, time::Duration};
 
-use axum_util::errors::ApiResult;
+use axol::{trace::RegistryWrapper, Result};
 use log::{error, info};
+use opentelemetry::{runtime::Tokio, sdk::propagation::TraceContextPropagator};
+use opentelemetry_otlp::{ExportConfig, Protocol, WithExportConfig};
 use tokio::{
     fs::File,
     io::{AsyncBufReadExt, BufReader},
@@ -60,8 +62,15 @@ mod ratelimit;
 mod util;
 
 pub use config::CONFIG;
-pub use error::{Error, MapResult};
+pub use error::MapResult;
+use tracing_subscriber::{layer::SubscriberExt, Registry};
 pub use util::is_running_in_docker;
+
+lazy_static::lazy_static! {
+    pub(crate) static ref REGISTRY: RegistryWrapper = {
+        RegistryWrapper::from(Registry::default())
+    };
+}
 
 #[tokio::main]
 async fn main() {
@@ -71,6 +80,24 @@ async fn main() {
 
     let level = log::LevelFilter::from_str(&CONFIG.advanced.log_level).expect("Valid log level");
     init_logging(level).ok();
+
+    if let Some(config) = &CONFIG.opentelemetry {
+        let tracer = opentelemetry_otlp::new_pipeline()
+            .tracing()
+            .with_exporter(opentelemetry_otlp::new_exporter().tonic().with_export_config(ExportConfig {
+                endpoint: config.endpoint.to_string(),
+                protocol: Protocol::Grpc,
+                timeout: Duration::from_secs_f64(config.timeout_sec),
+            }))
+            .install_batch(Tokio)
+            .expect("tracer init failed");
+
+        let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+
+        tracing::subscriber::set_global_default(REGISTRY.clone().with(telemetry)).unwrap();
+        opentelemetry::global::set_text_map_propagator(TraceContextPropagator::default());
+        info!("otel tracing initialized");
+    }
 
     check_data_folder().await;
     check_rsa_keys().await.unwrap_or_else(|e| {
@@ -263,7 +290,7 @@ async fn docker_data_folder_is_persistent(data_folder: &Path) -> bool {
     true
 }
 
-async fn check_rsa_keys() -> ApiResult<()> {
+async fn check_rsa_keys() -> anyhow::Result<()> {
     // If the RSA keys don't exist, try to create them
     let priv_path = CONFIG.private_rsa_key();
     let pub_path = CONFIG.public_rsa_key();

@@ -1,5 +1,4 @@
-use axum::Json;
-use axum_util::errors::ApiResult;
+use axol::prelude::*;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -52,7 +51,7 @@ fn jsonify_yubikeys(yubikeys: Vec<String>) -> serde_json::Value {
     result
 }
 
-fn get_yubico_credentials() -> ApiResult<(Option<String>, String, String)> {
+fn get_yubico_credentials() -> Result<(Option<String>, String, String)> {
     let Some(yubico) = CONFIG.yubico.as_ref() else {
         err!("Yubico support is disabled");
     };
@@ -60,20 +59,20 @@ fn get_yubico_credentials() -> ApiResult<(Option<String>, String, String)> {
     Ok((yubico.server.as_ref().map(|x| x.to_string()), yubico.client_id.clone(), yubico.secret_key.clone()))
 }
 
-async fn verify_yubikey_otp(otp: String) -> ApiResult<()> {
+async fn verify_yubikey_otp(otp: String) -> Result<()> {
     let (server, yubico_id, yubico_secret) = get_yubico_credentials()?;
 
     let config = Config::default().set_client_id(yubico_id).set_key(yubico_secret);
 
     match server {
-        Some(server) => tokio::task::spawn_blocking(move || verify(otp, config.set_api_hosts(vec![server]))).await?,
-        None => tokio::task::spawn_blocking(move || verify(otp, config)).await?,
+        Some(server) => tokio::task::spawn_blocking(move || verify(otp, config.set_api_hosts(vec![server]))).await.ise()?,
+        None => tokio::task::spawn_blocking(move || verify(otp, config)).await.ise()?,
     }
     .map_res("Failed to verify OTP")?;
     Ok(())
 }
 
-pub async fn generate_yubikey(headers: Headers, data: Json<Upcase<PasswordData>>) -> ApiResult<Json<Value>> {
+pub async fn generate_yubikey(headers: Headers, data: Json<Upcase<PasswordData>>) -> Result<Json<Value>> {
     // Make sure the credentials are set
     get_yubico_credentials()?;
 
@@ -85,12 +84,12 @@ pub async fn generate_yubikey(headers: Headers, data: Json<Upcase<PasswordData>>
     }
 
     let user_uuid = user.uuid;
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
 
     let r = TwoFactor::find_by_user_and_type(&conn, user_uuid, TwoFactorType::YubiKey).await?;
 
     if let Some(r) = r {
-        let yubikey_metadata: YubikeyMetadata = serde_json::from_value(r.data)?;
+        let yubikey_metadata: YubikeyMetadata = serde_json::from_value(r.data).ise()?;
 
         let mut result = jsonify_yubikeys(yubikey_metadata.keys);
 
@@ -107,14 +106,14 @@ pub async fn generate_yubikey(headers: Headers, data: Json<Upcase<PasswordData>>
     }
 }
 
-pub async fn activate_yubikey(headers: Headers, data: Json<Upcase<EnableYubikeyData>>) -> ApiResult<Json<Value>> {
+pub async fn activate_yubikey(headers: Headers, data: Json<Upcase<EnableYubikeyData>>) -> Result<Json<Value>> {
     let data: EnableYubikeyData = data.0.data;
     let mut user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
         err!("Invalid password");
     }
-    let mut conn = DB.get().await?;
+    let mut conn = DB.get().await.ise()?;
 
     // Check if we already have some data
     let mut yubikey_data = match TwoFactor::find_by_user_and_type(&conn, user.uuid, TwoFactorType::YubiKey).await? {
@@ -148,7 +147,7 @@ pub async fn activate_yubikey(headers: Headers, data: Json<Upcase<EnableYubikeyD
         nfc: data.nfc,
     };
 
-    yubikey_data.data = serde_json::to_value(yubikey_metadata.clone())?;
+    yubikey_data.data = serde_json::to_value(yubikey_metadata.clone()).ise()?;
     yubikey_data.save(&mut conn).await?;
 
     _generate_recover_code(&mut user, &conn).await?;
@@ -164,12 +163,12 @@ pub async fn activate_yubikey(headers: Headers, data: Json<Upcase<EnableYubikeyD
     Ok(Json(result))
 }
 
-pub async fn validate_yubikey_login(response: &str, twofactor_data: Value) -> ApiResult<()> {
+pub async fn validate_yubikey_login(response: &str, twofactor_data: Value) -> Result<()> {
     if response.len() != 44 {
         err!("Invalid Yubikey OTP length");
     }
 
-    let yubikey_metadata: YubikeyMetadata = serde_json::from_value(twofactor_data)?;
+    let yubikey_metadata: YubikeyMetadata = serde_json::from_value(twofactor_data).ise()?;
     let response_id = &response[..12];
 
     if !yubikey_metadata.keys.contains(&response_id.to_owned()) {

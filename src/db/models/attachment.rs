@@ -1,6 +1,6 @@
 use std::{io::ErrorKind, path::PathBuf};
 
-use axum_util::errors::ApiResult;
+use axol::{ErrorExt, Result};
 use log::debug;
 use serde_json::{json, Value};
 use tokio_postgres::Row;
@@ -70,7 +70,7 @@ impl Attachment {
 
 /// Database methods
 impl Attachment {
-    pub async fn save(&self, conn: &Conn) -> ApiResult<()> {
+    pub async fn save(&self, conn: &Conn) -> Result<()> {
         conn.execute(
             r"INSERT INTO attachments (uuid, cipher_uuid, file_name, file_size, akey) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (uuid) DO UPDATE
         SET
@@ -80,19 +80,20 @@ impl Attachment {
         akey = EXCLUDED.akey",
             &[&self.uuid, &self.cipher_uuid, &self.file_name, &self.file_size, &self.akey],
         )
-        .await?;
-        Cipher::flag_revision(conn, self.cipher_uuid).await?;
+        .await
+        .ise()?;
+        Cipher::flag_revision(conn, self.cipher_uuid).await.ise()?;
         Ok(())
     }
 
-    pub async fn delete(&self, conn: &Conn) -> ApiResult<()> {
-        conn.execute(r"DELETE FROM attachments WHERE uuid = $1", &[&self.uuid]).await?;
-        Cipher::flag_revision(conn, self.cipher_uuid).await?;
-        self.delete_file().await?;
+    pub async fn delete(&self, conn: &Conn) -> Result<()> {
+        conn.execute(r"DELETE FROM attachments WHERE uuid = $1", &[&self.uuid]).await.ise()?;
+        Cipher::flag_revision(conn, self.cipher_uuid).await.ise()?;
+        self.delete_file().await.ise()?;
         Ok(())
     }
 
-    async fn delete_file(&self) -> ApiResult<()> {
+    async fn delete_file(&self) -> Result<()> {
         let file_path = self.get_file_path();
         match crate::util::delete_file(&file_path).await {
             // Ignore "file not found" errors. This can happen when the
@@ -107,15 +108,15 @@ impl Attachment {
         }
     }
 
-    pub async fn get(conn: &Conn, uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM attachments WHERE uuid = $1", &[&uuid]).await?.map(Into::into))
+    pub async fn get(conn: &Conn, uuid: Uuid) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM attachments WHERE uuid = $1", &[&uuid]).await.ise()?.map(Into::into))
     }
 
-    pub async fn get_with_cipher(conn: &Conn, uuid: Uuid, cipher_uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM attachments WHERE uuid = $1 AND cipher_uuid = $2", &[&uuid, &cipher_uuid]).await?.map(Into::into))
+    pub async fn get_with_cipher(conn: &Conn, uuid: Uuid, cipher_uuid: Uuid) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM attachments WHERE uuid = $1 AND cipher_uuid = $2", &[&uuid, &cipher_uuid]).await.ise()?.map(Into::into))
     }
 
-    pub async fn get_with_cipher_and_user(conn: &Conn, uuid: Uuid, cipher_uuid: Uuid, user_uuid: Uuid) -> ApiResult<Option<Self>> {
+    pub async fn get_with_cipher_and_user(conn: &Conn, uuid: Uuid, cipher_uuid: Uuid, user_uuid: Uuid) -> Result<Option<Self>> {
         Ok(conn
             .query_opt(
                 r"
@@ -124,11 +125,12 @@ impl Attachment {
             WHERE a.uuid = $1 AND a.cipher_uuid = $2",
                 &[&uuid, &cipher_uuid, &user_uuid],
             )
-            .await?
+            .await
+            .ise()?
             .map(Into::into))
     }
 
-    pub async fn get_with_cipher_and_user_writable(conn: &Conn, uuid: Uuid, cipher_uuid: Uuid, user_uuid: Uuid) -> ApiResult<Option<Self>> {
+    pub async fn get_with_cipher_and_user_writable(conn: &Conn, uuid: Uuid, cipher_uuid: Uuid, user_uuid: Uuid) -> Result<Option<Self>> {
         Ok(conn
             .query_opt(
                 r"
@@ -137,11 +139,12 @@ impl Attachment {
             WHERE a.uuid = $1 AND a.cipher_uuid = $2",
                 &[&uuid, &cipher_uuid, &user_uuid],
             )
-            .await?
+            .await
+            .ise()?
             .map(Into::into))
     }
 
-    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<Vec<Self>> {
+    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid) -> Result<Vec<Self>> {
         Ok(conn
             .query_opt(
                 r"
@@ -149,17 +152,18 @@ impl Attachment {
             INNER JOIN user_cipher_auth uca ON uca.cipher_uuid = a.cipher_uuid AND uca.user_uuid = $1",
                 &[&user_uuid],
             )
-            .await?
+            .await
+            .ise()?
             .into_iter()
             .map(|x| x.into())
             .collect())
     }
 
-    pub async fn find_by_cipher(conn: &Conn, cipher_uuid: Uuid) -> ApiResult<Vec<Self>> {
-        Ok(conn.query(r"SELECT * FROM attachments WHERE cipher_uuid = $1", &[&cipher_uuid]).await?.into_iter().map(|x| x.into()).collect())
+    pub async fn find_by_cipher(conn: &Conn, cipher_uuid: Uuid) -> Result<Vec<Self>> {
+        Ok(conn.query(r"SELECT * FROM attachments WHERE cipher_uuid = $1", &[&cipher_uuid]).await.ise()?.into_iter().map(|x| x.into()).collect())
     }
 
-    pub async fn size_count_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<(i64, i64)> {
+    pub async fn size_count_by_user(conn: &Conn, user_uuid: Uuid) -> Result<(i64, i64)> {
         let row = conn
             .query_one(
                 r"
@@ -170,11 +174,12 @@ impl Attachment {
         ",
                 &[&user_uuid],
             )
-            .await?;
+            .await
+            .ise()?;
         Ok((row.get(0), row.get(1)))
     }
 
-    pub async fn size_count_by_organization(conn: &Conn, organization_uuid: Uuid) -> ApiResult<(i64, i64)> {
+    pub async fn size_count_by_organization(conn: &Conn, organization_uuid: Uuid) -> Result<(i64, i64)> {
         let row = conn
             .query_one(
                 r"
@@ -185,7 +190,8 @@ impl Attachment {
         ",
                 &[&organization_uuid],
             )
-            .await?;
+            .await
+            .ise()?;
         Ok((row.get(0), row.get(1)))
     }
 }

@@ -1,4 +1,4 @@
-use axum_util::errors::ApiResult;
+use axol::{ErrorExt, Result};
 use chrono::{DateTime, Utc};
 use tokio_postgres::Row;
 use uuid::Uuid;
@@ -121,7 +121,7 @@ impl Device {
 }
 
 impl Device {
-    pub async fn save(&mut self, conn: &Conn) -> ApiResult<()> {
+    pub async fn save(&mut self, conn: &Conn) -> Result<()> {
         self.updated_at = Utc::now();
         conn.execute(r"INSERT INTO devices (uuid, created_at, updated_at, user_uuid, name, atype, push_token, refresh_token, twofactor_remember, push_uuid) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (uuid) DO UPDATE
         SET
@@ -143,41 +143,47 @@ impl Device {
             &self.refresh_token,
             &self.twofactor_remember,
             &self.push_uuid,
-        ]).await?;
+        ]).await.ise()?;
         Ok(())
     }
 
-    pub async fn delete_all_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<()> {
-        conn.execute(r"DELETE FROM devices WHERE user_uuid = $1", &[&user_uuid]).await?;
+    pub async fn delete_all_by_user(conn: &Conn, user_uuid: Uuid) -> Result<()> {
+        conn.execute(r"DELETE FROM devices WHERE user_uuid = $1", &[&user_uuid]).await.ise()?;
         Ok(())
     }
 
-    pub async fn find_by_uuid_and_user(conn: &Conn, uuid: Uuid, user_uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM devices WHERE uuid = $1 AND user_uuid = $2", &[&uuid, &user_uuid]).await?.map(Into::into))
+    pub async fn find_by_uuid_and_user(conn: &Conn, uuid: Uuid, user_uuid: Uuid) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM devices WHERE uuid = $1 AND user_uuid = $2", &[&uuid, &user_uuid]).await.ise()?.map(Into::into))
     }
 
-    pub async fn get(conn: &Conn, uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM devices WHERE uuid = $1", &[&uuid]).await?.map(Into::into))
+    pub async fn get(conn: &Conn, uuid: Uuid) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM devices WHERE uuid = $1", &[&uuid]).await.ise()?.map(Into::into))
     }
 
-    pub async fn clear_push_token_by_uuid(conn: &Conn, uuid: Uuid) -> ApiResult<()> {
-        conn.execute(r"UPDATE devices SET push_token = NULL WHERE uuid = $1", &[&uuid]).await?;
+    pub async fn clear_push_token_by_uuid(conn: &Conn, uuid: Uuid) -> Result<()> {
+        conn.execute(r"UPDATE devices SET push_token = NULL WHERE uuid = $1", &[&uuid]).await.ise()?;
         Ok(())
     }
 
-    pub async fn find_by_refresh_token(conn: &Conn, refresh_token: &str) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM devices WHERE refresh_token = $1", &[&refresh_token]).await?.map(Into::into))
+    pub async fn find_by_refresh_token(conn: &Conn, refresh_token: &str) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM devices WHERE refresh_token = $1", &[&refresh_token]).await.ise()?.map(Into::into))
     }
 
-    pub async fn find_latest_active_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<Option<Self>> {
-        Ok(conn.query_opt(r"SELECT * FROM devices WHERE user_uuid = $1 ORDER BY updated_at DESC LIMIT 1", &[&user_uuid]).await?.map(Into::into))
+    pub async fn find_latest_active_by_user(conn: &Conn, user_uuid: Uuid) -> Result<Option<Self>> {
+        Ok(conn.query_opt(r"SELECT * FROM devices WHERE user_uuid = $1 ORDER BY updated_at DESC LIMIT 1", &[&user_uuid]).await.ise()?.map(Into::into))
     }
 
-    pub async fn find_push_devices_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<Vec<Self>> {
-        Ok(conn.query(r"SELECT * FROM devices WHERE user_uuid = $1 AND push_token IS NOT NULL", &[&user_uuid]).await?.into_iter().map(|x| x.into()).collect())
+    pub async fn find_push_devices_by_user(conn: &Conn, user_uuid: Uuid) -> Result<Vec<Self>> {
+        Ok(conn
+            .query(r"SELECT * FROM devices WHERE user_uuid = $1 AND push_token IS NOT NULL", &[&user_uuid])
+            .await
+            .ise()?
+            .into_iter()
+            .map(|x| x.into())
+            .collect())
     }
 
-    pub async fn check_user_has_push_device(conn: &Conn, user_uuid: Uuid) -> ApiResult<bool> {
-        Ok(conn.query_one(r"SELECT count(1) FROM devices WHERE user_uuid = $1 AND push_token IS NOT NULL", &[&user_uuid]).await?.get::<_, i64>(0) > 0)
+    pub async fn check_user_has_push_device(conn: &Conn, user_uuid: Uuid) -> Result<bool> {
+        Ok(conn.query_one(r"SELECT count(1) FROM devices WHERE user_uuid = $1 AND push_token IS NOT NULL", &[&user_uuid]).await.ise()?.get::<_, i64>(0) > 0)
     }
 }

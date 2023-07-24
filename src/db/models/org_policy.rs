@@ -1,4 +1,4 @@
-use axum_util::errors::ApiResult;
+use axol::{ErrorExt, Result};
 use log::error;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -97,7 +97,7 @@ impl OrganizationPolicy {
 
 /// Database methods
 impl OrganizationPolicy {
-    pub async fn save(&mut self, conn: &Conn) -> ApiResult<()> {
+    pub async fn save(&mut self, conn: &Conn) -> Result<()> {
         conn.execute(
             r"INSERT INTO organization_policies (uuid, organization_uuid, atype, enabled, data) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (uuid) DO UPDATE
         SET
@@ -107,20 +107,22 @@ impl OrganizationPolicy {
         data = EXCLUDED.data",
             &[&self.uuid, &self.organization_uuid, &(self.atype as i32), &self.enabled, &self.data],
         )
-        .await?;
+        .await
+        .ise()?;
         Ok(())
     }
 
-    pub async fn find_by_org(conn: &Conn, organization_uuid: Uuid) -> ApiResult<Vec<Self>> {
+    pub async fn find_by_org(conn: &Conn, organization_uuid: Uuid) -> Result<Vec<Self>> {
         Ok(conn
             .query(r"SELECT * FROM organization_policies WHERE organization_uuid = $1", &[&organization_uuid])
-            .await?
+            .await
+            .ise()?
             .into_iter()
             .map(|x| x.into())
             .collect())
     }
 
-    pub async fn find_confirmed_by_user(conn: &Conn, user_uuid: Uuid) -> ApiResult<Vec<Self>> {
+    pub async fn find_confirmed_by_user(conn: &Conn, user_uuid: Uuid) -> Result<Vec<Self>> {
         Ok(conn
             .query(
                 r"
@@ -131,20 +133,22 @@ impl OrganizationPolicy {
         ",
                 &[&user_uuid],
             )
-            .await?
+            .await
+            .ise()?
             .into_iter()
             .map(|x| x.into())
             .collect())
     }
 
-    pub async fn find_by_org_and_type(conn: &Conn, organization_uuid: Uuid, policy_type: OrgPolicyType) -> ApiResult<Option<Self>> {
+    pub async fn find_by_org_and_type(conn: &Conn, organization_uuid: Uuid, policy_type: OrgPolicyType) -> Result<Option<Self>> {
         Ok(conn
             .query_opt(r"SELECT * FROM organization_policies WHERE organization_uuid = $1 AND atype = $2", &[&organization_uuid, &(policy_type as i32)])
-            .await?
+            .await
+            .ise()?
             .map(Into::into))
     }
 
-    pub async fn find_accepted_and_confirmed_by_user_and_active_policy(conn: &Conn, user_uuid: Uuid, policy_type: OrgPolicyType) -> ApiResult<Vec<Self>> {
+    pub async fn find_accepted_and_confirmed_by_user_and_active_policy(conn: &Conn, user_uuid: Uuid, policy_type: OrgPolicyType) -> Result<Vec<Self>> {
         Ok(conn
             .query(
                 r"
@@ -155,13 +159,14 @@ impl OrganizationPolicy {
         ",
                 &[&user_uuid, &(policy_type as i32)],
             )
-            .await?
+            .await
+            .ise()?
             .into_iter()
             .map(|x| x.into())
             .collect())
     }
 
-    pub async fn find_confirmed_by_user_and_active_policy(conn: &Conn, user_uuid: Uuid, policy_type: OrgPolicyType) -> ApiResult<Vec<Self>> {
+    pub async fn find_confirmed_by_user_and_active_policy(conn: &Conn, user_uuid: Uuid, policy_type: OrgPolicyType) -> Result<Vec<Self>> {
         Ok(conn
             .query(
                 r"
@@ -172,7 +177,8 @@ impl OrganizationPolicy {
         ",
                 &[&user_uuid, &(policy_type as i32)],
             )
-            .await?
+            .await
+            .ise()?
             .into_iter()
             .map(|x| x.into())
             .collect())
@@ -181,15 +187,15 @@ impl OrganizationPolicy {
     /// Returns true if the user belongs to an org that has enabled the specified policy type,
     /// and the user is not an owner or admin of that org. This is only useful for checking
     /// applicability of policy types that have these particular semantics.
-    pub async fn is_applicable_to_user(conn: &Conn, user_uuid: Uuid, policy_type: OrgPolicyType, exclude_org_uuid: Option<Uuid>) -> ApiResult<bool> {
+    pub async fn is_applicable_to_user(conn: &Conn, user_uuid: Uuid, policy_type: OrgPolicyType, exclude_org_uuid: Option<Uuid>) -> Result<bool> {
         //TODO: refactor this to not be N+1 query
-        for policy in OrganizationPolicy::find_accepted_and_confirmed_by_user_and_active_policy(conn, user_uuid, policy_type).await? {
+        for policy in OrganizationPolicy::find_accepted_and_confirmed_by_user_and_active_policy(conn, user_uuid, policy_type).await.ise()? {
             // Check if we need to skip this organization.
             if exclude_org_uuid == Some(policy.organization_uuid) {
                 continue;
             }
 
-            if let Some(user) = UserOrganization::get(conn, user_uuid, policy.organization_uuid).await? {
+            if let Some(user) = UserOrganization::get(conn, user_uuid, policy.organization_uuid).await.ise()? {
                 if user.atype < UserOrgType::Admin {
                     return Ok(true);
                 }
@@ -198,10 +204,10 @@ impl OrganizationPolicy {
         Ok(false)
     }
 
-    pub async fn is_user_allowed(conn: &Conn, user_uuid: Uuid, org_uuid: Uuid, exclude_current_org: bool) -> ApiResult<OrgPolicyResult> {
+    pub async fn is_user_allowed(conn: &Conn, user_uuid: Uuid, org_uuid: Uuid, exclude_current_org: bool) -> Result<OrgPolicyResult> {
         // Enforce TwoFactor/TwoStep login
-        if TwoFactor::find_by_user_official(conn, user_uuid).await?.is_empty() {
-            match Self::find_by_org_and_type(conn, org_uuid, OrgPolicyType::TwoFactorAuthentication).await? {
+        if TwoFactor::find_by_user_official(conn, user_uuid).await.ise()?.is_empty() {
+            match Self::find_by_org_and_type(conn, org_uuid, OrgPolicyType::TwoFactorAuthentication).await.ise()? {
                 Some(p) if p.enabled => {
                     return Ok(Err(OrgPolicyErr::TwoFactorMissing));
                 }
@@ -216,15 +222,15 @@ impl OrganizationPolicy {
         } else {
             None
         };
-        if Self::is_applicable_to_user(conn, user_uuid, OrgPolicyType::SingleOrg, exclude_org).await? {
+        if Self::is_applicable_to_user(conn, user_uuid, OrgPolicyType::SingleOrg, exclude_org).await.ise()? {
             return Ok(Err(OrgPolicyErr::SingleOrgEnforced));
         }
 
         Ok(Ok(()))
     }
 
-    pub async fn org_is_reset_password_auto_enroll(conn: &Conn, org_uuid: Uuid) -> ApiResult<bool> {
-        match OrganizationPolicy::find_by_org_and_type(conn, org_uuid, OrgPolicyType::ResetPassword).await? {
+    pub async fn org_is_reset_password_auto_enroll(conn: &Conn, org_uuid: Uuid) -> Result<bool> {
+        match OrganizationPolicy::find_by_org_and_type(conn, org_uuid, OrgPolicyType::ResetPassword).await.ise()? {
             Some(policy) => match serde_json::from_value::<Upcase<ResetPasswordDataModel>>(policy.data) {
                 Ok(opts) => {
                     return Ok(policy.enabled && opts.data.auto_enroll_enabled);
@@ -239,9 +245,9 @@ impl OrganizationPolicy {
 
     /// Returns true if the user belongs to an org that has enabled the `DisableHideEmail`
     /// option of the `Send Options` policy, and the user is not an owner or admin of that org.
-    pub async fn is_hide_email_disabled(conn: &Conn, user_uuid: Uuid) -> ApiResult<bool> {
-        for policy in OrganizationPolicy::find_confirmed_by_user_and_active_policy(conn, user_uuid, OrgPolicyType::SendOptions).await? {
-            if let Some(user) = UserOrganization::get(conn, user_uuid, policy.organization_uuid).await? {
+    pub async fn is_hide_email_disabled(conn: &Conn, user_uuid: Uuid) -> Result<bool> {
+        for policy in OrganizationPolicy::find_confirmed_by_user_and_active_policy(conn, user_uuid, OrgPolicyType::SendOptions).await.ise()? {
+            if let Some(user) = UserOrganization::get(conn, user_uuid, policy.organization_uuid).await.ise()? {
                 if user.atype < UserOrgType::Admin {
                     match serde_json::from_value::<Upcase<SendOptionsPolicyData>>(policy.data) {
                         Ok(opts) => {

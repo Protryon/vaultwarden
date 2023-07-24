@@ -6,16 +6,11 @@ use std::{
     ops::{Deref, Range, RangeFrom},
 };
 
-use axum::{
-    body::BoxBody,
-    extract::FromRequestParts,
-    response::{IntoResponseParts, Response},
+use axol::{
+    cors::{AllowHeaders, AllowMethods, Cors},
+    http::{response::ResponsePartsRef, Uri},
+    prelude::*,
 };
-use axum_util::{
-    errors::{ApiError, ApiResult},
-    interceptor::Interception,
-};
-use http::request::Parts;
 use log::error;
 use tokio::{fs::File, io::AsyncWriteExt, time::Duration};
 use tokio_postgres::{types::FromSql, Row};
@@ -26,114 +21,81 @@ use crate::{
     CONFIG,
 };
 
-#[derive(Clone)]
-pub struct AppHeaders;
+pub async fn app_headers(uri: Uri, mut res: Response) -> Response {
+    res.headers.insert("permissions-policy", "accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), camera=(), display-capture=(), document-domain=(), encrypted-media=(), execution-while-not-rendered=(), execution-while-out-of-viewport=(), fullscreen=(), geolocation=(), gyroscope=(), keyboard-map=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), screen-wake-lock=(), sync-xhr=(), usb=(), web-share=(), xr-spatial-tracking=()");
+    res.headers.insert("referrer-policy", "same-origin");
+    res.headers.insert("x-content-type-options", "nosniff");
+    // Obsolete in modern browsers, unsafe (XS-Leak), and largely replaced by CSP
+    res.headers.insert("x-xss-protection", "0");
 
-impl Interception for AppHeaders {
-    type Carryover = String;
+    //TODO: this looks insecure, fix it?
 
-    fn on_request(&self, req: &mut http::request::Parts) -> ApiResult<String> {
-        Ok(req.headers.get(":path").and_then(|x| x.to_str().ok()).unwrap_or_default().to_string())
+    // Do not send the Content-Security-Policy (CSP) Header and X-Frame-Options for the *-connector.html files.
+    // This can cause issues when some MFA requests needs to open a popup or page within the clients like WebAuthn, or Duo.
+    // This is the same behaviour as upstream Bitwarden.
+    if !uri.path().ends_with("connector.html") {
+        // # Frame Ancestors:
+        // Chrome Web Store: https://chrome.google.com/webstore/detail/bitwarden-free-password-m/nngceckbapebfimnlniiiahkandclblb
+        // Edge Add-ons: https://microsoftedge.microsoft.com/addons/detail/bitwarden-free-password/jbkfoedolllekgbhcbcoahefnbanhhlh?hl=en-US
+        // Firefox Browser Add-ons: https://addons.mozilla.org/en-US/firefox/addon/bitwarden-password-manager/
+        // # img/child/frame src:
+        // Have I Been Pwned and Gravator to allow those calls to work.
+        // # Connect src:
+        // Leaked Passwords check: api.pwnedpasswords.com
+        // 2FA/MFA Site check: api.2fa.directory
+        // # Mail Relay: https://bitwarden.com/blog/add-privacy-and-security-using-email-aliases-with-bitwarden/
+        // app.simplelogin.io, app.anonaddy.com, api.fastmail.com, quack.duckduckgo.com
+        let csp = format!(
+            "default-src 'self'; \
+            base-uri 'self'; \
+            form-action 'self'; \
+            object-src 'self' blob:; \
+            script-src 'self' 'wasm-unsafe-eval'; \
+            style-src 'self' 'unsafe-inline'; \
+            child-src 'self' https://*.duosecurity.com https://*.duofederal.com; \
+            frame-src 'self' https://*.duosecurity.com https://*.duofederal.com; \
+            frame-ancestors 'self' \
+              chrome-extension://nngceckbapebfimnlniiiahkandclblb \
+              chrome-extension://jbkfoedolllekgbhcbcoahefnbanhhlh \
+              moz-extension://* \
+              {allowed_iframe_ancestors}; \
+            img-src 'self' data: \
+              https://haveibeenpwned.com \
+              https://www.gravatar.com \
+              {icon_service_csp}; \
+            connect-src 'self' \
+              https://api.pwnedpasswords.com \
+              https://api.2fa.directory \
+              https://app.simplelogin.io/api/ \
+              https://app.anonaddy.com/api/ \
+              https://api.fastmail.com/ \
+              ;\
+            ",
+            icon_service_csp = &*ICON_SERVICE_CSP,
+            allowed_iframe_ancestors = CONFIG.advanced.allowed_iframe_ancestors
+        );
+        res.headers.insert("content-security-policy", csp);
+        res.headers.insert("x-frame-options", "SAMEORIGIN");
+    } else {
+        // It looks like this header get's set somewhere else also, make sure this is not sent for these files, it will cause MFA issues.
+        res.headers.remove("x-frame-options");
     }
 
-    fn on_response(&self, req_uri_path: String, res: &mut http::response::Parts) -> ApiResult<()> {
-        res.headers.insert("permissions-policy", "accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), camera=(), display-capture=(), document-domain=(), encrypted-media=(), execution-while-not-rendered=(), execution-while-out-of-viewport=(), fullscreen=(), geolocation=(), gyroscope=(), keyboard-map=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), screen-wake-lock=(), sync-xhr=(), usb=(), web-share=(), xr-spatial-tracking=()".parse().unwrap());
-        res.headers.insert("referrer-policy", "same-origin".parse().unwrap());
-        res.headers.insert("x-content-type-options", "nosniff".parse().unwrap());
-        // Obsolete in modern browsers, unsafe (XS-Leak), and largely replaced by CSP
-        res.headers.insert("x-xss-protection", "0".parse().unwrap());
-
-        // Do not send the Content-Security-Policy (CSP) Header and X-Frame-Options for the *-connector.html files.
-        // This can cause issues when some MFA requests needs to open a popup or page within the clients like WebAuthn, or Duo.
-        // This is the same behaviour as upstream Bitwarden.
-        if !req_uri_path.contains("connector.html") {
-            // # Frame Ancestors:
-            // Chrome Web Store: https://chrome.google.com/webstore/detail/bitwarden-free-password-m/nngceckbapebfimnlniiiahkandclblb
-            // Edge Add-ons: https://microsoftedge.microsoft.com/addons/detail/bitwarden-free-password/jbkfoedolllekgbhcbcoahefnbanhhlh?hl=en-US
-            // Firefox Browser Add-ons: https://addons.mozilla.org/en-US/firefox/addon/bitwarden-password-manager/
-            // # img/child/frame src:
-            // Have I Been Pwned and Gravator to allow those calls to work.
-            // # Connect src:
-            // Leaked Passwords check: api.pwnedpasswords.com
-            // 2FA/MFA Site check: api.2fa.directory
-            // # Mail Relay: https://bitwarden.com/blog/add-privacy-and-security-using-email-aliases-with-bitwarden/
-            // app.simplelogin.io, app.anonaddy.com, api.fastmail.com, quack.duckduckgo.com
-            let csp = format!(
-                "default-src 'self'; \
-                base-uri 'self'; \
-                form-action 'self'; \
-                object-src 'self' blob:; \
-                script-src 'self' 'wasm-unsafe-eval'; \
-                style-src 'self' 'unsafe-inline'; \
-                child-src 'self' https://*.duosecurity.com https://*.duofederal.com; \
-                frame-src 'self' https://*.duosecurity.com https://*.duofederal.com; \
-                frame-ancestors 'self' \
-                  chrome-extension://nngceckbapebfimnlniiiahkandclblb \
-                  chrome-extension://jbkfoedolllekgbhcbcoahefnbanhhlh \
-                  moz-extension://* \
-                  {allowed_iframe_ancestors}; \
-                img-src 'self' data: \
-                  https://haveibeenpwned.com \
-                  https://www.gravatar.com \
-                  {icon_service_csp}; \
-                connect-src 'self' \
-                  https://api.pwnedpasswords.com \
-                  https://api.2fa.directory \
-                  https://app.simplelogin.io/api/ \
-                  https://app.anonaddy.com/api/ \
-                  https://api.fastmail.com/ \
-                  ;\
-                ",
-                icon_service_csp = &*ICON_SERVICE_CSP,
-                allowed_iframe_ancestors = CONFIG.advanced.allowed_iframe_ancestors
-            );
-            res.headers.insert("content-security-policy", csp.parse().unwrap());
-            res.headers.insert("x-frame-options", "SAMEORIGIN".parse().unwrap());
-        } else {
-            // It looks like this header get's set somewhere else also, make sure this is not sent for these files, it will cause MFA issues.
-            res.headers.remove("x-frame-options");
-        }
-
-        // Disable cache unless otherwise specified
-        if !res.headers.contains_key("cache-control") {
-            res.headers.insert("cache-control", "no-cache, no-store, max-age=0".parse().unwrap());
-        }
-        Ok(())
+    // Disable cache unless otherwise specified
+    if !res.headers.contains_key("cache-control") {
+        res.headers.insert("cache-control", "no-cache, no-store, max-age=0");
     }
+    res
 }
 
-#[derive(Clone)]
-pub struct Cors;
+const SAFARI_EXTENSION_ORIGIN: &str = "file://";
 
-impl Interception for Cors {
-    type Carryover = String;
-
-    fn on_request(&self, parts: &mut http::request::Parts) -> ApiResult<Self::Carryover> {
-        if parts.method == http::Method::OPTIONS {
-            let req_allow_headers = parts.headers.get("access-control-request-headers").map(|x| x.to_str().unwrap_or_default().to_string()).unwrap_or_default();
-            let req_allow_method = parts.headers.get("access-control-request-method").map(|x| x.to_str().unwrap_or_default().to_string()).unwrap_or_default();
-
-            let mut response = Response::new(BoxBody::default());
-
-            response.headers_mut().insert("access-control-allow-methods", req_allow_method.parse().unwrap());
-            response.headers_mut().insert("access-control-allow-headers", req_allow_headers.parse().unwrap());
-            response.headers_mut().insert("access-control-allow-credentials", "true".parse().unwrap());
-            return Err(ApiError::Response(response));
-        }
-
-        Ok(parts.headers.get("origin").map(|x| x.to_str().unwrap_or_default().to_string()).unwrap_or_default())
-    }
-
-    fn on_response(&self, carryover: Self::Carryover, parts: &mut http::response::Parts) -> ApiResult<()> {
-        let domain_origin = CONFIG.settings.public.origin().ascii_serialization();
-        // TODO: ?? let sso_origin = CONFIG.sso_authority();
-        const SAFARI_EXTENSION_ORIGIN: &str = "file://";
-        if carryover == domain_origin || carryover == SAFARI_EXTENSION_ORIGIN {
-            parts.headers.insert("access-control-allow-origin", carryover.parse().unwrap());
-        }
-
-        Ok(())
-    }
+pub fn build_cors() -> Cors {
+    Cors::default()
+        .allow_headers(AllowHeaders::MirrorRequest)
+        .allow_methods(AllowMethods::MirrorRequest)
+        .allow_credentials(true)
+        .allow_origin([&CONFIG.settings.public.origin().ascii_serialization(), SAFARI_EXTENSION_ORIGIN])
 }
 
 pub struct Cached {
@@ -165,20 +127,18 @@ impl Cached {
 }
 
 impl IntoResponseParts for Cached {
-    type Error = ();
-
-    fn into_response_parts(self, mut res: axum::response::ResponseParts) -> Result<axum::response::ResponseParts, Self::Error> {
+    fn into_response_parts(self, response: &mut ResponsePartsRef<'_>) -> Result<()> {
         let cache_control_header = if self.is_immutable {
             format!("public, immutable, max-age={}", self.ttl)
         } else {
             format!("public, max-age={}", self.ttl)
         };
-        res.headers_mut().insert("cache-control", cache_control_header.parse().unwrap());
+        response.headers.insert("cache-control", cache_control_header);
 
         let time_now = chrono::Local::now();
         let expiry_time = time_now + chrono::Duration::seconds(self.ttl.try_into().unwrap());
-        res.headers_mut().insert("expires", format_datetime_http(&expiry_time).parse().unwrap());
-        Ok(res)
+        response.headers.insert("expires", format_datetime_http(&expiry_time));
+        Ok(())
     }
 }
 
@@ -188,12 +148,10 @@ pub struct AutoTxn {
 }
 
 #[async_trait::async_trait]
-impl<S: Send + Sync> FromRequestParts<S> for AutoTxn {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(_req: &mut Parts, _state: &S) -> ApiResult<Self> {
-        let conn = DB.get().await?;
-        conn.batch_execute("BEGIN").await?;
+impl<'a> FromRequestParts<'a> for AutoTxn {
+    async fn from_request_parts(_: RequestPartsRef<'a>) -> Result<Self> {
+        let conn = DB.get().await.map_err(Error::internal)?;
+        conn.batch_execute("BEGIN").await.map_err(Error::internal)?;
         Ok(Self {
             conn: Some(conn),
             deferred: vec![],
@@ -210,8 +168,8 @@ impl Deref for AutoTxn {
 }
 
 impl AutoTxn {
-    pub async fn commit(mut self) -> ApiResult<ConnOwned> {
-        self.batch_execute("COMMIT").await?;
+    pub async fn commit(mut self) -> Result<ConnOwned> {
+        self.batch_execute("COMMIT").await.map_err(Error::internal)?;
         for deferred in std::mem::take(&mut self.deferred) {
             deferred();
         }
@@ -219,8 +177,8 @@ impl AutoTxn {
     }
 
     #[allow(dead_code)]
-    pub async fn rollback(mut self) -> ApiResult<ConnOwned> {
-        self.batch_execute("ROLLBACK").await?;
+    pub async fn rollback(mut self) -> Result<ConnOwned> {
+        self.batch_execute("ROLLBACK").await.map_err(Error::internal)?;
         Ok(self.conn.take().unwrap())
     }
 

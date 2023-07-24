@@ -10,8 +10,7 @@ pub mod two_factor;
 
 pub use ciphers::CipherData;
 
-use axum::{extract::Query, routing, Json, Router};
-use axum_util::errors::{ApiError, ApiResult};
+use axol::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -28,31 +27,31 @@ use crate::{
 
 pub fn route() -> Router {
     let mut router = Router::new()
-        .route("/settings/domains", routing::get(get_eq_domains))
-        .route("/settings/domains", routing::post(post_eq_domains))
-        .route("/settings/domains", routing::put(post_eq_domains))
-        .route("/hibp/breach", routing::get(hibp_breach))
-        .route("/alive", routing::get(now))
-        .route("/now", routing::get(now))
-        .route("/version", routing::get(version))
-        .route("/config", routing::get(config))
-        .route("/organizations/:org_uuid/events", routing::get(events::get_org_events))
-        .route("/ciphers/:uuid/events", routing::get(events::get_cipher_events))
-        .route("/organizations/:org_uuid/users/:user_id/events", routing::get(events::get_user_events))
-        .route("/folders", routing::get(folders::get_folders))
-        .route("/folders/:uuid", routing::get(folders::get_folder))
-        .route("/folders", routing::post(folders::post_folders))
-        .route("/folders/:uuid", routing::post(folders::put_folder))
-        .route("/folders/:uuid", routing::put(folders::put_folder))
-        .route("/folders/:uuid", routing::delete(folders::delete_folder))
-        .route("/folders/:uuid/delete", routing::post(folders::delete_folder))
-        .route("/devices/knowndevice/:email/:uuid", routing::get(accounts::get_known_device_from_path))
-        .route("/devices/knowndevice", routing::get(accounts::get_known_device))
-        .route("/devices/identifier/:uuid/token", routing::post(accounts::put_device_token))
-        .route("/devices/identifier/:uuid/token", routing::put(accounts::put_device_token))
-        .route("/devices/identifier/:uuid/clear-token", routing::put(accounts::put_clear_device_token))
-        .route("/devices/identifier/:uuid/clear-token", routing::post(accounts::put_clear_device_token))
-        .route("/public/organization/import", routing::post(public::ldap_import));
+        .get("/settings/domains", get_eq_domains)
+        .post("/settings/domains", post_eq_domains)
+        .put("/settings/domains", post_eq_domains)
+        .get("/hibp/breach", hibp_breach)
+        .get("/alive", now)
+        .get("/now", now)
+        .get("/version", version)
+        .get("/config", config)
+        .get("/organizations/:org_uuid/events", events::get_org_events)
+        .get("/ciphers/:uuid/events", events::get_cipher_events)
+        .get("/organizations/:org_uuid/users/:user_id/events", events::get_user_events)
+        .get("/folders", folders::get_folders)
+        .get("/folders/:uuid", folders::get_folder)
+        .post("/folders", folders::post_folders)
+        .post("/folders/:uuid", folders::put_folder)
+        .put("/folders/:uuid", folders::put_folder)
+        .delete("/folders/:uuid", folders::delete_folder)
+        .post("/folders/:uuid/delete", folders::delete_folder)
+        .get("/devices/knowndevice/:email/:uuid", accounts::get_known_device_from_path)
+        .get("/devices/knowndevice", accounts::get_known_device)
+        .post("/devices/identifier/:uuid/token", accounts::put_device_token)
+        .put("/devices/identifier/:uuid/token", accounts::put_device_token)
+        .put("/devices/identifier/:uuid/clear-token", accounts::put_clear_device_token)
+        .post("/devices/identifier/:uuid/clear-token", accounts::put_clear_device_token)
+        .post("/public/organization/import", public::ldap_import);
 
     router = ciphers::route(router);
     router = accounts::route(router);
@@ -109,7 +108,7 @@ struct EquivDomainData {
     equivalent_domains: Option<Vec<Vec<String>>>,
 }
 
-async fn post_eq_domains(headers: Headers, data: Json<Upcase<EquivDomainData>>) -> ApiResult<Json<Value>> {
+async fn post_eq_domains(headers: Headers, data: Json<Upcase<EquivDomainData>>) -> Result<Json<Value>> {
     let data: EquivDomainData = data.0.data;
 
     let excluded_globals = data.excluded_global_equivalent_domains.unwrap_or_default();
@@ -121,7 +120,7 @@ async fn post_eq_domains(headers: Headers, data: Json<Upcase<EquivDomainData>>) 
     user.excluded_globals = to_string(&excluded_globals).unwrap_or_else(|_| "[]".to_string());
     user.equivalent_domains = to_string(&equivalent_domains).unwrap_or_else(|_| "[]".to_string());
 
-    let conn = DB.get().await?;
+    let conn = DB.get().await.ise()?;
     user.save(&conn).await?;
 
     ws_users().send_user_update(UpdateType::SyncSettings, &conn, &user).await?;
@@ -138,20 +137,20 @@ async fn hibp_breach(
     Query(HibpQuery {
         username,
     }): Query<HibpQuery>,
-) -> ApiResult<Json<Value>> {
+) -> Result<Json<Value>> {
     let url = format!("https://haveibeenpwned.com/api/v3/breachedaccount/{username}?truncateResponse=false&includeUnverified=false");
 
     if let Some(api_key) = &CONFIG.settings.hibp_api_key {
         let hibp_client = get_reqwest_client();
 
-        let res = hibp_client.get(&url).header("hibp-api-key", api_key).send().await?;
+        let res = hibp_client.get(&url).header("hibp-api-key", api_key).send().await.ise()?;
 
         // If we get a 404, return a 404, it means no breached accounts
         if res.status() == 404 {
-            return Err(ApiError::NotFound);
+            return Err(Error::NotFound);
         }
 
-        let value: Value = res.error_for_status()?.json().await?;
+        let value: Value = res.error_for_status().ise()?.json().await.ise()?;
         Ok(Json(value))
     } else {
         Ok(Json(json!([{
