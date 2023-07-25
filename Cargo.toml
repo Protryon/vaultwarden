@@ -22,7 +22,7 @@ argon2 = "0.5"
 semver = "1.0"
 dashmap = "5.4"
 uuid = { version = "1.4", features = ["v4", "serde"] }
-tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"] }
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"], git = "https://github.com/Protryon/rust-postgres.git" }
 refinery = { version = "0.8", features = ["tokio-postgres"] }
 bb8 = "0.8"
 bb8-postgres = "0.8"
@@ -43,7 +43,7 @@ serde_repr = "0.1"
 serde-aux = "4.2"
 hex = "0.4"
 varint-rs = "2.2.0"
-axol = { version = "0.1.4" }
+axol = { version = "0.1.5", git = "https://github.com/Protryon/axol.git" }
 
 jsonwebtoken = "8.3.0"
 
@@ -81,7 +81,7 @@ openssl = "0.10.54"
 governor = "0.5.1"
 openidconnect = "2.5.0"
 
-tracing-opentelemetry = "0.19.0"
+tracing-opentelemetry = { version = "0.19.0", git = "https://github.com/Protryon/tracing-opentelemetry.git" }
 tracing-subscriber = "0.3.17"
 opentelemetry = { version = "0.19.0", features = ["rt-tokio"] }
 opentelemetry_api = { version = "0.19.0" }
@@ -103,3 +103,6 @@ opt-level = 3
 # A little bit of a speedup
 [profile.dev]
 split-debuginfo = "unpacked"
+
+[patch.crates-io]
+tokio-postgres = { version = "0.7", git = "https://github.com/Protryon/rust-postgres.git" }

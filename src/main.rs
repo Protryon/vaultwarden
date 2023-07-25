@@ -36,7 +36,7 @@
 
 use std::{panic, path::Path, process::exit, str::FromStr, thread, time::Duration};
 
-use axol::{trace::RegistryWrapper, Result};
+use axol::Result;
 use log::{error, info};
 use opentelemetry::{runtime::Tokio, sdk::propagation::TraceContextPropagator};
 use opentelemetry_otlp::{ExportConfig, Protocol, WithExportConfig};
@@ -66,12 +66,6 @@ pub use error::MapResult;
 use tracing_subscriber::{layer::SubscriberExt, Registry};
 pub use util::is_running_in_docker;
 
-lazy_static::lazy_static! {
-    pub(crate) static ref REGISTRY: RegistryWrapper = {
-        RegistryWrapper::from(Registry::default())
-    };
-}
-
 #[tokio::main]
 async fn main() {
     launch_info();
@@ -94,7 +88,7 @@ async fn main() {
 
         let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
 
-        tracing::subscriber::set_global_default(REGISTRY.clone().with(telemetry)).unwrap();
+        tracing::subscriber::set_global_default(Registry::default().with(telemetry)).unwrap();
         opentelemetry::global::set_text_map_propagator(TraceContextPropagator::default());
         info!("otel tracing initialized");
     }

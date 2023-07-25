@@ -185,6 +185,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-recursion"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e97ce7de6cf12de5d7226c73f5ba9811622f4db3a5b91b55c53e987e5f91cba"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.27",
+]
+
+[[package]]
 name = "async-std"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -264,11 +275,11 @@ checksum = "d468802bab17cbc0cc575e9b053f41e72aa36bfa6b7f55e3529ffa43161b97fa"
 
 [[package]]
 name = "axol"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4adf608d33b70f5f55f5a955a2e1af347fb08f458fe758bb835533fff205a239"
+version = "0.1.5"
+source = "git+https://github.com/Protryon/axol.git#3c5e3f56d8baecac80c0a372de55141ea523e7fd"
 dependencies = [
  "anyhow",
+ "async-recursion",
  "async-trait",
  "axol-http",
  "base64 0.21.2",
@@ -302,16 +313,15 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-futures",
- "tracing-opentelemetry",
+ "tracing-opentelemetry 0.19.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tracing-subscriber",
  "url",
 ]
 
 [[package]]
 name = "axol-http"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5778b2f02d3ccb950d24cfaec2baa7cbe1175030e676f3ab176719b673d1748"
+version = "0.1.5"
+source = "git+https://github.com/Protryon/axol.git#3c5e3f56d8baecac80c0a372de55141ea523e7fd"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2349,8 +2359,7 @@ dependencies = [
 [[package]]
 name = "postgres-protocol"
 version = "0.6.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78b7fa9f396f51dffd61546fd8573ee20592287996568e6175ceb0f8699ad75d"
+source = "git+https://github.com/Protryon/rust-postgres.git#124ed8e8b5d29617adcfd6de49ea387bb2860fdc"
 dependencies = [
  "base64 0.21.2",
  "byteorder",
@@ -2367,8 +2376,7 @@ dependencies = [
 [[package]]
 name = "postgres-types"
 version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f028f05971fe20f512bcc679e2c10227e57809a3af86a7606304435bc8896cd6"
+source = "git+https://github.com/Protryon/rust-postgres.git#124ed8e8b5d29617adcfd6de49ea387bb2860fdc"
 dependencies = [
  "bytes",
  "chrono",
@@ -2840,9 +2848,9 @@ checksum = "b0293b4b29daaf487284529cc2f5675b8e57c61f70167ba415a463651fd6a918"
 
 [[package]]
 name = "serde"
-version = "1.0.174"
+version = "1.0.175"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b88756493a5bd5e5395d53baa70b194b05764ab85b59e43e4b8f4e1192fa9b1"
+checksum = "5d25439cd7397d044e2748a6fe2432b5e85db703d6d097bd014b3c0ad1ebff0b"
 dependencies = [
  "serde_derive",
 ]
@@ -2880,9 +2888,9 @@ dependencies = [
 
 [[package]]
 name = "serde_derive"
-version = "1.0.174"
+version = "1.0.175"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e5c3a298c7f978e53536f95a63bdc4c4a64550582f31a0359a9afda6aede62e"
+checksum = "b23f7ade6f110613c0d63858ddb8b94c1041f550eab58a16b371bdf2c9c80ab4"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3359,8 +3367,7 @@ dependencies = [
 [[package]]
 name = "tokio-postgres"
 version = "0.7.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e89f6234aa8fd43779746012fcf53603cdb91fdd8399aa0de868c2d56b6dde1"
+source = "git+https://github.com/Protryon/rust-postgres.git#124ed8e8b5d29617adcfd6de49ea387bb2860fdc"
 dependencies = [
  "async-trait",
  "byteorder",
@@ -3375,9 +3382,11 @@ dependencies = [
  "pin-project-lite",
  "postgres-protocol",
  "postgres-types",
+ "rand",
  "socket2 0.5.3",
  "tokio",
  "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -3622,6 +3631,19 @@ name = "tracing-opentelemetry"
 version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00a39dcf9bfc1742fa4d6215253b33a6e474be78275884c216fc2a06267b3600"
+dependencies = [
+ "once_cell",
+ "opentelemetry",
+ "tracing",
+ "tracing-core",
+ "tracing-log",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "tracing-opentelemetry"
+version = "0.19.0"
+source = "git+https://github.com/Protryon/tracing-opentelemetry.git#c9bfee9bc1f80d53a99d72800a9bdfc7e69a73bf"
 dependencies = [
  "once_cell",
  "opentelemetry",
@@ -3879,7 +3901,7 @@ dependencies = [
  "tokio-tungstenite",
  "totp-lite",
  "tracing",
- "tracing-opentelemetry",
+ "tracing-opentelemetry 0.19.0 (git+https://github.com/Protryon/tracing-opentelemetry.git)",
  "tracing-subscriber",
  "url",
  "uuid",
@@ -4178,9 +4200,9 @@ checksum = "1a515f5799fe4961cb532f983ce2b23082366b898e52ffbce459c86f67c8378a"
 
 [[package]]
 name = "winnow"
-version = "0.5.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81fac9742fd1ad1bd9643b991319f72dd031016d44b77039a26977eb667141e7"
+checksum = "25b5872fa2e10bd067ae946f927e726d7d603eaeb6e02fa6a350e0722d2b8c11"
 dependencies = [
  "memchr",
 ]

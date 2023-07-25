@@ -13,7 +13,7 @@ use serde::Deserialize;
 
 use crate::{
     util::{app_headers, build_cors},
-    CONFIG, REGISTRY,
+    CONFIG,
 };
 
 pub use crate::api::notifications::{ws_users, UpdateType};
@@ -31,7 +31,7 @@ fn route() -> Router {
     }
     api = api.late_response_hook("/", app_headers).plugin("/", build_cors()).plugin("/", Logger::default());
     if CONFIG.opentelemetry.is_some() {
-        api = api.plugin("/", Trace::default().registry(REGISTRY.clone()));
+        api = api.plugin("/", Trace::default());
     }
     api
 }
