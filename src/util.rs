@@ -407,8 +407,8 @@ impl<'de> Visitor<'de> for UpcaseVisitor {
     {
         let mut result_map = JsonMap::new();
 
-        while let Some((key, value)) = map.next_entry()? {
-            result_map.insert(upcase_first(key), upcase_value(value));
+        while let Some((key, value)) = map.next_entry::<String, Value>()? {
+            result_map.insert(upcase_first(&key), upcase_value(value));
         }
 
         Ok(Value::Object(result_map))

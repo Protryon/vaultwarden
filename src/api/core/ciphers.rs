@@ -6,6 +6,7 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use log::warn;
 use serde::Deserialize;
+use serde::{de::Error as _E, Deserializer};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -193,7 +194,18 @@ pub struct CipherData {
     // loss. It's not an error when no value is provided; this can happen
     // when using older client versions, or if the operation doesn't involve
     // updating an existing cipher.
+    #[serde(deserialize_with = "deserialize_last_known_revision_date")]
     last_known_revision_date: Option<DateTime<Utc>>,
+}
+
+fn deserialize_last_known_revision_date<'de, D: Deserializer<'de>>(de: D) -> Result<Option<DateTime<Utc>>, D::Error> {
+    let Some(raw_str): Option<String> = Option::<String>::deserialize(de)? else {
+        return Ok(None);
+    };
+    if raw_str == "0001-01-01T00:00:00" {
+        return Ok(None);
+    }
+    Ok(Some(raw_str.parse().map_err(D::Error::custom)?))
 }
 
 #[derive(Deserialize, Debug)]

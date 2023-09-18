@@ -228,7 +228,7 @@ async fn authorization_login(data: ConnectData, user_uuid: &mut Option<Uuid>, co
     }
 
     if CONFIG.sso.as_ref().map(|x| x.sso_acceptall_invites).unwrap_or_default() {
-        for mut user_org in UserOrganization::find_by_user_with_status(conn, user.uuid, UserOrgStatus::Invited).await?.iter_mut() {
+        for user_org in UserOrganization::find_by_user_with_status(conn, user.uuid, UserOrgStatus::Invited).await?.iter_mut() {
             user_org.status = UserOrgStatus::Accepted;
             user_org.save(conn).await?;
         }

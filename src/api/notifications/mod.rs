@@ -82,8 +82,12 @@ async fn init_websocket(ws: WebSocket, data: WsAccessToken, ip: ClientIp) -> Res
     let addr = ip.ip;
     info!("Accepting WS connection from {addr}");
 
-    let Some(token) = data.access_token else { err_code!("Invalid claim", StatusCode::Unauthorized) };
-    let Ok(claims) = crate::auth::decode_login(&token) else { err_code!("Invalid token", StatusCode::Unauthorized) };
+    let Some(token) = data.access_token else {
+        err_code!("Invalid claim", StatusCode::Unauthorized)
+    };
+    let Ok(claims) = crate::auth::decode_login(&token) else {
+        err_code!("Invalid token", StatusCode::Unauthorized)
+    };
 
     let (rx, guard) = {
         let users = Arc::clone(&WS_USERS);
