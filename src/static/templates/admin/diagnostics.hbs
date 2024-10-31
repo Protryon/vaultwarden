@@ -1,5 +1,5 @@
 <main class="container-xl">
-    <div id="diagnostics-block" class="my-3 p-3 bg-white rounded shadow">
+    <div id="diagnostics-block" class="my-3 p-3 rounded shadow">
         <h6 class="border-bottom pb-2 mb-2">Diagnostics</h6>
 
         <h3>Versions</h3>
@@ -8,8 +8,8 @@
                 <dl class="row">
                     <dt class="col-sm-5">Server Installed
                         <span class="badge bg-success d-none" id="server-success" title="Latest version is installed.">Ok</span>
-                        <span class="badge bg-warning d-none" id="server-warning" title="There seems to be an update available.">Update</span>
-                        <span class="badge bg-info d-none" id="server-branch" title="This is a branched version.">Branched</span>
+                        <span class="badge bg-warning text-dark d-none" id="server-warning" title="There seems to be an update available.">Update</span>
+                        <span class="badge bg-info text-dark d-none" id="server-branch" title="This is a branched version.">Branched</span>
                     </dt>
                     <dd class="col-sm-7">
                         <span id="server-installed">{{page_data.current_release}}</span>
@@ -23,12 +23,12 @@
                     {{#if page_data.web_vault_enabled}}
                     <dt class="col-sm-5">Web Installed
                         <span class="badge bg-success d-none" id="web-success" title="Latest version is installed.">Ok</span>
-                        <span class="badge bg-warning d-none" id="web-warning" title="There seems to be an update available.">Update</span>
+                        <span class="badge bg-warning text-dark d-none" id="web-warning" title="There seems to be an update available.">Update</span>
                     </dt>
                     <dd class="col-sm-7">
                         <span id="web-installed">{{page_data.web_vault_version}}</span>
                     </dd>
-                    {{#unless page_data.running_within_docker}}
+                    {{#unless page_data.running_within_container}}
                     <dt class="col-sm-5">Web Latest
                         <span class="badge bg-secondary d-none" id="web-failed" title="Unable to determine latest version.">Unknown</span>
                     </dt>
@@ -59,12 +59,12 @@
                     <dd class="col-sm-7">
                         <span class="d-block"><b>{{ page_data.host_os }} / {{ page_data.host_arch }}</b></span>
                     </dd>
-                    <dt class="col-sm-5">Running within Docker</dt>
+                    <dt class="col-sm-5">Running within a container</dt>
                     <dd class="col-sm-7">
-                    {{#if page_data.running_within_docker}}
-                        <span class="d-block"><b>Yes (Base: {{ page_data.docker_base_image }})</b></span>
+                    {{#if page_data.running_within_container}}
+                        <span class="d-block"><b>Yes (Base: {{ page_data.container_base_image }})</b></span>
                     {{/if}}
-                    {{#unless page_data.running_within_docker}}
+                    {{#unless page_data.running_within_container}}
                         <span class="d-block"><b>No</b></span>
                     {{/unless}}
                     </dd>

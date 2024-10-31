@@ -16,7 +16,7 @@ use uuid::Uuid;
 use crate::api::core::two_factor::email::{self, EmailTokenData};
 use crate::api::core::two_factor::{duo, yubikey};
 use crate::config::SSO_CALLBACK_URL;
-use crate::db::{Event, SsoNonce};
+use crate::db::{Event, OrgPolicyType, OrganizationPolicy, SsoNonce};
 use crate::{
     auth::{encode_jwt, generate_organization_api_key_login_claims, generate_ssotoken_claims, ClientHeaders, ClientIp},
     db::{Conn, Device, EventType, Organization, OrganizationApiKey, TwoFactor, TwoFactorIncomplete, TwoFactorType, User, UserOrgStatus, UserOrganization, DB},
@@ -267,6 +267,18 @@ async fn authorization_login(data: ConnectData, user_uuid: &mut Option<Uuid>, co
     Ok(Json(result))
 }
 
+#[derive(Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MasterPasswordPolicy {
+    min_complexity: u8,
+    min_length: u32,
+    require_lower: bool,
+    require_upper: bool,
+    require_numbers: bool,
+    require_special: bool,
+    enforce_on_login: bool,
+}
+
 async fn password_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &Conn, ip: &ClientIp) -> Result<Json<Value>> {
     // Validate scope
     let scope = data.scope.as_ref().unwrap();
@@ -363,6 +375,32 @@ async fn password_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &
     let (access_token, expires_in) = device.refresh_tokens(&user, orgs, scope_vec);
     device.save(conn).await?;
 
+    // Fetch all valid Master Password Policies and merge them into one with all true's and larges numbers as one policy
+    let master_password_policies: Vec<MasterPasswordPolicy> =
+        OrganizationPolicy::find_accepted_and_confirmed_by_user_and_active_policy(conn, user.uuid, OrgPolicyType::MasterPassword)
+            .await?
+            .into_iter()
+            .filter_map(|p| serde_json::from_value(p.data).ok())
+            .collect();
+
+    let master_password_policy = if !master_password_policies.is_empty() {
+        let mut mpp_json = json!(master_password_policies.into_iter().reduce(|acc, policy| {
+            MasterPasswordPolicy {
+                min_complexity: acc.min_complexity.max(policy.min_complexity),
+                min_length: acc.min_length.max(policy.min_length),
+                require_lower: acc.require_lower || policy.require_lower,
+                require_upper: acc.require_upper || policy.require_upper,
+                require_numbers: acc.require_numbers || policy.require_numbers,
+                require_special: acc.require_special || policy.require_special,
+                enforce_on_login: acc.enforce_on_login || policy.enforce_on_login,
+            }
+        }));
+        mpp_json["object"] = json!("masterPasswordPolicy");
+        mpp_json
+    } else {
+        json!({"object": "masterPasswordPolicy"})
+    };
+
     let mut result = json!({
         "access_token": access_token,
         "expires_in": expires_in,
@@ -377,8 +415,15 @@ async fn password_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &
         "KdfMemory": user.client_kdf_memory,
         "KdfParallelism": user.client_kdf_parallelism,
         "ResetMasterPassword": false,// TODO: Same as above
+        "ForcePasswordReset": false,
+        "MasterPasswordPolicy": master_password_policy,
+
         "scope": scope,
         "unofficialServer": true,
+        "UserDecryptionOptions": {
+            "HasMasterPassword": !user.password_hash.is_empty(),
+            "Object": "userDecryptionOptions"
+        },
     });
 
     if let Some(token) = twofactor_token {
@@ -595,7 +640,10 @@ async fn json_err_twofactor(providers: &[TwoFactorType], user_uuid: Uuid, conn: 
         "error" : "invalid_grant",
         "error_description" : "Two factor required.",
         "TwoFactorProviders" : providers,
-        "TwoFactorProviders2" : {} // { "0" : null }
+        "TwoFactorProviders2" : {}, // { "0" : null }
+        "MasterPasswordPolicy": {
+            "Object": "masterPasswordPolicy"
+        }
     });
 
     for provider in providers.iter().copied() {

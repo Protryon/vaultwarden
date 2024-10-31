@@ -7,18 +7,18 @@ use serde_json::{json, Value};
 pub fn api_error(msg: impl AsRef<str>) -> Json<Value> {
     let msg = msg.as_ref();
     let json = json!({
-        "Message": msg,
+        "message": msg,
         "error": "",
         "error_description": "",
-        "ValidationErrors": {"": [ msg ]},
-        "ErrorModel": {
-            "Message": msg,
-            "Object": "error"
+        "validationErrors": {"": [ msg ]},
+        "errorModel": {
+            "message": msg,
+            "object": "error"
         },
-        "ExceptionMessage": null,
-        "ExceptionStackTrace": null,
-        "InnerExceptionMessage": null,
-        "Object": "error"
+        "exceptionMessage": null,
+        "exceptionStackTrace": null,
+        "innerExceptionMessage": null,
+        "object": "error"
     });
     Json(json)
 }

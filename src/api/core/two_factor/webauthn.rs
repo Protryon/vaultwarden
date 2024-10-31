@@ -12,7 +12,6 @@ use crate::{
     config::PUBLIC_NO_TRAILING_SLASH,
     db::{Conn, Event, EventType, TwoFactor, TwoFactorType, DB},
     events::log_user_event,
-    util::Upcase,
     CONFIG,
 };
 
@@ -69,15 +68,15 @@ pub struct WebauthnRegistration {
 impl WebauthnRegistration {
     fn to_json(&self) -> Value {
         json!({
-            "Id": self.id,
-            "Name": self.name,
+            "id": self.id,
+            "name": self.name,
             "migrated": self.migrated,
         })
     }
 }
 
-pub async fn get_webauthn(headers: Headers, data: Json<Upcase<PasswordData>>) -> Result<Json<Value>> {
-    if !headers.user.check_valid_password(&data.data.master_password_hash) {
+pub async fn get_webauthn(headers: Headers, data: Json<PasswordData>) -> Result<Json<Value>> {
+    if !headers.user.check_valid_password(&data.master_password_hash) {
         err!("Invalid password");
     }
 
@@ -87,14 +86,14 @@ pub async fn get_webauthn(headers: Headers, data: Json<Upcase<PasswordData>>) ->
     let registrations_json: Vec<Value> = registrations.iter().map(WebauthnRegistration::to_json).collect();
 
     Ok(Json(json!({
-        "Enabled": enabled,
-        "Keys": registrations_json,
-        "Object": "twoFactorWebAuthn"
+        "enabled": enabled,
+        "keys": registrations_json,
+        "object": "twoFactorWebAuthn"
     })))
 }
 
-pub async fn generate_webauthn_challenge(headers: Headers, data: Json<Upcase<PasswordData>>) -> Result<Json<Value>> {
-    if !headers.user.check_valid_password(&data.data.master_password_hash) {
+pub async fn generate_webauthn_challenge(headers: Headers, data: Json<PasswordData>) -> Result<Json<Value>> {
+    if !headers.user.check_valid_password(&data.master_password_hash) {
         err!("Invalid password");
     }
     let conn = DB.get().await.ise()?;
@@ -120,7 +119,7 @@ pub async fn generate_webauthn_challenge(headers: Headers, data: Json<Upcase<Pas
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct EnableWebauthnData {
     #[serde(deserialize_with = "serde_aux::field_attributes::deserialize_number_from_string")]
     id: i32, // 1..5
@@ -131,7 +130,7 @@ pub struct EnableWebauthnData {
 
 // This is copied from RegisterPublicKeyCredential to change the Response objects casing
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct RegisterPublicKeyCredentialCopy {
     pub id: String,
     pub raw_id: Base64UrlSafeData,
@@ -141,9 +140,11 @@ struct RegisterPublicKeyCredentialCopy {
 
 // This is copied from AuthenticatorAttestationResponseRaw to change clientDataJSON to clientDataJson
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct AuthenticatorAttestationResponseRawCopy {
+    #[serde(rename = "AttestationObject", alias = "attestationObject")]
     pub attestation_object: Base64UrlSafeData,
+    #[serde(rename = "clientDataJson", alias = "clientDataJSON")]
     pub client_data_json: Base64UrlSafeData,
 }
 
@@ -163,7 +164,7 @@ impl From<RegisterPublicKeyCredentialCopy> for RegisterPublicKeyCredential {
 
 // This is copied from PublicKeyCredential to change the Response objects casing
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct PublicKeyCredentialCopy {
     pub id: String,
     pub raw_id: Base64UrlSafeData,
@@ -174,16 +175,17 @@ pub struct PublicKeyCredentialCopy {
 
 // This is copied from AuthenticatorAssertionResponseRaw to change clientDataJSON to clientDataJson
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct AuthenticatorAssertionResponseRawCopy {
     pub authenticator_data: Base64UrlSafeData,
+    #[serde(rename = "clientDataJson", alias = "clientDataJSON")]
     pub client_data_json: Base64UrlSafeData,
     pub signature: Base64UrlSafeData,
     pub user_handle: Option<Base64UrlSafeData>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct AuthenticationExtensionsClientOutputsCopy {
     #[serde(default)]
     pub appid: bool,
@@ -208,8 +210,8 @@ impl From<PublicKeyCredentialCopy> for PublicKeyCredential {
     }
 }
 
-pub async fn activate_webauthn(headers: Headers, data: Json<Upcase<EnableWebauthnData>>) -> Result<Json<Value>> {
-    let data: EnableWebauthnData = data.0.data;
+pub async fn activate_webauthn(headers: Headers, data: Json<EnableWebauthnData>) -> Result<Json<Value>> {
+    let data: EnableWebauthnData = data.0;
     let mut user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
@@ -248,23 +250,23 @@ pub async fn activate_webauthn(headers: Headers, data: Json<Upcase<EnableWebauth
 
     let keys_json: Vec<Value> = registrations.iter().map(WebauthnRegistration::to_json).collect();
     Ok(Json(json!({
-        "Enabled": true,
-        "Keys": keys_json,
-        "Object": "twoFactorU2f"
+        "enabled": true,
+        "keys": keys_json,
+        "object": "twoFactorU2f"
     })))
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteU2FData {
     #[serde(deserialize_with = "serde_aux::field_attributes::deserialize_number_from_string")]
     id: i32,
     master_password_hash: String,
 }
 
-pub async fn delete_webauthn(headers: Headers, data: Json<Upcase<DeleteU2FData>>) -> Result<Json<Value>> {
-    let id = data.data.id;
-    if !headers.user.check_valid_password(&data.data.master_password_hash) {
+pub async fn delete_webauthn(headers: Headers, data: Json<DeleteU2FData>) -> Result<Json<Value>> {
+    let id = data.id;
+    if !headers.user.check_valid_password(&data.master_password_hash) {
         err!("Invalid password");
     }
     let conn = DB.get().await.ise()?;
@@ -289,9 +291,9 @@ pub async fn delete_webauthn(headers: Headers, data: Json<Upcase<DeleteU2FData>>
     let keys_json: Vec<Value> = data.iter().map(WebauthnRegistration::to_json).collect();
 
     Ok(Json(json!({
-        "Enabled": true,
-        "Keys": keys_json,
-        "Object": "twoFactorU2f"
+        "enabled": true,
+        "keys": keys_json,
+        "object": "twoFactorU2f"
     })))
 }
 
@@ -334,8 +336,8 @@ pub async fn validate_webauthn_login(user_uuid: Uuid, response: &str, conn: &Con
         }
     };
 
-    let rsp: Upcase<PublicKeyCredentialCopy> = serde_json::from_str(response).ise()?;
-    let rsp: PublicKeyCredential = rsp.data.into();
+    let rsp: PublicKeyCredentialCopy = serde_json::from_str(response).ise()?;
+    let rsp: PublicKeyCredential = rsp.into();
 
     let mut registrations = get_webauthn_registrations(user_uuid, conn).await?.1;
 

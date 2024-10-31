@@ -13,7 +13,7 @@ use crate::{
     api::{ws_users, Result, UpdateType},
     auth::{ClientIp, Headers},
     db::{Attachment, Conn, OrgPolicyType, OrganizationPolicy, Send, SendType, DB},
-    util::{AutoTxn, Upcase},
+    util::AutoTxn,
     CONFIG,
 };
 
@@ -40,7 +40,7 @@ pub fn route(router: Router) -> Router {
 
 #[serde_as]
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct SendData {
     r#type: SendType,
     key: String,
@@ -107,7 +107,7 @@ fn create_send(data: SendData, user_uuid: Uuid) -> Result<Send> {
     };
 
     let data_str = if let Some(mut d) = data_val {
-        d.as_object_mut().and_then(|o| o.remove("Response"));
+        d.as_object_mut().and_then(|o| o.remove("response"));
         serde_json::to_value(&d).ise()?
     } else {
         err!("Send data not provided");
@@ -142,9 +142,9 @@ async fn get_sends(headers: Headers) -> Result<Json<Value>> {
     let sends_json: Vec<Value> = sends.iter().map(|s| s.to_json()).collect();
 
     Ok(Json(json!({
-      "Data": sends_json,
-      "Object": "list",
-      "ContinuationToken": null
+      "data": sends_json,
+      "object": "list",
+      "continuationToken": null
     })))
 }
 
@@ -158,12 +158,12 @@ async fn get_send(Path(uuid): Path<Uuid>, headers: Headers) -> Result<Json<Value
     Ok(Json(send.to_json()))
 }
 
-async fn post_send(headers: Headers, data: Json<Upcase<SendData>>) -> Result<Json<Value>> {
+async fn post_send(headers: Headers, data: Json<SendData>) -> Result<Json<Value>> {
     let conn = DB.get().await.ise()?;
 
     enforce_disable_send_policy(&headers, &conn).await?;
 
-    let data: SendData = data.0.data;
+    let data: SendData = data.0;
     enforce_disable_hide_email_policy(&data, &headers, &conn).await?;
 
     if data.r#type == SendType::File {
@@ -192,9 +192,9 @@ impl UploadData {
                     if model.is_some() {
                         return Err(Error::bad_request("duplicated multipart field"));
                     }
-                    let raw: Upcase<SendData> =
+                    let raw: SendData =
                         serde_json::from_slice(&field.bytes().await.ise()?[..]).map_err(|e| Error::bad_request(format!("invalid model: {e}")))?;
-                    model = Some(raw.data);
+                    model = Some(raw);
                 }
                 Some("data") => {
                     if data.is_some() {
@@ -287,9 +287,9 @@ async fn post_send_file(conn: AutoTxn, headers: Headers, data: Multipart) -> Res
     tokio::fs::write(file_path, &data).await?;
 
     if let Some(o) = send.data.as_object_mut() {
-        o.insert(String::from("Id"), Value::String(file_id.to_string()));
-        o.insert(String::from("Size"), Value::Number(size.into()));
-        o.insert(String::from("SizeName"), Value::String(crate::util::get_display_size(size as i32)));
+        o.insert(String::from("od"), Value::String(file_id.to_string()));
+        o.insert(String::from("size"), Value::Number(size.into()));
+        o.insert(String::from("sizeName"), Value::String(crate::util::get_display_size(size as i32)));
     }
 
     send.save(&conn).await?;
@@ -300,11 +300,11 @@ async fn post_send_file(conn: AutoTxn, headers: Headers, data: Multipart) -> Res
 }
 
 // Upstream: https://github.com/bitwarden/server/blob/d0c793c95181dfb1b447eb450f85ba0bfd7ef643/src/Api/Controllers/SendsController.cs#L190
-async fn post_send_file_v2(headers: Headers, data: Json<Upcase<SendData>>) -> Result<Json<Value>> {
+async fn post_send_file_v2(headers: Headers, data: Json<SendData>) -> Result<Json<Value>> {
     let conn = DB.get().await.ise()?;
     enforce_disable_send_policy(&headers, &conn).await?;
 
-    let data = data.0.data;
+    let data = data.0;
 
     if data.r#type != SendType::File {
         err!("Send content is not a file");
@@ -338,9 +338,9 @@ async fn post_send_file_v2(headers: Headers, data: Json<Upcase<SendData>>) -> Re
     let file_id = Uuid::new_v4();
 
     if let Some(o) = send.data.as_object_mut() {
-        o.insert(String::from("Id"), Value::String(file_id.to_string()));
-        o.insert(String::from("Size"), Value::Number(file_length.unwrap().into()));
-        o.insert(String::from("SizeName"), Value::String(crate::util::get_display_size(file_length.unwrap())));
+        o.insert(String::from("id"), Value::String(file_id.to_string()));
+        o.insert(String::from("size"), Value::Number(file_length.unwrap().into()));
+        o.insert(String::from("sizeName"), Value::String(crate::util::get_display_size(file_length.unwrap())));
     }
     send.save(&conn).await?;
 
@@ -385,12 +385,12 @@ async fn post_send_file_v2_data(conn: AutoTxn, Path(path): Path<SendFilePath>, h
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct SendAccessData {
     pub password: Option<String>,
 }
 
-async fn post_access(Path(access_id): Path<String>, ip: ClientIp, data: Json<Upcase<SendAccessData>>) -> Result<Json<Value>> {
+async fn post_access(Path(access_id): Path<String>, ip: ClientIp, data: Json<SendAccessData>) -> Result<Json<Value>> {
     let conn = DB.get().await.ise()?;
 
     let uuid = Send::decode_access_id(&access_id)?;
@@ -421,7 +421,7 @@ async fn post_access(Path(access_id): Path<String>, ip: ClientIp, data: Json<Upc
     }
 
     if send.password_hash.is_some() {
-        match data.0.data.password {
+        match data.0.password {
             Some(ref p) if send.check_password(p) => { /* Nothing to do here */ }
             Some(_) => err!("Invalid password", format!("IP: {}.", ip.ip)),
             None => err_code!("Password not provided", format!("IP: {}.", ip.ip), StatusCode::Unauthorized),
@@ -440,7 +440,7 @@ async fn post_access(Path(access_id): Path<String>, ip: ClientIp, data: Json<Upc
     Ok(Json(send.to_json_access(&conn).await?))
 }
 
-async fn post_access_file(Path(path): Path<SendFilePath>, data: Json<Upcase<SendAccessData>>) -> Result<Json<Value>> {
+async fn post_access_file(Path(path): Path<SendFilePath>, data: Json<SendAccessData>) -> Result<Json<Value>> {
     let conn = DB.get().await.ise()?;
 
     let mut send = match Send::get(&conn, path.uuid).await? {
@@ -469,7 +469,7 @@ async fn post_access_file(Path(path): Path<SendFilePath>, data: Json<Upcase<Send
     }
 
     if send.password_hash.is_some() {
-        match data.0.data.password {
+        match data.0.password {
             Some(ref p) if send.check_password(p) => { /* Nothing to do here */ }
             Some(_) => err!("Invalid password."),
             None => err_code!("Password not provided", StatusCode::Unauthorized),
@@ -491,9 +491,9 @@ async fn post_access_file(Path(path): Path<SendFilePath>, data: Json<Upcase<Send
     url.path_segments_mut().unwrap().push(&path.file_id.to_string());
     url.query_pairs_mut().append_pair("t", &token);
     Ok(Json(json!({
-        "Object": "send-fileDownload",
-        "Id": path.file_id,
-        "Url": url,
+        "object": "send-fileDownload",
+        "id": path.file_id,
+        "url": url,
     })))
 }
 
@@ -523,11 +523,11 @@ async fn download_send(Path(path): Path<SendFilePath>, Query(t): Query<DownloadS
     }
 }
 
-async fn put_send(Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<SendData>>) -> Result<Json<Value>> {
+async fn put_send(Path(uuid): Path<Uuid>, headers: Headers, data: Json<SendData>) -> Result<Json<Value>> {
     let conn = DB.get().await.ise()?;
     enforce_disable_send_policy(&headers, &conn).await?;
 
-    let data: SendData = data.0.data;
+    let data: SendData = data.0;
     enforce_disable_hide_email_policy(&data, &headers, &conn).await?;
 
     let mut send = match Send::get_for_user(&conn, uuid, headers.user.uuid).await? {

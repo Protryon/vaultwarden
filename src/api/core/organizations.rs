@@ -16,7 +16,7 @@ use crate::db::{
     OrgPolicyType, Organization, OrganizationApiKey, OrganizationPolicy, TwoFactor, User, UserOrgStatus, UserOrgType, UserOrganization, DB,
 };
 use crate::events::log_event;
-use crate::util::{AutoTxn, Upcase};
+use crate::util::AutoTxn;
 use crate::{mail, util::convert_json_key_lcase_first, CONFIG};
 
 pub fn route(router: Router) -> Router {
@@ -106,7 +106,7 @@ pub fn route(router: Router) -> Router {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct OrgData {
     billing_email: String,
     collection_name: String,
@@ -118,14 +118,14 @@ struct OrgData {
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct OrganizationUpdateData {
     billing_email: String,
     name: String,
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct NewCollectionData {
     name: String,
     groups: Vec<NewCollectionObjectData>,
@@ -133,7 +133,7 @@ struct NewCollectionData {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct NewCollectionObjectData {
     hide_passwords: bool,
     id: Uuid,
@@ -141,19 +141,19 @@ struct NewCollectionObjectData {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct OrgKeyData {
     encrypted_private_key: String,
     public_key: String,
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct OrgBulkIds {
     ids: Vec<Uuid>,
 }
 
-async fn create_organization(conn: AutoTxn, headers: Headers, data: Json<Upcase<OrgData>>) -> Result<Json<Value>> {
+async fn create_organization(conn: AutoTxn, headers: Headers, data: Json<OrgData>) -> Result<Json<Value>> {
     if !CONFIG.is_org_creation_allowed(&headers.user.email) {
         err!("User not allowed to create organizations")
     }
@@ -164,7 +164,7 @@ async fn create_organization(conn: AutoTxn, headers: Headers, data: Json<Upcase<
         )
     }
 
-    let data: OrgData = data.0.data;
+    let data: OrgData = data.0;
     let (private_key, public_key) = if data.keys.is_some() {
         let keys: OrgKeyData = data.keys.unwrap();
         (Some(keys.encrypted_private_key), Some(keys.public_key))
@@ -190,8 +190,8 @@ async fn create_organization(conn: AutoTxn, headers: Headers, data: Json<Upcase<
     Ok(Json(org.to_json()))
 }
 
-async fn delete_organization(Path(org_uuid): Path<Uuid>, headers: OrgOwnerHeaders, data: Json<Upcase<PasswordData>>) -> Result<()> {
-    let data: PasswordData = data.0.data;
+async fn delete_organization(Path(org_uuid): Path<Uuid>, headers: OrgOwnerHeaders, data: Json<PasswordData>) -> Result<()> {
+    let data: PasswordData = data.0;
     let password_hash = data.master_password_hash;
 
     if !headers.user.check_valid_password(&password_hash) {
@@ -232,10 +232,10 @@ async fn get_organization(Path(org_uuid): Path<Uuid>, _headers: OrgOwnerHeaders)
     }
 }
 
-async fn post_organization(Path(org_uuid): Path<Uuid>, headers: OrgOwnerHeaders, data: Json<Upcase<OrganizationUpdateData>>) -> Result<Json<Value>> {
+async fn post_organization(Path(org_uuid): Path<Uuid>, headers: OrgOwnerHeaders, data: Json<OrganizationUpdateData>) -> Result<Json<Value>> {
     let conn = DB.get().await.ise()?;
 
-    let data: OrganizationUpdateData = data.0.data;
+    let data: OrganizationUpdateData = data.0;
 
     let mut org = match Organization::get(&conn, org_uuid).await? {
         Some(organization) => organization,
@@ -256,13 +256,13 @@ async fn get_user_collections(headers: Headers) -> Result<Json<Value>> {
     let conn = DB.get().await.ise()?;
 
     Ok(Json(json!({
-        "Data":
+        "data":
             Collection::find_by_user(&conn, headers.user.uuid, false).await?
             .iter()
             .map(Collection::to_json)
             .collect::<Value>(),
-        "Object": "list",
-        "ContinuationToken": null,
+        "object": "list",
+        "continuationToken": null,
     })))
 }
 
@@ -277,7 +277,7 @@ struct IdentifierPath {
 async fn get_auto_enroll_status(Path(path): Path<IdentifierPath>) -> Result<Json<Value>> {
     //TODO
     Ok(Json(json!({
-        "ResetPasswordEnabled": false, //Not Implemented.
+        "resetPasswordEnabled": false, //Not Implemented.
     })))
 }
 
@@ -285,9 +285,9 @@ async fn get_org_collections(Path(org_uuid): Path<Uuid>, _headers: ManagerHeader
     let conn = DB.get().await.ise()?;
 
     Ok(Json(json!({
-        "Data": _get_org_collections(&conn, org_uuid).await?,
-        "Object": "list",
-        "ContinuationToken": null,
+        "data": _get_org_collections(&conn, org_uuid).await?,
+        "object": "list",
+        "continuationToken": null,
     })))
 }
 
@@ -335,17 +335,17 @@ async fn get_org_collections_details(Path(org_uuid): Path<Uuid>, headers: Manage
         }
 
         let mut json_object = col.to_json();
-        json_object["Assigned"] = json!(assigned);
-        json_object["Users"] = json!(users);
-        json_object["Groups"] = json!(groups);
-        json_object["Object"] = json!("collectionAccessDetails");
+        json_object["assigned"] = json!(assigned);
+        json_object["users"] = json!(users);
+        json_object["groups"] = json!(groups);
+        json_object["object"] = json!("collectionAccessDetails");
         data.push(json_object)
     }
 
     Ok(Json(json!({
-        "Data": data,
-        "Object": "list",
-        "ContinuationToken": null,
+        "data": data,
+        "object": "list",
+        "continuationToken": null,
     })))
 }
 
@@ -357,9 +357,9 @@ async fn post_organization_collections(
     conn: AutoTxn,
     Path(org_uuid): Path<Uuid>,
     headers: ManagerHeadersLoose,
-    data: Json<Upcase<NewCollectionData>>,
+    data: Json<NewCollectionData>,
 ) -> Result<Json<Value>> {
-    let data: NewCollectionData = data.0.data;
+    let data: NewCollectionData = data.0;
 
     let org = match Organization::get(&conn, org_uuid).await? {
         Some(organization) => organization,
@@ -427,9 +427,9 @@ async fn post_organization_collection_update(
         col_id,
     }): Path<OrgColId>,
     headers: ManagerHeaders,
-    data: Json<Upcase<NewCollectionData>>,
+    data: Json<NewCollectionData>,
 ) -> Result<Json<Value>> {
-    let data: NewCollectionData = data.0.data;
+    let data: NewCollectionData = data.0;
 
     let org = match Organization::get(&conn, org_uuid).await? {
         Some(organization) => organization,
@@ -538,7 +538,7 @@ async fn delete_organization_collection(
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 struct DeleteCollectionData {
     id: String,
@@ -551,21 +551,21 @@ async fn post_organization_collection_delete(
         col_id,
     }): Path<OrgColId>,
     headers: ManagerHeaders,
-    _data: Json<Upcase<DeleteCollectionData>>,
+    _data: Json<DeleteCollectionData>,
 ) -> Result<()> {
     let conn = DB.get().await.ise()?;
     _delete_organization_collection(org_uuid, col_id, &headers, &conn).await
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct BulkCollectionIds {
     ids: Vec<Uuid>,
     organization_id: Uuid,
 }
 
-async fn bulk_delete_organization_collections(Path(org_uuid): Path<Uuid>, headers: ManagerHeadersLoose, data: Json<Upcase<BulkCollectionIds>>) -> Result<()> {
-    let data: BulkCollectionIds = data.0.data;
+async fn bulk_delete_organization_collections(Path(org_uuid): Path<Uuid>, headers: ManagerHeadersLoose, data: Json<BulkCollectionIds>) -> Result<()> {
+    let data: BulkCollectionIds = data.0;
     if org_uuid != data.organization_id {
         err!("OrganizationId mismatch");
     }
@@ -631,10 +631,10 @@ async fn get_org_collection_detail(
             }
 
             let mut json_object = collection.to_json();
-            json_object["Assigned"] = json!(assigned);
-            json_object["Users"] = json!(users);
-            json_object["Groups"] = json!(groups);
-            json_object["Object"] = json!("collectionAccessDetails");
+            json_object["assigned"] = json!(assigned);
+            json_object["users"] = json!(users);
+            json_object["groups"] = json!(groups);
+            json_object["object"] = json!("collectionAccessDetails");
 
             Ok(Json(json_object))
         }
@@ -675,7 +675,7 @@ async fn put_collection_users(
         col_id,
     }): Path<OrgColId>,
     _headers: ManagerHeaders,
-    data: Json<Vec<Upcase<CollectionData>>>,
+    data: Json<Vec<CollectionData>>,
 ) -> Result<()> {
     // Get org and collection, check that collection is from org
     if Collection::find_by_uuid_and_org(&conn, col_id, org_uuid).await?.is_none() {
@@ -686,7 +686,7 @@ async fn put_collection_users(
     CollectionUser::delete_all_by_collection(&conn, col_id).await?;
 
     // And then add all the received ones (except if the user has access_all)
-    for d in data.iter().map(|d| &d.data) {
+    for d in data.iter() {
         let user = match UserOrganization::get(&conn, d.id, org_uuid).await? {
             Some(u) => u,
             None => err!("User is not part of organization"),
@@ -721,9 +721,9 @@ async fn get_org_details(Query(data): Query<OrgIdData>, headers: Headers) -> Res
     let conn = DB.get().await.ise()?;
 
     Ok(Json(json!({
-        "Data": _get_org_details(data.organization_id, headers.user.uuid, &conn).await?,
-        "Object": "list",
-        "ContinuationToken": null,
+        "data": _get_org_details(data.organization_id, headers.user.uuid, &conn).await?,
+        "object": "list",
+        "continuationToken": null,
     })))
 }
 
@@ -749,14 +749,14 @@ async fn get_org_users(Query(data): Query<GetOrgUserData>, Path(org_uuid): Path<
     }
 
     Ok(Json(json!({
-        "Data": users_json,
-        "Object": "list",
-        "ContinuationToken": null,
+        "data": users_json,
+        "object": "list",
+        "continuationToken": null,
     })))
 }
 
-async fn post_org_keys(Path(org_uuid): Path<Uuid>, _headers: OrgAdminHeaders, data: Json<Upcase<OrgKeyData>>) -> Result<Json<Value>> {
-    let data: OrgKeyData = data.0.data;
+async fn post_org_keys(Path(org_uuid): Path<Uuid>, _headers: OrgAdminHeaders, data: Json<OrgKeyData>) -> Result<Json<Value>> {
+    let data: OrgKeyData = data.0;
     let conn = DB.get().await.ise()?;
 
     let mut org = match Organization::get(&conn, org_uuid).await? {
@@ -775,14 +775,14 @@ async fn post_org_keys(Path(org_uuid): Path<Uuid>, _headers: OrgAdminHeaders, da
     org.save(&conn).await?;
 
     Ok(Json(json!({
-        "Object": "organizationKeys",
-        "public_key": org.public_key,
-        "PrivateKey": org.private_key,
+        "object": "organizationKeys",
+        "publicKey": org.public_key,
+        "privateKey": org.private_key,
     })))
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct CollectionData {
     id: Uuid,
     read_only: bool,
@@ -791,7 +791,7 @@ struct CollectionData {
 
 #[serde_as]
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct InviteData {
     emails: Vec<String>,
     groups: Vec<Uuid>,
@@ -801,8 +801,8 @@ struct InviteData {
     access_all: Option<bool>,
 }
 
-async fn send_invite(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<InviteData>>) -> Result<()> {
-    let data: InviteData = data.0.data;
+async fn send_invite(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<InviteData>) -> Result<()> {
+    let data: InviteData = data.0;
 
     if data.r#type != UserOrgType::User && headers.org_user_type != UserOrgType::Owner {
         err!("Only Owners can invite Managers, Admins or Owners")
@@ -893,8 +893,8 @@ async fn send_invite(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdmi
     Ok(())
 }
 
-async fn bulk_reinvite_user(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<OrgBulkIds>>) -> Result<Json<Value>> {
-    let data: OrgBulkIds = data.0.data;
+async fn bulk_reinvite_user(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<OrgBulkIds>) -> Result<Json<Value>> {
+    let data: OrgBulkIds = data.0;
     let conn = DB.get().await.ise()?;
 
     let mut bulk_response = Vec::new();
@@ -906,17 +906,17 @@ async fn bulk_reinvite_user(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders
 
         bulk_response.push(json!(
             {
-                "Object": "OrganizationBulkConfirmResponseModel",
-                "Id": org_user_id,
-                "Error": err_msg
+                "object": "OrganizationBulkConfirmResponseModel",
+                "id": org_user_id,
+                "error": err_msg
             }
         ))
     }
 
     Ok(Json(json!({
-        "Data": bulk_response,
-        "Object": "list",
-        "ContinuationToken": null
+        "data": bulk_response,
+        "object": "list",
+        "continuationToken": null
     })))
 }
 
@@ -970,7 +970,7 @@ async fn _reinvite_user(org_uuid: Uuid, user_id: Uuid, invited_by_email: &str, c
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct AcceptData {
     token: String,
     reset_password_key: Option<String>,
@@ -981,10 +981,10 @@ async fn accept_invite(
         org_uuid,
         user_id,
     }): Path<OrgUserId>,
-    data: Json<Upcase<AcceptData>>,
+    data: Json<AcceptData>,
 ) -> Result<()> {
     // The web-vault passes org_uuid and org_user_id in the URL, but we are just reading them from the JWT instead
-    let data: AcceptData = data.0.data;
+    let data: AcceptData = data.0;
     let claims = decode_invite(&data.token)?;
     let conn = DB.get().await.ise()?;
 
@@ -1057,8 +1057,8 @@ async fn accept_invite(
     Ok(())
 }
 
-async fn bulk_confirm_invite(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<Value>>) -> Result<Json<Value>> {
-    let data = data.0.data;
+async fn bulk_confirm_invite(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Value>) -> Result<Json<Value>> {
+    let data = data.0;
     let conn = DB.get().await.ise()?;
 
     let mut bulk_response = Vec::new();
@@ -1077,9 +1077,9 @@ async fn bulk_confirm_invite(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeader
 
                 bulk_response.push(json!(
                     {
-                        "Object": "OrganizationBulkConfirmResponseModel",
-                        "Id": user_id,
-                        "Error": err_msg
+                        "object": "OrganizationBulkConfirmResponseModel",
+                        "id": user_id,
+                        "error": err_msg
                     }
                 ));
             }
@@ -1088,9 +1088,9 @@ async fn bulk_confirm_invite(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeader
     }
 
     Ok(Json(json!({
-        "Data": bulk_response,
-        "Object": "list",
-        "ContinuationToken": null
+        "data": bulk_response,
+        "object": "list",
+        "continuationToken": null
     })))
 }
 
@@ -1100,9 +1100,9 @@ async fn confirm_invite(
         user_id,
     }): Path<OrgUserId>,
     headers: OrgAdminHeaders,
-    data: Json<Upcase<Value>>,
+    data: Json<Value>,
 ) -> Result<()> {
-    let data = data.0.data;
+    let data = data.0;
     let user_key = data["Key"].as_str().unwrap_or_default();
     let conn = DB.get().await.ise()?;
     _confirm_invite(org_uuid, user_id, user_key, &headers, &conn).await
@@ -1190,7 +1190,7 @@ async fn get_user(
 
 #[serde_as]
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct EditUserData {
     #[serde_as(as = "serde_with::PickFirst<(_, serde_with::DisplayFromStr)>")]
     r#type: UserOrgType,
@@ -1206,9 +1206,9 @@ async fn edit_user(
         user_id,
     }): Path<OrgUserId>,
     headers: OrgAdminHeaders,
-    data: Json<Upcase<EditUserData>>,
+    data: Json<EditUserData>,
 ) -> Result<()> {
-    let data: EditUserData = data.0.data;
+    let data: EditUserData = data.0;
 
     let mut user_to_edit = match UserOrganization::get(&conn, user_id, org_uuid).await? {
         Some(user) => user,
@@ -1291,8 +1291,8 @@ async fn edit_user(
     Ok(())
 }
 
-async fn bulk_delete_user(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<OrgBulkIds>>) -> Result<Json<Value>> {
-    let data: OrgBulkIds = data.0.data;
+async fn bulk_delete_user(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<OrgBulkIds>) -> Result<Json<Value>> {
+    let data: OrgBulkIds = data.0;
 
     let mut bulk_response = Vec::new();
     let conn = DB.get().await.ise()?;
@@ -1314,17 +1314,17 @@ async fn bulk_delete_user(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, 
 
         bulk_response.push(json!(
             {
-                "Object": "OrganizationBulkConfirmResponseModel",
-                "Id": user_id,
-                "Error": err_msg
+                "object": "OrganizationBulkConfirmResponseModel",
+                "id": user_id,
+                "error": err_msg
             }
         ))
     }
 
     Ok(Json(json!({
-        "Data": bulk_response,
-        "Object": "list",
-        "ContinuationToken": null
+        "data": bulk_response,
+        "object": "list",
+        "continuationToken": null
     })))
 }
 
@@ -1367,8 +1367,8 @@ async fn _delete_user(
     user_to_delete.delete(&conn).await
 }
 
-async fn bulk_public_keys(conn: AutoTxn, Path(org_uuid): Path<Uuid>, _headers: OrgAdminHeaders, data: Json<Upcase<OrgBulkIds>>) -> Result<Json<Value>> {
-    let data: OrgBulkIds = data.0.data;
+async fn bulk_public_keys(conn: AutoTxn, Path(org_uuid): Path<Uuid>, _headers: OrgAdminHeaders, data: Json<OrgBulkIds>) -> Result<Json<Value>> {
+    let data: OrgBulkIds = data.0;
 
     let mut bulk_response = Vec::new();
     // Check all received UserOrg UUID's and find the matching User to retreive the public-key.
@@ -1380,10 +1380,10 @@ async fn bulk_public_keys(conn: AutoTxn, Path(org_uuid): Path<Uuid>, _headers: O
             Some(user_org) => match User::get(&conn, user_org.user_uuid).await? {
                 Some(user) => bulk_response.push(json!(
                     {
-                        "Object": "organizationUserpublic_keyResponseModel",
-                        "Id": user_id,
-                        "UserId": user.uuid,
-                        "Key": user.public_key
+                        "object": "organizationUserpublic_keyResponseModel",
+                        "id": user_id,
+                        "userId": user.uuid,
+                        "key": user.public_key
                     }
                 )),
                 None => debug!("User doesn't exist"),
@@ -1395,9 +1395,9 @@ async fn bulk_public_keys(conn: AutoTxn, Path(org_uuid): Path<Uuid>, _headers: O
     conn.commit().await?;
 
     Ok(Json(json!({
-        "Data": bulk_response,
-        "Object": "list",
-        "ContinuationToken": null
+        "data": bulk_response,
+        "object": "list",
+        "continuationToken": null
     })))
 }
 
@@ -1405,7 +1405,7 @@ use super::ciphers::update_cipher_from_data;
 use super::ciphers::CipherData;
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct ImportData {
     ciphers: Vec<CipherData>,
     collections: Vec<NewCollectionData>,
@@ -1413,7 +1413,7 @@ struct ImportData {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct RelationsData {
     // Cipher index
     key: usize,
@@ -1421,8 +1421,8 @@ struct RelationsData {
     value: usize,
 }
 
-async fn post_org_import(mut conn: AutoTxn, Query(query): Query<OrgIdData>, headers: OrgAdminHeaders, data: Json<Upcase<ImportData>>) -> Result<()> {
-    let data: ImportData = data.0.data;
+async fn post_org_import(mut conn: AutoTxn, Query(query): Query<OrgIdData>, headers: OrgAdminHeaders, data: Json<ImportData>) -> Result<()> {
+    let data: ImportData = data.0;
     let org_uuid = query.organization_id;
 
     // Validate the import before continuing
@@ -1478,9 +1478,9 @@ async fn list_policies(Path(org_uuid): Path<Uuid>, _headers: OrgAdminHeaders) ->
     let policies_json: Vec<Value> = policies.iter().map(OrganizationPolicy::to_json).collect();
 
     Ok(Json(json!({
-        "Data": policies_json,
-        "Object": "list",
-        "ContinuationToken": null
+        "data": policies_json,
+        "object": "list",
+        "continuationToken": null
     })))
 }
 
@@ -1507,9 +1507,9 @@ async fn list_policies_token(Path(org_uuid): Path<Uuid>, Query(token): Query<Pol
     let policies_json: Vec<Value> = policies.iter().map(OrganizationPolicy::to_json).collect();
 
     Ok(Json(json!({
-        "Data": policies_json,
-        "Object": "list",
-        "ContinuationToken": null
+        "data": policies_json,
+        "object": "list",
+        "continuationToken": null
     })))
 }
 
@@ -1531,9 +1531,9 @@ async fn list_policies_invited_user(_headers: OrgAdminHeaders, Path(org_uuid): P
     let policies_json: Vec<Value> = policies.iter().map(OrganizationPolicy::to_json).collect();
 
     Ok(Json(json!({
-        "Data": policies_json,
-        "Object": "list",
-        "ContinuationToken": null
+        "data": policies_json,
+        "object": "list",
+        "continuationToken": null
     })))
 }
 
@@ -1675,16 +1675,16 @@ async fn get_organization_tax(Path(org_uuid): Path<Uuid>, _headers: Headers) -> 
 async fn get_plans() -> Json<Value> {
     // Respond with a minimal json just enough to allow the creation of an new organization.
     Json(json!({
-        "Object": "list",
-        "Data": [{
-            "Object": "plan",
-            "Type": 0,
-            "Product": 0,
-            "Name": "Free",
-            "NameLocalizationKey": "planNameFree",
-            "DescriptionLocalizationKey": "planDescFree"
+        "object": "list",
+        "data": [{
+            "object": "plan",
+            "type": 0,
+            "product": 0,
+            "name": "Free",
+            "nameLocalizationKey": "planNameFree",
+            "descriptionLocalizationKey": "planDescFree"
         }],
-        "ContinuationToken": null
+        "continuationToken": null
     }))
 }
 
@@ -1695,15 +1695,15 @@ async fn get_plans_tax_rates(_headers: Headers) -> Json<Value> {
 
 fn _empty_data_json() -> Value {
     json!({
-        "Object": "list",
-        "Data": [],
-        "ContinuationToken": null
+        "object": "list",
+        "data": [],
+        "continuationToken": null
     })
 }
 
 #[derive(Deserialize, Debug)]
 #[allow(dead_code)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct OrgImportGroupData {
     name: String,        // "GroupName"
     external_id: String, // "cn=GroupName,ou=Groups,dc=example,dc=com"
@@ -1711,7 +1711,7 @@ struct OrgImportGroupData {
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct OrgImportUserData {
     email: String, // "user@maildomain.net"
     #[allow(dead_code)]
@@ -1720,7 +1720,7 @@ struct OrgImportUserData {
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct OrgImportData {
     #[allow(dead_code)]
     groups: Vec<OrgImportGroupData>,
@@ -1728,9 +1728,9 @@ struct OrgImportData {
     users: Vec<OrgImportUserData>,
 }
 
-//TODO: remove all data.0.data stuff
-async fn import(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<OrgImportData>>) -> Result<()> {
-    let data = data.0.data;
+//TODO: remove all data.0 stuff
+async fn import(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<OrgImportData>) -> Result<()> {
+    let data = data.0;
 
     // TODO: Currently we aren't storing the externalId's anywhere, so we also don't have a way
     // to differentiate between auto-imported users and manually added ones.
@@ -1825,8 +1825,8 @@ async fn import(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHead
     Ok(())
 }
 
-async fn bulk_revoke_organization_user(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<Value>>) -> Result<Json<Value>> {
-    let data = data.0.data;
+async fn bulk_revoke_organization_user(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Value>) -> Result<Json<Value>> {
+    let data = data.0;
 
     let mut bulk_response = Vec::new();
     match data["Ids"].as_array() {
@@ -1844,9 +1844,9 @@ async fn bulk_revoke_organization_user(conn: AutoTxn, Path(org_uuid): Path<Uuid>
 
                 bulk_response.push(json!(
                     {
-                        "Object": "OrganizationUserBulkResponseModel",
-                        "Id": user_id,
-                        "Error": err_msg
+                        "object": "OrganizationUserBulkResponseModel",
+                        "id": user_id,
+                        "error": err_msg
                     }
                 ));
             }
@@ -1857,9 +1857,9 @@ async fn bulk_revoke_organization_user(conn: AutoTxn, Path(org_uuid): Path<Uuid>
     conn.commit().await?;
 
     Ok(Json(json!({
-        "Data": bulk_response,
-        "Object": "list",
-        "ContinuationToken": null
+        "data": bulk_response,
+        "object": "list",
+        "continuationToken": null
     })))
 }
 
@@ -1900,8 +1900,8 @@ async fn _revoke_organization_user(org_uuid: Uuid, user_id: Uuid, headers: &OrgA
     Ok(())
 }
 
-async fn bulk_restore_organization_user(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<Value>>) -> Result<Json<Value>> {
-    let data = data.0.data;
+async fn bulk_restore_organization_user(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Value>) -> Result<Json<Value>> {
+    let data = data.0;
 
     let mut bulk_response = Vec::new();
     match data["Ids"].as_array() {
@@ -1919,9 +1919,9 @@ async fn bulk_restore_organization_user(conn: AutoTxn, Path(org_uuid): Path<Uuid
 
                 bulk_response.push(json!(
                     {
-                        "Object": "OrganizationUserBulkResponseModel",
-                        "Id": user_id,
-                        "Error": err_msg
+                        "object": "OrganizationUserBulkResponseModel",
+                        "id": user_id,
+                        "error": err_msg
                     }
                 ));
             }
@@ -1932,9 +1932,9 @@ async fn bulk_restore_organization_user(conn: AutoTxn, Path(org_uuid): Path<Uuid
     conn.commit().await?;
 
     Ok(Json(json!({
-        "Data": bulk_response,
-        "Object": "list",
-        "ContinuationToken": null
+        "data": bulk_response,
+        "object": "list",
+        "continuationToken": null
     })))
 }
 
@@ -2002,14 +2002,14 @@ async fn get_groups(Path(org_uuid): Path<Uuid>, _headers: ManagerHeadersLoose) -
     };
 
     Ok(Json(json!({
-        "Data": groups,
-        "Object": "list",
-        "ContinuationToken": null,
+        "data": groups,
+        "object": "list",
+        "continuationToken": null,
     })))
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct GroupRequest {
     name: String,
     access_all: Option<bool>,
@@ -2041,7 +2041,7 @@ impl GroupRequest {
 }
 
 #[derive(Deserialize, Serialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct SelectionReadOnly {
     id: Uuid,
     read_only: bool,
@@ -2074,12 +2074,12 @@ impl SelectionReadOnly {
     }
 }
 
-async fn post_groups(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<GroupRequest>>) -> Result<Json<Value>> {
+async fn post_groups(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<GroupRequest>) -> Result<Json<Value>> {
     if !CONFIG.advanced.org_groups_enabled {
         err!("Group support is disabled");
     }
 
-    let group_request = data.0.data;
+    let group_request = data.0;
     let group = group_request.to_group(org_uuid)?;
 
     let group_uuid = group.uuid;
@@ -2111,7 +2111,7 @@ async fn put_group(
         group_id,
     }): Path<OrgGroupId>,
     headers: OrgAdminHeaders,
-    data: Json<Upcase<GroupRequest>>,
+    data: Json<GroupRequest>,
 ) -> Result<Json<Value>> {
     if !CONFIG.advanced.org_groups_enabled {
         err!("Group support is disabled");
@@ -2122,7 +2122,7 @@ async fn put_group(
         None => err!("Group not found"),
     };
 
-    let group_request = data.0.data;
+    let group_request = data.0;
     let updated_group = group_request.update_group(group)?;
 
     CollectionGroup::delete_all_by_group(&conn, group_id).await?;
@@ -2168,11 +2168,11 @@ async fn add_update_group(
     }
 
     Ok(Json(json!({
-        "Id": group.uuid,
-        "OrganizationId": group.organization_uuid,
-        "Name": group.name,
-        "AccessAll": group.access_all,
-        "ExternalId": group.external_id
+        "id": group.uuid,
+        "organizationId": group.organization_uuid,
+        "name": group.name,
+        "accessAll": group.access_all,
+        "externalId": group.external_id
     })))
 }
 
@@ -2222,12 +2222,12 @@ async fn delete_group(
     Ok(())
 }
 
-async fn bulk_delete_groups(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<OrgBulkIds>>) -> Result<()> {
+async fn bulk_delete_groups(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<OrgBulkIds>) -> Result<()> {
     if !CONFIG.advanced.org_groups_enabled {
         err!("Group support is disabled");
     }
 
-    let data: OrgBulkIds = data.0.data;
+    let data: OrgBulkIds = data.0;
 
     for group_id in data.ids {
         _delete_group(org_uuid, group_id, &headers, &conn).await?
@@ -2344,7 +2344,7 @@ async fn get_user_groups(
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct OrganizationUserUpdateGroupsRequest {
     group_ids: Vec<Uuid>,
 }
@@ -2356,7 +2356,7 @@ async fn put_user_groups(
         user_id,
     }): Path<OrgUserId>,
     headers: OrgAdminHeaders,
-    data: Json<Upcase<OrganizationUserUpdateGroupsRequest>>,
+    data: Json<OrganizationUserUpdateGroupsRequest>,
 ) -> Result<()> {
     if !CONFIG.advanced.org_groups_enabled {
         err!("Group support is disabled");
@@ -2369,7 +2369,7 @@ async fn put_user_groups(
 
     let known_groups = Group::find_by_organization(&conn, org_uuid).await?.into_iter().map(|x| x.uuid).collect::<HashSet<Uuid>>();
 
-    for id in &data.0.data.group_ids {
+    for id in &data.0.group_ids {
         if !known_groups.contains(id) {
             err!("referenced unknown group");
         }
@@ -2377,7 +2377,7 @@ async fn put_user_groups(
 
     GroupUser::delete_all_by_user(&conn, user_id, org_uuid).await?;
 
-    let assigned_group_ids = data.0.data;
+    let assigned_group_ids = data.0;
     for assigned_group_id in assigned_group_ids.group_ids {
         let group_user = GroupUser::new(assigned_group_id, user_id);
         group_user.save(&conn).await?;
@@ -2419,13 +2419,13 @@ async fn delete_group_user(
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct OrganizationUserResetPasswordEnrollmentRequest {
     reset_password_key: Option<String>,
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct OrganizationUserResetPasswordRequest {
     new_master_password_hash: String,
     key: String,
@@ -2440,9 +2440,9 @@ async fn get_organization_keys(Path(org_uuid): Path<Uuid>) -> Result<Json<Value>
     };
 
     Ok(Json(json!({
-        "Object": "organizationKeys",
-        "public_key": org.public_key,
-        "PrivateKey": org.private_key,
+        "pbject": "organizationKeys",
+        "publicKey": org.public_key,
+        "privateKey": org.private_key,
     })))
 }
 
@@ -2452,7 +2452,7 @@ async fn put_reset_password(
         user_id,
     }): Path<OrgUserId>,
     headers: OrgAdminHeaders,
-    data: Json<Upcase<OrganizationUserResetPasswordRequest>>,
+    data: Json<OrganizationUserResetPasswordRequest>,
 ) -> Result<()> {
     let conn = DB.get().await.ise()?;
 
@@ -2486,7 +2486,7 @@ async fn put_reset_password(
         err!(format!("Error sending user reset password email: {e:#?}"));
     }
 
-    let reset_request = data.0.data;
+    let reset_request = data.0;
 
     let mut user = user;
     user.set_password(reset_request.new_master_password_hash.as_str(), Some(reset_request.key), true, None);
@@ -2527,13 +2527,13 @@ async fn get_reset_password_details(
 
     // https://github.com/bitwarden/server/blob/3b50ccb9f804efaacdc46bed5b60e5b28eddefcf/src/Api/Models/Response/Organizations/OrganizationUserResponseModel.cs#L111
     Ok(Json(json!({
-        "Object": "organizationUserResetPasswordDetails",
-        "Kdf":user.client_kdf_type,
-        "KdfIterations":user.client_kdf_iter,
-        "KdfMemory":user.client_kdf_memory,
-        "KdfParallelism":user.client_kdf_parallelism,
-        "reset_password_key":org_user.reset_password_key,
-        "encrypted_private_key":org.private_key,
+        "object": "organizationUserResetPasswordDetails",
+        "kdf":user.client_kdf_type,
+        "kdfIterations":user.client_kdf_iter,
+        "kdfMemory":user.client_kdf_memory,
+        "kdfParallelism":user.client_kdf_parallelism,
+        "resetPasswordKey":org_user.reset_password_key,
+        "encryptedPrivateKey":org.private_key,
 
     })))
 }
@@ -2577,7 +2577,7 @@ async fn put_reset_password_enrollment(
         user_id,
     }): Path<OrgUserId>,
     headers: Headers,
-    data: Json<Upcase<OrganizationUserResetPasswordEnrollmentRequest>>,
+    data: Json<OrganizationUserResetPasswordEnrollmentRequest>,
 ) -> Result<()> {
     let conn = DB.get().await.ise()?;
 
@@ -2592,7 +2592,7 @@ async fn put_reset_password_enrollment(
 
     check_reset_password_applicable(org_uuid, &conn).await?;
 
-    let reset_request = data.0.data;
+    let reset_request = data.0;
 
     if reset_request.reset_password_key.is_none() && OrganizationPolicy::org_is_reset_password_auto_enroll(&conn, org_uuid).await? {
         err!("Reset password can't be withdrawed due to an enterprise policy");
@@ -2687,16 +2687,16 @@ async fn _api_key(org_uuid: Uuid, rotate: bool, headers: OrgAdminHeaders, data: 
     };
 
     Ok(Json(json!({
-      "ApiKey": org_api_key.api_key,
-      "RevisionDate": crate::util::format_date(&org_api_key.revision_date),
-      "Object": "apiKey",
+      "apiKey": org_api_key.api_key,
+      "revisionDate": crate::util::format_date(&org_api_key.revision_date),
+      "object": "apiKey",
     })))
 }
 
-async fn api_key(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<PasswordData>>) -> Result<Json<Value>> {
-    _api_key(org_uuid, false, headers, data.0.data).await
+async fn api_key(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<PasswordData>) -> Result<Json<Value>> {
+    _api_key(org_uuid, false, headers, data.0).await
 }
 
-async fn rotate_api_key(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<Upcase<PasswordData>>) -> Result<Json<Value>> {
-    _api_key(org_uuid, true, headers, data.0.data).await
+async fn rotate_api_key(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<PasswordData>) -> Result<Json<Value>> {
+    _api_key(org_uuid, true, headers, data.0).await
 }

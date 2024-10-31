@@ -57,13 +57,13 @@ impl Attachment {
 
     pub fn to_json(&self) -> Value {
         json!({
-            "Id": self.uuid,
-            "Url": self.get_url(),
-            "FileName": self.file_name,
-            "Size": self.file_size.to_string(),
-            "SizeName": crate::util::get_display_size(self.file_size),
-            "Key": self.akey,
-            "Object": "attachment"
+            "id": self.uuid,
+            "url": self.get_url(),
+            "fileName": self.file_name,
+            "size": self.file_size.to_string(),
+            "sizeName": crate::util::get_display_size(self.file_size),
+            "key": self.akey,
+            "object": "attachment"
         })
     }
 }

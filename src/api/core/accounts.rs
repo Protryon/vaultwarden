@@ -15,7 +15,7 @@ use crate::{
     events::log_user_event,
     mail,
     push::{register_push_device, unregister_push_device},
-    util::{AutoTxn, Upcase},
+    util::AutoTxn,
     CONFIG,
 };
 
@@ -49,7 +49,7 @@ pub fn route(router: Router) -> Router {
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct RegisterData {
     email: String,
     kdf: Option<i32>,
@@ -67,7 +67,7 @@ pub struct RegisterData {
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct SetPasswordData {
     kdf: Option<i32>,
     kdf_iterations: Option<i32>,
@@ -83,7 +83,7 @@ pub struct SetPasswordData {
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct KeysData {
     encrypted_private_key: String,
     public_key: String,
@@ -114,8 +114,8 @@ fn enforce_password_hint_setting(password_hint: &Option<String>) -> Result<()> {
     Ok(())
 }
 
-pub async fn register(conn: AutoTxn, data: Json<Upcase<RegisterData>>) -> Result<Json<Value>> {
-    let data: RegisterData = data.0.data;
+pub async fn register(conn: AutoTxn, data: Json<RegisterData>) -> Result<Json<Value>> {
+    let data: RegisterData = data.0;
     let email = data.email.to_lowercase();
 
     // Check if the length of the username exceeds 50 characters (Same is Upstream Bitwarden)
@@ -215,13 +215,13 @@ pub async fn register(conn: AutoTxn, data: Json<Upcase<RegisterData>>) -> Result
     user.save(&conn).await?;
     conn.commit().await?;
     Ok(Json(json!({
-      "Object": "register",
-      "CaptchaBypassToken": "",
+      "object": "register",
+      "captchaBypassToken": "",
     })))
 }
 
-pub async fn post_set_password(headers: Headers, data: Json<Upcase<SetPasswordData>>) -> Result<Json<Value>> {
-    let data: SetPasswordData = data.0.data;
+pub async fn post_set_password(headers: Headers, data: Json<SetPasswordData>) -> Result<Json<Value>> {
+    let data: SetPasswordData = data.0;
     let mut user = headers.user;
     let conn = DB.get().await.ise()?;
 
@@ -259,8 +259,8 @@ pub async fn post_set_password(headers: Headers, data: Json<Upcase<SetPasswordDa
 
     user.save(&conn).await?;
     Ok(Json(json!({
-      "Object": "set-password",
-      "CaptchaBypassToken": "",
+      "object": "set-password",
+      "captchaBypassToken": "",
     })))
 }
 
@@ -270,15 +270,15 @@ pub async fn profile(headers: Headers) -> Result<Json<Value>> {
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct ProfileData {
     // Culture: String, // Ignored, always use en-US
     // master_password_hint: Option<String>, // Ignored, has been moved to ChangePassData
     name: String,
 }
 
-pub async fn post_profile(headers: Headers, data: Json<Upcase<ProfileData>>) -> Result<Json<Value>> {
-    let data: ProfileData = data.0.data;
+pub async fn post_profile(headers: Headers, data: Json<ProfileData>) -> Result<Json<Value>> {
+    let data: ProfileData = data.0;
     let conn = DB.get().await.ise()?;
 
     // Check if the length of the username exceeds 50 characters (Same is Upstream Bitwarden)
@@ -295,13 +295,13 @@ pub async fn post_profile(headers: Headers, data: Json<Upcase<ProfileData>>) -> 
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct AvatarData {
     avatar_color: Option<String>,
 }
 
-pub async fn put_avatar(headers: Headers, data: Json<Upcase<AvatarData>>) -> Result<Json<Value>> {
-    let data: AvatarData = data.0.data;
+pub async fn put_avatar(headers: Headers, data: Json<AvatarData>) -> Result<Json<Value>> {
+    let data: AvatarData = data.0;
 
     // It looks like it only supports the 6 hex color format.
     // If you try to add the short value it will not show that color.
@@ -329,14 +329,14 @@ pub async fn get_public_keys(Path(uuid): Path<Uuid>, _headers: Headers) -> Resul
     };
 
     Ok(Json(json!({
-        "UserId": user.uuid,
-        "PublicKey": user.public_key,
-        "Object":"userKey"
+        "userId": user.uuid,
+        "publicKey": user.public_key,
+        "object":"userKey"
     })))
 }
 
-pub async fn post_keys(headers: Headers, data: Json<Upcase<KeysData>>) -> Result<Json<Value>> {
-    let data: KeysData = data.0.data;
+pub async fn post_keys(headers: Headers, data: Json<KeysData>) -> Result<Json<Value>> {
+    let data: KeysData = data.0;
 
     let mut user = headers.user;
 
@@ -347,14 +347,14 @@ pub async fn post_keys(headers: Headers, data: Json<Upcase<KeysData>>) -> Result
     user.save(&conn).await?;
 
     Ok(Json(json!({
-        "PrivateKey": user.private_key,
-        "PublicKey": user.public_key,
-        "Object":"keys"
+        "privateKey": user.private_key,
+        "publicKey": user.public_key,
+        "object":"keys"
     })))
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct ChangePassData {
     master_password_hash: String,
     new_master_password_hash: String,
@@ -362,8 +362,8 @@ pub struct ChangePassData {
     key: String,
 }
 
-pub async fn post_password(headers: Headers, data: Json<Upcase<ChangePassData>>) -> Result<()> {
-    let data: ChangePassData = data.0.data;
+pub async fn post_password(headers: Headers, data: Json<ChangePassData>) -> Result<()> {
+    let data: ChangePassData = data.0;
     let mut user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
@@ -394,7 +394,7 @@ pub async fn post_password(headers: Headers, data: Json<Upcase<ChangePassData>>)
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct ChangeKdfData {
     kdf: i32,
     kdf_iterations: i32,
@@ -406,8 +406,8 @@ pub struct ChangeKdfData {
     key: String,
 }
 
-pub async fn post_kdf(headers: Headers, data: Json<Upcase<ChangeKdfData>>) -> Result<()> {
-    let data: ChangeKdfData = data.0.data;
+pub async fn post_kdf(headers: Headers, data: Json<ChangeKdfData>) -> Result<()> {
+    let data: ChangeKdfData = data.0;
     let mut user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
@@ -455,7 +455,7 @@ pub async fn post_kdf(headers: Headers, data: Json<Upcase<ChangeKdfData>>) -> Re
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct UpdateFolderData {
     id: Uuid,
     name: String,
@@ -464,7 +464,7 @@ struct UpdateFolderData {
 use super::ciphers::CipherData;
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct KeyData {
     ciphers: Vec<CipherData>,
     folders: Vec<UpdateFolderData>,
@@ -473,8 +473,8 @@ pub struct KeyData {
     master_password_hash: String,
 }
 
-pub async fn post_rotatekey(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<KeyData>>) -> Result<()> {
-    let data: KeyData = data.0.data;
+pub async fn post_rotatekey(mut conn: AutoTxn, headers: Headers, data: Json<KeyData>) -> Result<()> {
+    let data: KeyData = data.0;
 
     if !headers.user.check_valid_password(&data.master_password_hash) {
         err!("Invalid password")
@@ -532,8 +532,8 @@ pub async fn post_rotatekey(mut conn: AutoTxn, headers: Headers, data: Json<Upca
     Ok(())
 }
 
-pub async fn post_sstamp(headers: Headers, conn: AutoTxn, data: Json<Upcase<PasswordData>>) -> Result<()> {
-    let data: PasswordData = data.0.data;
+pub async fn post_sstamp(headers: Headers, conn: AutoTxn, data: Json<PasswordData>) -> Result<()> {
+    let data: PasswordData = data.0;
     let mut user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
@@ -552,14 +552,14 @@ pub async fn post_sstamp(headers: Headers, conn: AutoTxn, data: Json<Upcase<Pass
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct EmailTokenData {
     master_password_hash: String,
     new_email: String,
 }
 
-pub async fn post_email_token(headers: Headers, data: Json<Upcase<EmailTokenData>>) -> Result<()> {
-    let data: EmailTokenData = data.0.data;
+pub async fn post_email_token(headers: Headers, data: Json<EmailTokenData>) -> Result<()> {
+    let data: EmailTokenData = data.0;
     let mut user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
@@ -588,7 +588,7 @@ pub async fn post_email_token(headers: Headers, data: Json<Upcase<EmailTokenData
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct ChangeEmailData {
     master_password_hash: String,
     new_email: String,
@@ -599,8 +599,8 @@ pub struct ChangeEmailData {
     token: String,
 }
 
-pub async fn post_email(headers: Headers, data: Json<Upcase<ChangeEmailData>>) -> Result<()> {
-    let data: ChangeEmailData = data.0.data;
+pub async fn post_email(headers: Headers, data: Json<ChangeEmailData>) -> Result<()> {
+    let data: ChangeEmailData = data.0;
     let mut user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
@@ -664,14 +664,14 @@ pub async fn post_verify_email(headers: Headers) -> Result<()> {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct VerifyEmailTokenData {
     user_id: Uuid,
     token: String,
 }
 
-pub async fn post_verify_email_token(data: Json<Upcase<VerifyEmailTokenData>>) -> Result<()> {
-    let data: VerifyEmailTokenData = data.0.data;
+pub async fn post_verify_email_token(data: Json<VerifyEmailTokenData>) -> Result<()> {
+    let data: VerifyEmailTokenData = data.0;
     let conn = DB.get().await.ise()?;
 
     let mut user = match User::get(&conn, data.user_id).await? {
@@ -696,13 +696,13 @@ pub async fn post_verify_email_token(data: Json<Upcase<VerifyEmailTokenData>>) -
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteRecoverData {
     email: String,
 }
 
-pub async fn post_delete_recover(data: Json<Upcase<DeleteRecoverData>>) -> Result<()> {
-    let data: DeleteRecoverData = data.0.data;
+pub async fn post_delete_recover(data: Json<DeleteRecoverData>) -> Result<()> {
+    let data: DeleteRecoverData = data.0;
 
     if CONFIG.mail_enabled() {
         let conn = DB.get().await.ise()?;
@@ -723,14 +723,14 @@ pub async fn post_delete_recover(data: Json<Upcase<DeleteRecoverData>>) -> Resul
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteRecoverTokenData {
     user_id: Uuid,
     token: String,
 }
 
-pub async fn post_delete_recover_token(data: Json<Upcase<DeleteRecoverTokenData>>) -> Result<()> {
-    let data: DeleteRecoverTokenData = data.0.data;
+pub async fn post_delete_recover_token(data: Json<DeleteRecoverTokenData>) -> Result<()> {
+    let data: DeleteRecoverTokenData = data.0;
     let conn = DB.get().await.ise()?;
 
     let user = match User::get(&conn, data.user_id).await? {
@@ -749,8 +749,8 @@ pub async fn post_delete_recover_token(data: Json<Upcase<DeleteRecoverTokenData>
     Ok(())
 }
 
-pub async fn delete_account(headers: Headers, data: Json<Upcase<PasswordData>>) -> Result<()> {
-    let data: PasswordData = data.0.data;
+pub async fn delete_account(headers: Headers, data: Json<PasswordData>) -> Result<()> {
+    let data: PasswordData = data.0;
     let user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
@@ -769,19 +769,19 @@ pub async fn revision_date(headers: Headers) -> Result<Json<Value>> {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct PasswordHintData {
     email: String,
 }
 
-pub async fn password_hint(data: Json<Upcase<PasswordHintData>>) -> Result<()> {
+pub async fn password_hint(data: Json<PasswordHintData>) -> Result<()> {
     if !CONFIG.mail_enabled() && !CONFIG.settings.show_password_hint {
         err!("This server is not configured to provide password hints.");
     }
 
     const NO_HINT: &str = "Sorry, you have no password hint...";
 
-    let data: PasswordHintData = data.0.data;
+    let data: PasswordHintData = data.0;
     let email = &data.email;
     let conn = DB.get().await.ise()?;
 
@@ -817,13 +817,13 @@ pub async fn password_hint(data: Json<Upcase<PasswordHintData>>) -> Result<()> {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct PreloginData {
     email: String,
 }
 
-pub async fn prelogin(data: Json<Upcase<PreloginData>>) -> Result<Json<Value>> {
-    let data: PreloginData = data.0.data;
+pub async fn prelogin(data: Json<PreloginData>) -> Result<Json<Value>> {
+    let data: PreloginData = data.0;
     let conn = DB.get().await.ise()?;
 
     let (kdf_type, kdf_iter, kdf_mem, kdf_para) = match User::find_by_email(&conn, &data.email).await? {
@@ -832,10 +832,10 @@ pub async fn prelogin(data: Json<Upcase<PreloginData>>) -> Result<Json<Value>> {
     };
 
     let result = json!({
-        "Kdf": kdf_type,
-        "KdfIterations": kdf_iter,
-        "KdfMemory": kdf_mem,
-        "KdfParallelism": kdf_para,
+        "kdf": kdf_type,
+        "kdfIterations": kdf_iter,
+        "kdfMemory": kdf_mem,
+        "kdfParallelism": kdf_para,
     });
 
     Ok(Json(result))
@@ -843,15 +843,15 @@ pub async fn prelogin(data: Json<Upcase<PreloginData>>) -> Result<Json<Value>> {
 
 // https://github.com/bitwarden/server/blob/master/src/Api/Models/Request/Accounts/SecretVerificationRequestModel.cs
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct SecretVerificationRequest {
     master_password_hash: String,
 }
 
-pub async fn _api_key(data: Json<Upcase<SecretVerificationRequest>>, rotate: bool, headers: Headers) -> Result<Json<Value>> {
+pub async fn _api_key(data: Json<SecretVerificationRequest>, rotate: bool, headers: Headers) -> Result<Json<Value>> {
     use crate::util::format_date;
 
-    let data: SecretVerificationRequest = data.0.data;
+    let data: SecretVerificationRequest = data.0;
     let mut user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
@@ -867,17 +867,17 @@ pub async fn _api_key(data: Json<Upcase<SecretVerificationRequest>>, rotate: boo
 
     let revision = user.last_revision(&conn).await?;
     Ok(Json(json!({
-      "ApiKey": user.api_key,
-      "RevisionDate": format_date(&revision),
-      "Object": "apiKey",
+      "apiKey": user.api_key,
+      "revisionDate": format_date(&revision),
+      "object": "apiKey",
     })))
 }
 
-pub async fn api_key(headers: Headers, data: Json<Upcase<SecretVerificationRequest>>) -> Result<Json<Value>> {
+pub async fn api_key(headers: Headers, data: Json<SecretVerificationRequest>) -> Result<Json<Value>> {
     _api_key(data, false, headers).await
 }
 
-pub async fn rotate_api_key(headers: Headers, data: Json<Upcase<SecretVerificationRequest>>) -> Result<Json<Value>> {
+pub async fn rotate_api_key(headers: Headers, data: Json<SecretVerificationRequest>) -> Result<Json<Value>> {
     _api_key(data, true, headers).await
 }
 
@@ -945,18 +945,18 @@ impl<'a> FromRequestParts<'a> for KnownDevice {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct PushToken {
     push_token: String,
 }
 
-pub async fn put_device_token(Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<PushToken>>) -> Result<()> {
+pub async fn put_device_token(Path(uuid): Path<Uuid>, headers: Headers, data: Json<PushToken>) -> Result<()> {
     if CONFIG.push.is_none() {
         return Ok(());
     }
     let conn = DB.get().await.ise()?;
 
-    let data = data.0.data;
+    let data = data.0;
     let token = data.push_token;
     let mut device = match Device::find_by_uuid_and_user(&conn, headers.device.uuid, headers.user.uuid).await? {
         Some(device) => device,

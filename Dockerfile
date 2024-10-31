@@ -1,6 +1,6 @@
-FROM docker.io/vaultwarden/web-vault@sha256:e5b5e99d132d50dc73176afb65f41cf3b834fb06bfa1d621ac16c705c3f10085 as vault
+FROM docker.io/vaultwarden/web-vault@sha256:409ab328ca931439cb916b388a4bb784bd44220717aaf74cf71620c23e34fc2b as vault
 
-FROM lukemathwalker/cargo-chef:0.1.61-rust-1.70-slim-buster AS planner
+FROM lukemathwalker/cargo-chef:0.1.62-rust-1.76-slim-buster AS planner
 WORKDIR /plan
 
 COPY ./src ./src
@@ -11,7 +11,7 @@ COPY ./Cargo.toml .
 
 RUN cargo chef prepare --recipe-path recipe.json
 
-FROM lukemathwalker/cargo-chef:0.1.61-rust-1.70-buster AS builder
+FROM lukemathwalker/cargo-chef:0.1.62-rust-1.76-buster AS builder
 
 WORKDIR /build
 RUN apt-get update && apt-get install cmake -y

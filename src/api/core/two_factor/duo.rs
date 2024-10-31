@@ -13,7 +13,7 @@ use crate::{
     db::{Conn, Event, EventType, TwoFactor, TwoFactorType, User, DB},
     error::MapResult,
     events::log_user_event,
-    util::{get_reqwest_client, Upcase},
+    util::get_reqwest_client,
     CONFIG,
 };
 
@@ -86,8 +86,8 @@ impl DuoStatus {
 
 const DISABLED_MESSAGE_DEFAULT: &str = "<To use the global Duo keys, please leave these fields untouched>";
 
-pub async fn get_duo(headers: Headers, data: Json<Upcase<PasswordData>>) -> Result<Json<Value>> {
-    let data: PasswordData = data.0.data;
+pub async fn get_duo(headers: Headers, data: Json<PasswordData>) -> Result<Json<Value>> {
+    let data: PasswordData = data.0;
 
     if !headers.user.check_valid_password(&data.master_password_hash) {
         err!("Invalid password");
@@ -105,16 +105,16 @@ pub async fn get_duo(headers: Headers, data: Json<Upcase<PasswordData>>) -> Resu
 
     let json = if let Some(data) = data {
         json!({
-            "Enabled": enabled,
-            "Host": data.host,
-            "SecretKey": data.secret_key,
-            "IntegrationKey": data.integration_key,
-            "Object": "twoFactorDuo"
+            "enabled": enabled,
+            "host": data.host,
+            "secretKey": data.secret_key,
+            "integrationKey": data.integration_key,
+            "object": "twoFactorDuo"
         })
     } else {
         json!({
-            "Enabled": enabled,
-            "Object": "twoFactorDuo"
+            "enabled": enabled,
+            "object": "twoFactorDuo"
         })
     };
 
@@ -123,7 +123,7 @@ pub async fn get_duo(headers: Headers, data: Json<Upcase<PasswordData>>) -> Resu
 
 #[derive(Deserialize)]
 #[allow(dead_code)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct EnableDuoData {
     master_password_hash: String,
     host: Url,
@@ -150,8 +150,8 @@ fn check_duo_fields_custom(data: &EnableDuoData) -> bool {
     !empty_or_default(&data.secret_key) && !empty_or_default(&data.integration_key)
 }
 
-pub async fn activate_duo(headers: Headers, data: Json<Upcase<EnableDuoData>>) -> Result<Json<Value>> {
-    let data: EnableDuoData = data.0.data;
+pub async fn activate_duo(headers: Headers, data: Json<EnableDuoData>) -> Result<Json<Value>> {
+    let data: EnableDuoData = data.0;
     let mut user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
@@ -177,11 +177,11 @@ pub async fn activate_duo(headers: Headers, data: Json<Upcase<EnableDuoData>>) -
     log_user_event(EventType::UserUpdated2fa, user.uuid, headers.device.atype, Utc::now(), headers.ip, &mut conn).await?;
 
     Ok(Json(json!({
-        "Enabled": true,
-        "Host": data.host,
-        "SecretKey": data.secret_key,
-        "IntegrationKey": data.integration_key,
-        "Object": "twoFactorDuo"
+        "enabled": true,
+        "host": data.host,
+        "secretKey": data.secret_key,
+        "integrationKey": data.integration_key,
+        "object": "twoFactorDuo"
     })))
 }
 

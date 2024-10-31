@@ -56,7 +56,7 @@ pub async fn run_api_server() {
 
 // Common structs representing JSON data received
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct PasswordData {
     master_password_hash: String,
 }

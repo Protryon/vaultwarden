@@ -76,11 +76,11 @@ impl EmergencyAccess {
 
     pub fn to_json(&self) -> Value {
         json!({
-            "Id": self.uuid,
-            "Status": self.status as i32,
-            "Type": self.atype as i32,
-            "WaitTimeDays": self.wait_time_days,
-            "Object": "emergencyAccess",
+            "id": self.uuid,
+            "status": self.status as i32,
+            "type": self.atype as i32,
+            "waitTimeDays": self.wait_time_days,
+            "object": "emergencyAccess",
         })
     }
 
@@ -88,14 +88,14 @@ impl EmergencyAccess {
         let grantor_user = User::get(conn, self.grantor_uuid).await.ise()?.ok_or(Error::NotFound)?;
 
         Ok(json!({
-            "Id": self.uuid,
-            "Status": self.status as i32,
-            "Type": self.atype as i32,
-            "WaitTimeDays": self.wait_time_days,
-            "GrantorId": grantor_user.uuid,
-            "Email": grantor_user.email,
-            "Name": grantor_user.name,
-            "Object": "emergencyAccessGrantorDetails",
+            "id": self.uuid,
+            "status": self.status as i32,
+            "type": self.atype as i32,
+            "waitTimeDays": self.wait_time_days,
+            "grantorId": grantor_user.uuid,
+            "email": grantor_user.email,
+            "name": grantor_user.name,
+            "object": "emergencyAccessGrantorDetails",
         }))
     }
 
@@ -109,14 +109,14 @@ impl EmergencyAccess {
         };
 
         Ok(json!({
-            "Id": self.uuid,
-            "Status": self.status as i32,
-            "Type": self.atype as i32,
-            "WaitTimeDays": self.wait_time_days,
-            "GranteeId": grantee_user.as_ref().map_or(Uuid::default(), |u| u.uuid),
-            "Email": grantee_user.as_ref().map_or("", |u| &u.email),
-            "Name": grantee_user.as_ref().map_or("", |u| &u.name),
-            "Object": "emergencyAccessGranteeDetails",
+            "id": self.uuid,
+            "status": self.status as i32,
+            "type": self.atype as i32,
+            "waitTimeDays": self.wait_time_days,
+            "granteeId": grantee_user.as_ref().map_or(Uuid::default(), |u| u.uuid),
+            "email": grantee_user.as_ref().map_or("", |u| &u.email),
+            "name": grantee_user.as_ref().map_or("", |u| &u.name),
+            "object": "emergencyAccessGranteeDetails",
         }))
     }
 }

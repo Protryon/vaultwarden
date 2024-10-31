@@ -70,6 +70,15 @@ function deleteConf(event) {
     }
 }
 
+function backupDatabase(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    _post(`${BASE_URL}/admin/config/backup_db`,
+        "Backup created successfully",
+        "Error creating backup", null, false
+    );
+}
+
 // Two functions to help check if there were changes to the form fields
 // Useful for example during the smtp test to prevent people from clicking save before testing there new settings
 function initChangeDetection(form) {
@@ -113,7 +122,7 @@ function submitTestEmailOnEnter() {
 function colorRiskSettings() {
     const risk_items = document.getElementsByClassName("col-form-label");
     Array.from(risk_items).forEach((el) => {
-        if (el.innerText.toLowerCase().includes("risks") ) {
+        if (el.textContent.toLowerCase().includes("risks") ) {
             el.parentElement.className += " alert-danger";
         }
     });
@@ -204,6 +213,10 @@ document.addEventListener("DOMContentLoaded", (/*event*/) => {
         password_toggle_btn.addEventListener("click", toggleVis);
     });
 
+    const btnBackupDatabase = document.getElementById("backupDatabase");
+    if (btnBackupDatabase) {
+        btnBackupDatabase.addEventListener("click", backupDatabase);
+    }
     const btnDeleteConf = document.getElementById("deleteConf");
     if (btnDeleteConf) {
         btnDeleteConf.addEventListener("click", deleteConf);

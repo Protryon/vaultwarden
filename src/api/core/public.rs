@@ -10,12 +10,12 @@ use crate::{
     auth,
     db::{Group, GroupUser, Invitation, Organization, OrganizationApiKey, User, UserOrgStatus, UserOrgType, UserOrganization, DB},
     mail,
-    util::{AutoTxn, Upcase},
+    util::AutoTxn,
     CONFIG,
 };
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct OrgImportGroupData {
     name: String,
     external_id: String,
@@ -23,7 +23,7 @@ struct OrgImportGroupData {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct OrgImportUserData {
     email: String,
     external_id: String,
@@ -39,12 +39,12 @@ pub struct OrgImportData {
     // LargeImport: bool, // For now this will not be used, upstream uses this to prevent syncs of more then 2000 users or groups without the flag set.
 }
 
-pub async fn ldap_import(conn: AutoTxn, token: PublicToken, data: Json<Upcase<OrgImportData>>) -> Result<()> {
+pub async fn ldap_import(conn: AutoTxn, token: PublicToken, data: Json<OrgImportData>) -> Result<()> {
     // Most of the logic for this function can be found here
     // https://github.com/bitwarden/server/blob/fd892b2ff4547648a276734fb2b14a8abae2c6f5/src/Core/Services/Implementations/OrganizationService.cs#L1797
 
     let org_id = token.0;
-    let data = data.0.data;
+    let data = data.0;
 
     for user_data in &data.members {
         if user_data.deleted {

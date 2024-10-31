@@ -4,9 +4,9 @@ use data_encoding::BASE64URL_NOPAD;
 use log::error;
 use serde_json::{json, Value};
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use tokio_postgres::Row;
+use tokio_postgres::{types::Json, Row};
 
-use crate::{db::Conn, CONFIG};
+use crate::{db::Conn, util::LowerCase, CONFIG};
 
 use super::User;
 use uuid::Uuid;
@@ -49,7 +49,7 @@ impl From<Row> for Send {
             name: row.get(3),
             notes: row.get(4),
             atype: SendType::from_repr(row.get(5)).unwrap_or(SendType::Unknown),
-            data: row.get(6),
+            data: row.get::<_, Json<LowerCase<Value>>>(6).0.data,
             akey: row.get(7),
             password_hash: row.get(8),
             password_salt: row.get(9),
@@ -148,44 +148,57 @@ impl Send {
     pub fn to_json(&self) -> Value {
         use crate::util::format_date;
 
+        let mut data = self.data.clone();
+
+        if let Some(size) = data.get("size").and_then(|v| v.as_i64()) {
+            data["size"] = Value::String(size.to_string());
+        }
+
         json!({
-            "Id": self.uuid,
-            "AccessId": BASE64URL_NOPAD.encode(self.uuid.as_bytes()),
-            "Type": self.atype as i32,
+            "id": self.uuid,
+            "accessId": BASE64URL_NOPAD.encode(self.uuid.as_bytes()),
+            "type": self.atype as i32,
 
-            "Name": self.name,
-            "Notes": self.notes,
-            "Text": if self.atype == SendType::Text { Some(&self.data) } else { None },
-            "File": if self.atype == SendType::File { Some(&self.data) } else { None },
+            "name": self.name,
+            "notes": self.notes,
+            "text": if self.atype == SendType::Text { Some(&data) } else { None },
+            "file": if self.atype == SendType::File { Some(&data) } else { None },
 
-            "Key": self.akey,
-            "MaxAccessCount": self.max_access_count,
-            "AccessCount": self.access_count,
-            "Password": self.password_hash.as_deref().map(|h| BASE64URL_NOPAD.encode(h)),
-            "Disabled": self.disabled,
-            "HideEmail": self.hide_email,
+            "key": self.akey,
+            "maxAccessCount": self.max_access_count,
+            "accessCount": self.access_count,
+            "password": self.password_hash.as_deref().map(|h| BASE64URL_NOPAD.encode(h)),
+            "disabled": self.disabled,
+            "hideEmail": self.hide_email,
 
-            "RevisionDate": format_date(&self.revision_date),
-            "ExpirationDate": self.expiration_date.as_ref().map(format_date),
-            "DeletionDate": format_date(&self.deletion_date),
-            "Object": "send",
+            "revisionDate": format_date(&self.revision_date),
+            "expirationDate": self.expiration_date.as_ref().map(format_date),
+            "deletionDate": format_date(&self.deletion_date),
+            "object": "send",
         })
     }
 
     pub async fn to_json_access(&self, conn: &Conn) -> Result<Value> {
         use crate::util::format_date;
 
+        let mut data = self.data.clone();
+
+        // Mobile clients expect size to be a string instead of a number
+        if let Some(size) = data.get("size").and_then(|v| v.as_i64()) {
+            data["size"] = Value::String(size.to_string());
+        }
+
         Ok(json!({
-            "Id": self.uuid,
-            "Type": self.atype as i32,
+            "id": self.uuid,
+            "type": self.atype as i32,
 
-            "Name": self.name,
-            "Text": if self.atype == SendType::Text { Some(&self.data) } else { None },
-            "File": if self.atype == SendType::File { Some(&self.data) } else { None },
+            "name": self.name,
+            "text": if self.atype == SendType::Text { Some(&data) } else { None },
+            "file": if self.atype == SendType::File { Some(&data) } else { None },
 
-            "ExpirationDate": self.expiration_date.as_ref().map(format_date),
-            "CreatorIdentifier": self.creator_identifier(conn).await.ise()?,
-            "Object": "send-access",
+            "expirationDate": self.expiration_date.as_ref().map(format_date),
+            "creatorIdentifier": self.creator_identifier(conn).await.ise()?,
+            "object": "send-access",
         }))
     }
 }

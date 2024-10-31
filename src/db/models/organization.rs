@@ -146,39 +146,39 @@ impl Organization {
     // https://github.com/bitwarden/server/blob/13d1e74d6960cf0d042620b72d85bf583a4236f7/src/Api/Models/Response/Organizations/OrganizationResponseModel.cs
     pub fn to_json(&self) -> Value {
         json!({
-            "Id": self.uuid,
-            "Identifier": null, // Not supported
-            "Name": self.name,
-            "Seats": 10, // The value doesn't matter, we don't check server-side
+            "id": self.uuid,
+            "identifier": null, // Not supported
+            "name": self.name,
+            "seats": 10, // The value doesn't matter, we don't check server-side
             // "MaxAutoscaleSeats": null, // The value doesn't matter, we don't check server-side
-            "MaxCollections": 10, // The value doesn't matter, we don't check server-side
-            "MaxStorageGb": 10, // The value doesn't matter, we don't check server-side
-            "Use2fa": true,
-            "UseDirectory": false, // Is supported, but this value isn't checked anywhere (yet)
-            "UseEvents": CONFIG.settings.org_events_enabled,
-            "UseGroups": CONFIG.advanced.org_groups_enabled,
-            "UseTotp": true,
-            "UsePolicies": true,
+            "maxCollections": 10, // The value doesn't matter, we don't check server-side
+            "maxStorageGb": 10, // The value doesn't matter, we don't check server-side
+            "use2fa": true,
+            "useDirectory": false, // Is supported, but this value isn't checked anywhere (yet)
+            "useEvents": CONFIG.settings.org_events_enabled,
+            "useGroups": CONFIG.advanced.org_groups_enabled,
+            "useTotp": true,
+            "usePolicies": true,
             // "UseScim": false, // Not supported (Not AGPLv3 Licensed)
-            "UseSso": CONFIG.sso.is_some(),
+            "useSso": CONFIG.sso.is_some(),
             // "UseKeyConnector": false, // Not supported
-            "SelfHost": true,
-            "UseApi": true,
-            "HasPublicAndPrivateKeys": self.private_key.is_some() && self.public_key.is_some(),
-            "UseResetPassword": CONFIG.mail_enabled(),
+            "selfHost": true,
+            "useApi": true,
+            "hasPublicAndPrivateKeys": self.private_key.is_some() && self.public_key.is_some(),
+            "useResetPassword": CONFIG.mail_enabled(),
 
-            "BusinessName": null,
-            "BusinessAddress1": null,
-            "BusinessAddress2": null,
-            "BusinessAddress3": null,
-            "BusinessCountry": null,
-            "BusinessTaxNumber": null,
+            "businessName": null,
+            "businessAddress1": null,
+            "businessAddress2": null,
+            "businessAddress3": null,
+            "businessCountry": null,
+            "businessTaxNumber": null,
 
-            "BillingEmail": self.billing_email,
-            "Plan": "TeamsAnnually",
-            "PlanType": 5, // TeamsAnnually plan
-            "UsersGetPremium": true,
-            "Object": "organization",
+            "billingEmail": self.billing_email,
+            "plan": "TeamsAnnually",
+            "planType": 5, // TeamsAnnually plan
+            "usersGetPremium": true,
+            "object": "organization",
         })
     }
 }
@@ -295,63 +295,80 @@ impl UserOrganization {
 
         // https://github.com/bitwarden/server/blob/13d1e74d6960cf0d042620b72d85bf583a4236f7/src/Api/Models/Response/ProfileOrganizationResponseModel.cs
         Ok(json!({
-            "Id": self.organization_uuid,
-            "Identifier": null, // Not supported
-            "Name": org.name,
-            "Seats": 10, // The value doesn't matter, we don't check server-side
-            "MaxCollections": 10, // The value doesn't matter, we don't check server-side
-            "UsersGetPremium": true,
-            "Use2fa": true,
-            "UseDirectory": false, // Is supported, but this value isn't checked anywhere (yet)
-            "UseEvents": CONFIG.settings.org_events_enabled,
-            "UseGroups": CONFIG.advanced.org_groups_enabled,
-            "UseTotp": true,
-            // "UseScim": false, // Not supported (Not AGPLv3 Licensed)
-            "UsePolicies": true,
-            "UseApi": true,
-            "SelfHost": true,
-            "HasPublicAndPrivateKeys": org.private_key.is_some() && org.public_key.is_some(),
-            "ResetPasswordEnrolled": self.reset_password_key.is_some(),
-            "UseResetPassword": CONFIG.mail_enabled(),
-            "SsoBound": false, // Not supported
-            "UseSso": CONFIG.sso.is_some(),
-            "ProviderId": null,
-            "ProviderName": null,
-            // "KeyConnectorEnabled": false,
-            // "KeyConnectorUrl": null,
+            "id": self.organization_uuid,
+            "identifier": null, // Not supported
+            "name": org.name,
+            "seats": 10, // The value doesn't matter, we don't check server-side
+            "maxCollections": 10, // The value doesn't matter, we don't check server-side
+            "usersGetPremium": true,
+            "use2fa": true,
+            "useDirectory": false, // Is supported, but this value isn't checked anywhere (yet)
+            "useEvents": CONFIG.settings.org_events_enabled,
+            "useGroups": CONFIG.advanced.org_groups_enabled,
+            "useTotp": true,
+            "useScim": false, // Not supported (Not AGPLv3 Licensed)
+            "usePolicies": true,
+            "useApi": true,
+            "selfHost": true,
+            "hasPublicAndPrivateKeys": org.private_key.is_some() && org.public_key.is_some(),
+            "resetPasswordEnrolled": self.reset_password_key.is_some(),
+            "useResetPassword": CONFIG.mail_enabled(),
+            "ssoBound": false, // Not supported
+            "useSso": CONFIG.sso.is_some(),
 
-            // TODO: Add support for Custom User Roles
-            // See: https://bitwarden.com/help/article/user-types-access-control/#custom-role
-            // "Permissions": {
-            //     "AccessEventLogs": false,
-            //     "AccessImportExport": false,
-            //     "AccessReports": false,
-            //     "ManageAllCollections": false,
-            //     "CreateNewCollections": false,
-            //     "EditAnyCollection": false,
-            //     "DeleteAnyCollection": false,
-            //     "ManageAssignedCollections": false,
-            //     "editAssignedCollections": false,
-            //     "deleteAssignedCollections": false,
-            //     "ManageCiphers": false,
-            //     "ManageGroups": false,
-            //     "ManagePolicies": false,
-            //     "ManageResetPassword": false,
-            //     "ManageSso": false, // Not supported
-            //     "ManageUsers": false,
-            //     "ManageScim": false, // Not supported (Not AGPLv3 Licensed)
-            // },
+            "useKeyConnector": false,
+            "useSecretsManager": false,
+            "usePasswordManager": true,
+            "useCustomPermissions": false,
+            "useActivateAutofillPolicy": false,
 
-            "MaxStorageGb": 10, // The value doesn't matter, we don't check server-side
+            "organizationUserId": self.user_uuid,
+            "providerId": null,
+            "providerName": null,
+            "providerType": null,
+            "familySponsorshipFriendlyName": null,
+            "familySponsorshipAvailable": false,
+            "planProductType": 3,
+            "productTierType": 3, // Enterprise tier
+            "keyConnectorEnabled": false,
+            "keyConnectorUrl": null,
+            "familySponsorshipLastSyncDate": null,
+            "familySponsorshipValidUntil": null,
+            "familySponsorshipToDelete": null,
+            "accessSecretsManager": false,
+            "limitCollectionCreationDeletion": false, // This should be set to true only when we can handle roles like createNewCollections
+            "allowAdminAccessToAllCollectionItems": true,
+            "flexibleCollections": false,
+
+            "permissions": {
+                // TODO: Add support for Custom User Roles
+                // See: https://bitwarden.com/help/article/user-types-access-control/#custom-role
+                "accessEventLogs": false,
+                "accessImportExport": false,
+                "accessReports": false,
+                "createNewCollections": false,
+                "editAnyCollection": false,
+                "deleteAnyCollection": false,
+                "editAssignedCollections": false,
+                "deleteAssignedCollections": false,
+                "manageGroups": false,
+                "managePolicies": false,
+                "manageSso": false, // Not supported
+                "manageUsers": false,
+                "manageResetPassword": false,
+                "manageScim": false // Not supported (Not AGPLv3 Licensed)
+            },
+
+            "maxStorageGb": 10, // The value doesn't matter, we don't check server-side
 
             // These are per user
-            "UserId": self.user_uuid,
-            "Key": self.akey,
-            "Status": self.status as i32,
-            "Type": self.atype as i32,
-            "Enabled": true,
+            "userId": self.user_uuid,
+            "key": self.akey,
+            "status": self.status as i32,
+            "type": self.atype as i32,
+            "enabled": true,
 
-            "Object": "profileOrganization",
+            "object": "profileOrganization",
         }))
     }
 
@@ -390,28 +407,28 @@ impl UserOrganization {
         };
 
         Ok(json!({
-            "Id": self.user_uuid,
-            "UserId": self.user_uuid,
-            "Name": user.name,
-            "Email": user.email,
-            "Groups": groups,
-            "Collections": collections,
+            "id": self.user_uuid,
+            "userId": self.user_uuid,
+            "name": user.name,
+            "email": user.email,
+            "groups": groups,
+            "collections": collections,
 
-            "Status": status,
-            "Type": self.atype as i32,
-            "AccessAll": self.access_all,
-            "TwoFactorEnabled": twofactor_enabled,
-            "ResetPasswordEnrolled":self.reset_password_key.is_some(),
+            "status": status,
+            "type": self.atype as i32,
+            "accessAll": self.access_all,
+            "twoFactorEnabled": twofactor_enabled,
+            "resetPasswordEnrolled":self.reset_password_key.is_some(),
 
-            "Object": "organizationUserUserDetails",
+            "object": "organizationUserUserDetails",
         }))
     }
 
     pub fn to_json_user_access_restrictions(&self, col_user: &CollectionUser) -> Value {
         json!({
-            "Id": self.user_uuid,
-            "ReadOnly": col_user.read_only,
-            "HidePasswords": col_user.hide_passwords,
+            "id": self.user_uuid,
+            "readOnly": col_user.read_only,
+            "hidePasswords": col_user.hide_passwords,
         })
     }
 
@@ -425,9 +442,9 @@ impl UserOrganization {
                 .iter()
                 .map(|c| {
                     json!({
-                        "Id": c.collection_uuid,
-                        "ReadOnly": c.read_only,
-                        "HidePasswords": c.hide_passwords,
+                        "id": c.collection_uuid,
+                        "readOnly": c.read_only,
+                        "hidePasswords": c.hide_passwords,
                     })
                 })
                 .collect()
@@ -438,15 +455,15 @@ impl UserOrganization {
         let status = self.status() as i32;
 
         Ok(json!({
-            "Id": self.user_uuid,
-            "UserId": self.user_uuid,
+            "id": self.user_uuid,
+            "userId": self.user_uuid,
 
-            "Status": status,
-            "Type": self.atype as i32,
-            "AccessAll": self.access_all,
-            "Collections": coll_uuids,
+            "status": status,
+            "type": self.atype as i32,
+            "accessAll": self.access_all,
+            "collections": coll_uuids,
 
-            "Object": "organizationUserDetails",
+            "object": "organizationUserDetails",
         }))
     }
 

@@ -8,7 +8,6 @@ use crate::{
     auth::{Headers, OrgAdminHeaders},
     db::{Cipher, Event, EventType, UserOrganization, DB},
     events::{log_event, log_user_event},
-    util::Upcase,
     CONFIG,
 };
 
@@ -38,9 +37,9 @@ pub async fn get_org_events(Path(org_uuid): Path<Uuid>, Query(data): Query<Event
     };
 
     Ok(Json(json!({
-        "Data": events_json,
-        "Object": "list",
-        "ContinuationToken": get_continuation_token(&events_json),
+        "data": events_json,
+        "object": "list",
+        "continuationToken": get_continuation_token(&events_json),
     })))
 }
 
@@ -65,9 +64,9 @@ pub async fn get_cipher_events(Path(cipher_uuid): Path<Uuid>, Query(data): Query
     };
 
     Ok(Json(json!({
-        "Data": events_json,
-        "Object": "list",
-        "ContinuationToken": get_continuation_token(&events_json),
+        "data": events_json,
+        "object": "list",
+        "continuationToken": get_continuation_token(&events_json),
     })))
 }
 
@@ -94,9 +93,9 @@ pub async fn get_user_events(Path(path): Path<GetUserEventsQuery>, Query(data): 
     };
 
     Ok(Json(json!({
-        "Data": events_json,
-        "Object": "list",
-        "ContinuationToken": get_continuation_token(&events_json),
+        "data": events_json,
+        "object": "list",
+        "continuationToken": get_continuation_token(&events_json),
     })))
 }
 
@@ -115,7 +114,7 @@ fn get_continuation_token(events_json: &Vec<Value>) -> Option<&str> {
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct EventCollection {
     // Mandatory
     r#type: EventType,
@@ -129,13 +128,13 @@ pub struct EventCollection {
 // Upstream:
 // https://github.com/bitwarden/server/blob/8a22c0479e987e756ce7412c48a732f9002f0a2d/src/Events/Controllers/CollectController.cs
 // https://github.com/bitwarden/server/blob/8a22c0479e987e756ce7412c48a732f9002f0a2d/src/Core/Services/Implementations/EventService.cs
-pub async fn post_events_collect(headers: Headers, data: Json<Vec<Upcase<EventCollection>>>) -> Result<()> {
+pub async fn post_events_collect(headers: Headers, data: Json<Vec<EventCollection>>) -> Result<()> {
     if !CONFIG.settings.org_events_enabled {
         return Ok(());
     }
     let mut conn = DB.get().await.ise()?;
 
-    for event in data.iter().map(|d| &d.data) {
+    for event in data.iter() {
         match event.r#type as i32 {
             1000..=1099 => {
                 log_user_event(event.r#type, headers.user.uuid, headers.device.atype, event.date, headers.ip, &mut conn).await?;

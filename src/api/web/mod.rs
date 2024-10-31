@@ -128,6 +128,7 @@ pub async fn static_files(Path(filename): Path<String>) -> Result<Response> {
     );
     let bytes = match &*filename {
         "404.png" => &include_bytes!("../../static/images/404.png")[..],
+        "fallback-icon.png" => &include_bytes!("../../static/images/fallback-icon.png")[..],
         "mail-github.png" => &include_bytes!("../../static/images/mail-github.png")[..],
         "logo-gray.png" => &include_bytes!("../../static/images/logo-gray.png")[..],
         "error-x.svg" => &include_bytes!("../../static/images/error-x.svg")[..],
@@ -142,11 +143,11 @@ pub async fn static_files(Path(filename): Path<String>) -> Result<Response> {
         "admin_organizations.js" => &include_bytes!("../../static/scripts/admin_organizations.js")[..],
         "admin_diagnostics.js" => &include_bytes!("../../static/scripts/admin_diagnostics.js")[..],
         "bootstrap.css" => &include_bytes!("../../static/scripts/bootstrap.css")[..],
-        "bootstrap-native.js" => &include_bytes!("../../static/scripts/bootstrap-native.js")[..],
-        "jdenticon.js" => &include_bytes!("../../static/scripts/jdenticon.js")[..],
+        "bootstrap.bundle.js" => &include_bytes!("../../static/scripts/bootstrap.bundle.js")[..],
+        "jdenticon-3.3.0.js" => &include_bytes!("../../static/scripts/jdenticon-3.3.0.js")[..],
         "datatables.js" => &include_bytes!("../../static/scripts/datatables.js")[..],
         "datatables.css" => &include_bytes!("../../static/scripts/datatables.css")[..],
-        "jquery-3.6.4.slim.js" => &include_bytes!("../../static/scripts/jquery-3.6.4.slim.js")[..],
+        "jquery-3.7.1.slim.js" => &include_bytes!("../../static/scripts/jquery-3.7.1.slim.js")[..],
         _ => return Err(Error::NotFound),
     };
     (content_type, bytes).into_response()

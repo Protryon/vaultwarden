@@ -14,15 +14,14 @@ use crate::{
     crypto,
     db::{Conn, Event, EventType, TwoFactor, TwoFactorType, DB},
     events::log_user_event,
-    util::Upcase,
 };
 
 pub use crate::config::CONFIG;
 
 use super::_generate_recover_code;
 
-pub async fn generate_authenticator(headers: Headers, data: Json<Upcase<PasswordData>>) -> Result<Json<Value>> {
-    let data: PasswordData = data.0.data;
+pub async fn generate_authenticator(headers: Headers, data: Json<PasswordData>) -> Result<Json<Value>> {
+    let data: PasswordData = data.0;
     let user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
@@ -39,14 +38,14 @@ pub async fn generate_authenticator(headers: Headers, data: Json<Upcase<Password
     };
 
     Ok(Json(json!({
-        "Enabled": enabled,
-        "Key": key,
-        "Object": "twoFactorAuthenticator"
+        "enabled": enabled,
+        "key": key,
+        "object": "twoFactorAuthenticator"
     })))
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct EnableAuthenticatorData {
     master_password_hash: String,
     key: String,
@@ -54,8 +53,8 @@ pub struct EnableAuthenticatorData {
     token: String,
 }
 
-pub async fn activate_authenticator(headers: Headers, data: Json<Upcase<EnableAuthenticatorData>>) -> Result<Json<Value>> {
-    let data: EnableAuthenticatorData = data.0.data;
+pub async fn activate_authenticator(headers: Headers, data: Json<EnableAuthenticatorData>) -> Result<Json<Value>> {
+    let data: EnableAuthenticatorData = data.0;
     let password_hash = data.master_password_hash;
     let key = data.key;
     let token = data.token;
@@ -85,9 +84,9 @@ pub async fn activate_authenticator(headers: Headers, data: Json<Upcase<EnableAu
     log_user_event(EventType::UserUpdated2fa, user.uuid, headers.device.atype, Utc::now(), headers.ip, &mut conn).await?;
 
     Ok(Json(json!({
-        "Enabled": true,
-        "Key": key,
-        "Object": "twoFactorAuthenticator"
+        "enabled": true,
+        "key": key,
+        "object": "twoFactorAuthenticator"
     })))
 }
 

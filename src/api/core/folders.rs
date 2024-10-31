@@ -7,7 +7,6 @@ use crate::{
     api::{ws_users, UpdateType},
     auth::Headers,
     db::{Folder, DB},
-    util::Upcase,
 };
 
 pub async fn get_folders(headers: Headers) -> Result<Json<Value>> {
@@ -16,9 +15,9 @@ pub async fn get_folders(headers: Headers) -> Result<Json<Value>> {
     let folders_json: Vec<Value> = folders.iter().map(Folder::to_json).collect();
 
     Ok(Json(json!({
-      "Data": folders_json,
-      "Object": "list",
-      "ContinuationToken": null,
+      "data": folders_json,
+      "object": "list",
+      "continuationToken": null,
     })))
 }
 
@@ -33,13 +32,13 @@ pub async fn get_folder(Path(uuid): Path<Uuid>, headers: Headers) -> Result<Json
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct FolderData {
     pub name: String,
 }
 
-pub async fn post_folders(headers: Headers, data: Json<Upcase<FolderData>>) -> Result<Json<Value>> {
-    let data: FolderData = data.0.data;
+pub async fn post_folders(headers: Headers, data: Json<FolderData>) -> Result<Json<Value>> {
+    let data: FolderData = data.0;
 
     let mut folder = Folder::new(headers.user.uuid, data.name);
     let conn = DB.get().await.ise()?;
@@ -50,8 +49,8 @@ pub async fn post_folders(headers: Headers, data: Json<Upcase<FolderData>>) -> R
     Ok(Json(folder.to_json()))
 }
 
-pub async fn put_folder(Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<FolderData>>) -> Result<Json<Value>> {
-    let data: FolderData = data.0.data;
+pub async fn put_folder(Path(uuid): Path<Uuid>, headers: Headers, data: Json<FolderData>) -> Result<Json<Value>> {
+    let data: FolderData = data.0;
     let conn = DB.get().await.ise()?;
 
     let mut folder = match Folder::get_with_user(&conn, uuid, headers.user.uuid).await? {

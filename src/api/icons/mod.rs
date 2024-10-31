@@ -69,7 +69,7 @@ static CLIENT: Lazy<Client> = Lazy::new(|| {
                 .cookie_provider(cookie_store)
                 .timeout(Duration::from_secs(CONFIG.advanced.icon_download_timeout))
                 .default_headers(default_headers)
-                .trust_dns(false)
+                .hickory_dns(false)
                 .build()
                 .expect("Failed to build client")
         }

@@ -83,11 +83,11 @@ impl Collection {
 
     pub fn to_json(&self) -> Value {
         json!({
-            "ExternalId": null, // Not support by us
-            "Id": self.uuid,
-            "OrganizationId": self.organization_uuid,
-            "Name": self.name,
-            "Object": "collection",
+            "externalId": null, // Not support by us
+            "id": self.uuid,
+            "organizationId": self.organization_uuid,
+            "name": self.name,
+            "object": "collection",
         })
     }
 }
@@ -95,9 +95,9 @@ impl Collection {
 impl CollectionWithAccess {
     pub fn to_json_details(&self) -> Value {
         let mut json_object = self.collection.to_json();
-        json_object["Object"] = json!("collectionDetails");
-        json_object["ReadOnly"] = json!(self.access.read_only);
-        json_object["HidePasswords"] = json!(self.access.hide_passwords);
+        json_object["object"] = json!("collectionDetails");
+        json_object["readOnly"] = json!(self.access.read_only);
+        json_object["hidePasswords"] = json!(self.access.hide_passwords);
         json_object
     }
 

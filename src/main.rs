@@ -3,7 +3,6 @@
     rust_2018_idioms,
     rust_2021_compatibility,
     noop_method_call,
-    pointer_structural_match,
     trivial_casts,
     trivial_numeric_casts,
     clippy::cast_lossless,
@@ -32,7 +31,7 @@
 // The more key/value pairs there are the more recursion occurs.
 // We want to keep this as low as possible, but not higher then 128.
 // If you go above 128 it will cause rust-analyzer to fail,
-#![recursion_limit = "103"]
+#![recursion_limit = "250"]
 
 use std::{panic, path::Path, process::exit, str::FromStr, thread, time::Duration};
 

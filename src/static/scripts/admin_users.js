@@ -96,6 +96,15 @@ function enableUser(event) {
     }
 }
 
+function updateRevisions(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    _post(`${BASE_URL}/admin/users/update_revision`,
+        "Success, clients will sync next time they connect",
+        "Error forcing clients to sync"
+    );
+}
+
 function inviteUser(event) {
     event.preventDefault();
     event.stopPropagation();
@@ -132,19 +141,20 @@ function resendUserInvite (event) {
 const ORG_TYPES = {
     "0": {
         "name": "Owner",
-        "color": "orange"
+        "bg": "orange",
+        "font": "black"
     },
     "1": {
         "name": "Admin",
-        "color": "blueviolet"
+        "bg": "blueviolet"
     },
     "2": {
         "name": "User",
-        "color": "blue"
+        "bg": "blue"
     },
     "3": {
         "name": "Manager",
-        "color": "green"
+        "bg": "green"
     },
 };
 
@@ -188,7 +198,8 @@ userOrgTypeDialog.addEventListener("show.bs.modal", function(event) {
     const orgName = event.relatedTarget.dataset.vwOrgName;
     const orgUuid = event.relatedTarget.dataset.vwOrgUuid;
 
-    document.getElementById("userOrgTypeDialogTitle").innerHTML = `<b>Update User Type:</b><br><b>Organization:</b> ${orgName}<br><b>User:</b> ${userEmail}`;
+    document.getElementById("userOrgTypeDialogOrgName").textContent = orgName;
+    document.getElementById("userOrgTypeDialogUserEmail").textContent = userEmail;
     document.getElementById("userOrgTypeUserUuid").value = userUuid;
     document.getElementById("userOrgTypeOrgUuid").value = orgUuid;
     document.getElementById(`userOrgType${userOrgTypeName}`).checked = true;
@@ -196,7 +207,8 @@ userOrgTypeDialog.addEventListener("show.bs.modal", function(event) {
 
 // Prevent accidental submission of the form with valid elements after the modal has been hidden.
 userOrgTypeDialog.addEventListener("hide.bs.modal", function() {
-    document.getElementById("userOrgTypeDialogTitle").innerHTML = "";
+    document.getElementById("userOrgTypeDialogOrgName").textContent = "";
+    document.getElementById("userOrgTypeDialogUserEmail").textContent = "";
     document.getElementById("userOrgTypeUserUuid").value = "";
     document.getElementById("userOrgTypeOrgUuid").value = "";
 }, false);
@@ -218,7 +230,10 @@ function initUserTable() {
     // Color all the org buttons per type
     document.querySelectorAll("button[data-vw-org-type]").forEach(function(e) {
         const orgType = ORG_TYPES[e.dataset.vwOrgType];
-        e.style.backgroundColor = orgType.color;
+        e.style.backgroundColor = orgType.bg;
+        if (orgType.font !== undefined) {
+            e.style.color = orgType.font;
+        }
         e.title = orgType.name;
     });
 
@@ -272,6 +287,10 @@ document.addEventListener("DOMContentLoaded", (/*event*/) => {
     // Add click events for user actions
     initUserTable();
 
+    const btnUpdateRevisions = document.getElementById("updateRevisions");
+    if (btnUpdateRevisions) {
+        btnUpdateRevisions.addEventListener("click", updateRevisions);
+    }
     const btnReload = document.getElementById("reload");
     if (btnReload) {
         btnReload.addEventListener("click", reload);

@@ -18,7 +18,7 @@ use crate::{
         OrganizationPolicy, RepromptType, UserOrgType, UserOrganization, DB,
     },
     events::log_event,
-    util::{AutoTxn, Upcase},
+    util::AutoTxn,
     CONFIG,
 };
 
@@ -114,15 +114,15 @@ pub async fn sync(Query(data): Query<SyncData>, headers: Headers) -> Result<Json
     };
 
     Ok(Json(json!({
-        "Profile": user_json,
-        "Folders": folders_json,
-        "Collections": collections_json,
-        "Policies": policies_json,
-        "Ciphers": ciphers_json,
-        "Domains": domains_json,
-        "Sends": sends_json,
+        "profile": user_json,
+        "folders": folders_json,
+        "collections": collections_json,
+        "policies": policies_json,
+        "ciphers": ciphers_json,
+        "domains": domains_json,
+        "sends": sends_json,
         "unofficialServer": true,
-        "Object": "sync"
+        "object": "sync"
     })))
 }
 
@@ -132,9 +132,9 @@ pub async fn get_ciphers(headers: Headers) -> Result<Json<Value>> {
     let ciphers_json = FullCipher::find_by_user(&conn, headers.user.uuid).await?.iter().map(|x| x.to_json(true)).collect::<Vec<_>>();
 
     Ok(Json(json!({
-      "Data": ciphers_json,
-      "Object": "list",
-      "ContinuationToken": null
+      "data": ciphers_json,
+      "object": "list",
+      "continuationToken": null
     })))
 }
 
@@ -149,7 +149,7 @@ pub async fn get_cipher(Path(uuid): Path<Uuid>, headers: Headers) -> Result<Json
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct CipherData {
     // Id is optional as it is included only in bulk share
     pub id: Option<Uuid>,
@@ -168,7 +168,7 @@ pub struct CipherData {
     pub r#type: CipherType,
     pub name: String,
     pub notes: Option<String>,
-    fields: Option<Value>,
+    fields: Option<Vec<Value>>,
 
     // Only one of these should exist, depending on type
     login: Option<Value>,
@@ -209,14 +209,14 @@ fn deserialize_last_known_revision_date<'de, D: Deserializer<'de>>(de: D) -> Res
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct PartialCipherData {
     folder_id: Option<Uuid>,
     favorite: bool,
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct Attachments2Data {
     file_name: String,
     key: String,
@@ -225,8 +225,8 @@ pub struct Attachments2Data {
 /// Called when creating a new org-owned cipher, or cloning a cipher (whether
 /// user- or org-owned). When cloning a cipher to a user-owned cipher,
 /// `organizationId` is null.
-pub async fn post_ciphers_create(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<ShareCipherData>>) -> Result<Json<Value>> {
-    let mut data: ShareCipherData = data.0.data;
+pub async fn post_ciphers_create(mut conn: AutoTxn, headers: Headers, data: Json<ShareCipherData>) -> Result<Json<Value>> {
+    let mut data: ShareCipherData = data.0;
 
     // Check if there are one more more collections selected when this cipher is part of an organization.
     // err if this is not the case before creating an empty cipher.
@@ -258,8 +258,8 @@ pub async fn post_ciphers_create(mut conn: AutoTxn, headers: Headers, data: Json
 }
 
 /// Called when creating a new user-owned cipher.
-pub async fn post_ciphers(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<CipherData>>) -> Result<Json<Value>> {
-    let mut data: CipherData = data.0.data;
+pub async fn post_ciphers(mut conn: AutoTxn, headers: Headers, data: Json<CipherData>) -> Result<Json<Value>> {
+    let mut data: CipherData = data.0;
 
     // The web/browser clients set this field to null as expected, but the
     // mobile clients seem to set the invalid value `0001-01-01T00:00:00`,
@@ -380,17 +380,15 @@ pub async fn update_cipher_from_data(
         }
     }
 
-    // Cleanup cipher data, like removing the 'Response' key.
+    // Cleanup cipher data, like removing the 'response' key.
     // This key is somewhere generated during Javascript so no way for us this fix this.
     // Also, upstream only retrieves keys they actually want to store, and thus skip the 'Response' key.
     // We do not mind which data is in it, the keep our model more flexible when there are upstream changes.
     // But, we at least know we do not need to store and return this specific key.
-    fn _clean_cipher_data(mut json_data: Value) -> Value {
-        if json_data.is_array() {
-            json_data.as_array_mut().unwrap().iter_mut().for_each(|ref mut f| {
-                f.as_object_mut().unwrap().remove("Response");
-            });
-        };
+    fn _clean_cipher_data(mut json_data: Vec<Value>) -> Vec<Value> {
+        json_data.iter_mut().for_each(|ref mut f| {
+            f.as_object_mut().unwrap().remove("response");
+        });
         json_data
     }
 
@@ -406,10 +404,10 @@ pub async fn update_cipher_from_data(
     let type_data = match type_data_opt {
         Some(mut data) => {
             // Remove the 'Response' key from the base object.
-            data.as_object_mut().unwrap().remove("Response");
+            data.as_object_mut().unwrap().remove("response");
             // Remove the 'Response' key from every Uri.
-            if data["Uris"].is_array() {
-                data["Uris"] = _clean_cipher_data(data["Uris"].clone());
+            if data["uris"].is_array() {
+                data["uris"] = Value::Array(_clean_cipher_data(data["uris"].as_array().unwrap().clone()));
             }
             data
         }
@@ -455,7 +453,7 @@ pub async fn update_cipher_from_data(
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct ImportData {
     ciphers: Vec<CipherData>,
     folders: Vec<FolderData>,
@@ -463,7 +461,7 @@ pub struct ImportData {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct RelationsData {
     // Cipher id
     key: usize,
@@ -471,10 +469,10 @@ pub struct RelationsData {
     value: usize,
 }
 
-pub async fn post_ciphers_import(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<ImportData>>) -> Result<()> {
+pub async fn post_ciphers_import(mut conn: AutoTxn, headers: Headers, data: Json<ImportData>) -> Result<()> {
     enforce_personal_ownership_policy(None, &headers, &conn).await?;
 
-    let data: ImportData = data.0.data;
+    let data: ImportData = data.0;
 
     // Validate the import before continuing
     // Bitwarden does not process the import if there is one item invalid.
@@ -513,8 +511,8 @@ pub async fn post_ciphers_import(mut conn: AutoTxn, headers: Headers, data: Json
     Ok(())
 }
 
-pub async fn put_cipher(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<CipherData>>) -> Result<Json<Value>> {
-    let data: CipherData = data.0.data;
+pub async fn put_cipher(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<CipherData>) -> Result<Json<Value>> {
+    let data: CipherData = data.0;
 
     let mut cipher = match Cipher::get_for_user_writable(&conn, headers.user.uuid, uuid).await? {
         Some(cipher) => cipher,
@@ -534,8 +532,8 @@ pub async fn put_cipher(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Head
 }
 
 // Only update the folder and favorite for the user, since this cipher is read-only
-pub async fn put_cipher_partial(conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<PartialCipherData>>) -> Result<Json<Value>> {
-    let data: PartialCipherData = data.0.data;
+pub async fn put_cipher_partial(conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<PartialCipherData>) -> Result<Json<Value>> {
+    let data: PartialCipherData = data.0;
 
     let cipher = match Cipher::get_for_user(&conn, headers.user.uuid, uuid).await? {
         Some(cipher) => cipher,
@@ -560,13 +558,13 @@ pub async fn put_cipher_partial(conn: AutoTxn, Path(uuid): Path<Uuid>, headers: 
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct CollectionsAdminData {
     collection_ids: Vec<Uuid>,
 }
 
-pub async fn post_collections(conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<CollectionsAdminData>>) -> Result<()> {
-    let data: CollectionsAdminData = data.0.data;
+pub async fn post_collections(conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<CollectionsAdminData>) -> Result<()> {
+    let data: CollectionsAdminData = data.0;
 
     let cipher = match Cipher::get_for_user_writable(&conn, headers.user.uuid, uuid).await? {
         Some(cipher) => cipher,
@@ -618,14 +616,14 @@ pub async fn post_collections(conn: AutoTxn, Path(uuid): Path<Uuid>, headers: He
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct ShareCipherData {
     cipher: CipherData,
     collection_ids: Vec<Uuid>,
 }
 
-pub async fn put_cipher_share(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<ShareCipherData>>) -> Result<Json<Value>> {
-    let data: ShareCipherData = data.0.data;
+pub async fn put_cipher_share(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<ShareCipherData>) -> Result<Json<Value>> {
+    let data: ShareCipherData = data.0;
 
     let out = share_cipher_by_uuid(uuid, data, &headers, &mut conn).await?;
     conn.commit().await?;
@@ -633,14 +631,14 @@ pub async fn put_cipher_share(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct ShareSelectedCipherData {
     ciphers: Vec<CipherData>,
     collection_ids: Vec<Uuid>,
 }
 
-pub async fn put_cipher_share_selected(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<ShareSelectedCipherData>>) -> Result<()> {
-    let mut data: ShareSelectedCipherData = data.0.data;
+pub async fn put_cipher_share_selected(mut conn: AutoTxn, headers: Headers, data: Json<ShareSelectedCipherData>) -> Result<()> {
+    let mut data: ShareSelectedCipherData = data.0;
     let mut cipher_ids: Vec<Uuid> = Vec::new();
 
     if data.ciphers.is_empty() {
@@ -727,7 +725,7 @@ pub async fn get_attachment(Path(path): Path<AttachmentPath>, headers: Headers) 
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct AttachmentRequestData {
     key: String,
     file_name: String,
@@ -744,7 +742,7 @@ pub enum FileUploadType {
 /// This redirects the client to the API it should use to upload the attachment.
 /// For upstream's cloud-hosted service, it's an Azure object storage API.
 /// For self-hosted instances, it's another API on the local instance.
-pub async fn post_attachment_v2(Path(uuid): Path<Uuid>, headers: Headers, data: Json<Upcase<AttachmentRequestData>>) -> Result<Json<Value>> {
+pub async fn post_attachment_v2(Path(uuid): Path<Uuid>, headers: Headers, data: Json<AttachmentRequestData>) -> Result<Json<Value>> {
     let conn = DB.get().await.ise()?;
     let cipher = match Cipher::get_for_user_writable(&conn, headers.user.uuid, uuid).await? {
         Some(cipher) => cipher,
@@ -752,7 +750,7 @@ pub async fn post_attachment_v2(Path(uuid): Path<Uuid>, headers: Headers, data: 
     };
 
     let attachment_id = Uuid::new_v4();
-    let data: AttachmentRequestData = data.0.data;
+    let data: AttachmentRequestData = data.0;
     let attachment = Attachment::new(attachment_id, cipher.uuid, data.file_name, data.file_size, Some(data.key));
     attachment.save(&conn).await?;
 
@@ -763,10 +761,10 @@ pub async fn post_attachment_v2(Path(uuid): Path<Uuid>, headers: Headers, data: 
     };
 
     Ok(Json(json!({ // AttachmentUploadDataResponseModel
-        "Object": "attachment-fileUpload",
-        "AttachmentId": attachment_id,
-        "Url": url,
-        "FileUploadType": FileUploadType::Direct as i32,
+        "object": "attachment-fileUpload",
+        "attachmentId": attachment_id,
+        "url": url,
+        "fileUploadType": FileUploadType::Direct as i32,
         response_key: cipher.to_json(&conn, headers.user.uuid, true).await?,
     })))
 }
@@ -993,16 +991,16 @@ pub async fn delete_cipher_hard(mut conn: AutoTxn, Path(uuid): Path<Uuid>, heade
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct IdData {
     ids: Vec<Uuid>,
 }
 
-pub async fn delete_cipher_selected_hard(conn: AutoTxn, headers: Headers, data: Json<Upcase<IdData>>) -> Result<()> {
+pub async fn delete_cipher_selected_hard(conn: AutoTxn, headers: Headers, data: Json<IdData>) -> Result<()> {
     _delete_multiple_ciphers(conn, headers, false, data).await
 }
 
-pub async fn delete_cipher_selected_soft(conn: AutoTxn, headers: Headers, data: Json<Upcase<IdData>>) -> Result<()> {
+pub async fn delete_cipher_selected_soft(conn: AutoTxn, headers: Headers, data: Json<IdData>) -> Result<()> {
     _delete_multiple_ciphers(conn, headers, true, data).await
 }
 
@@ -1012,8 +1010,8 @@ pub async fn restore_cipher_put(mut conn: AutoTxn, Path(uuid): Path<Uuid>, heade
     Ok(out)
 }
 
-pub async fn restore_cipher_selected(mut conn: AutoTxn, headers: Headers, data: Json<Upcase<IdData>>) -> Result<Json<Value>> {
-    let uuids = data.0.data.ids;
+pub async fn restore_cipher_selected(mut conn: AutoTxn, headers: Headers, data: Json<IdData>) -> Result<Json<Value>> {
+    let uuids = data.0.ids;
 
     let mut ciphers: Vec<Value> = Vec::new();
     for uuid in uuids {
@@ -1023,21 +1021,21 @@ pub async fn restore_cipher_selected(mut conn: AutoTxn, headers: Headers, data: 
     conn.commit().await?;
 
     Ok(Json(json!({
-      "Data": ciphers,
-      "Object": "list",
-      "ContinuationToken": null
+      "data": ciphers,
+      "object": "list",
+      "continuationToken": null
     })))
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct MoveCipherData {
     folder_id: Option<Uuid>,
     ids: Vec<Uuid>,
 }
 
-pub async fn move_cipher_selected(conn: AutoTxn, headers: Headers, data: Json<Upcase<MoveCipherData>>) -> Result<()> {
-    let data = data.0.data;
+pub async fn move_cipher_selected(conn: AutoTxn, headers: Headers, data: Json<MoveCipherData>) -> Result<()> {
+    let data = data.0;
     let user_uuid = headers.user.uuid;
 
     if let Some(folder_id) = data.folder_id {
@@ -1072,8 +1070,8 @@ pub struct OrganizationId {
     organization_id: Uuid,
 }
 
-pub async fn delete_all(conn: AutoTxn, Query(organization): Query<Option<OrganizationId>>, headers: Headers, data: Json<Upcase<PasswordData>>) -> Result<()> {
-    let data: PasswordData = data.0.data;
+pub async fn delete_all(conn: AutoTxn, Query(organization): Query<Option<OrganizationId>>, headers: Headers, data: Json<PasswordData>) -> Result<()> {
+    let data: PasswordData = data.0;
     let password_hash = data.master_password_hash;
 
     let user = headers.user;
@@ -1162,8 +1160,8 @@ async fn _delete_cipher_by_uuid(uuid: Uuid, headers: &Headers, conn: &mut AutoTx
     Ok(())
 }
 
-async fn _delete_multiple_ciphers(mut conn: AutoTxn, headers: Headers, soft_delete: bool, data: Json<Upcase<IdData>>) -> Result<()> {
-    let uuids = data.0.data.ids;
+async fn _delete_multiple_ciphers(mut conn: AutoTxn, headers: Headers, soft_delete: bool, data: Json<IdData>) -> Result<()> {
+    let uuids = data.0.ids;
 
     for uuid in uuids {
         _delete_cipher_by_uuid(uuid, &headers, &mut conn, soft_delete).await?;

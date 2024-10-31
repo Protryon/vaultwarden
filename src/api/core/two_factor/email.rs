@@ -12,7 +12,7 @@ use crate::{
     error::MapResult,
     events::log_user_event,
     mail,
-    util::{AutoTxn, Upcase},
+    util::AutoTxn,
     CONFIG,
 };
 
@@ -27,8 +27,8 @@ pub struct SendEmailLoginData {
 
 /// User is trying to login and wants to use email 2FA.
 /// Does not require Bearer token
-pub async fn send_email_login(data: Json<Upcase<SendEmailLoginData>>) -> Result<()> {
-    let data: SendEmailLoginData = data.0.data;
+pub async fn send_email_login(data: Json<SendEmailLoginData>) -> Result<()> {
+    let data: SendEmailLoginData = data.0;
     let conn = DB.get().await.ise()?;
 
     // Get the user
@@ -68,8 +68,8 @@ pub async fn send_token(user_uuid: Uuid, conn: &Conn) -> Result<()> {
 }
 
 /// When user clicks on Manage email 2FA show the user the related information
-pub async fn get_email(headers: Headers, data: Json<Upcase<PasswordData>>) -> Result<Json<Value>> {
-    let data: PasswordData = data.0.data;
+pub async fn get_email(headers: Headers, data: Json<PasswordData>) -> Result<Json<Value>> {
+    let data: PasswordData = data.0;
     let user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
@@ -86,14 +86,14 @@ pub async fn get_email(headers: Headers, data: Json<Upcase<PasswordData>>) -> Re
     };
 
     Ok(Json(json!({
-        "Email": mfa_email,
-        "Enabled": enabled,
-        "Object": "twoFactorEmail"
+        "email": mfa_email,
+        "enabled": enabled,
+        "object": "twoFactorEmail"
     })))
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct SendEmailData {
     /// Email where 2FA codes will be sent to, can be different than user email account.
     email: String,
@@ -101,8 +101,8 @@ pub struct SendEmailData {
 }
 
 /// Send a verification email to the specified email address to check whether it exists/belongs to user.
-pub async fn send_email(conn: AutoTxn, headers: Headers, data: Json<Upcase<SendEmailData>>) -> Result<()> {
-    let data: SendEmailData = data.0.data;
+pub async fn send_email(conn: AutoTxn, headers: Headers, data: Json<SendEmailData>) -> Result<()> {
+    let data: SendEmailData = data.0;
     let user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
@@ -132,7 +132,7 @@ pub async fn send_email(conn: AutoTxn, headers: Headers, data: Json<Upcase<SendE
 }
 
 #[derive(Deserialize, Serialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct EmailData {
     email: String,
     master_password_hash: String,
@@ -140,8 +140,8 @@ pub struct EmailData {
 }
 
 /// Verify email belongs to user and can be used for 2FA email codes.
-pub async fn email(headers: Headers, data: Json<Upcase<EmailData>>) -> Result<Json<Value>> {
-    let data: EmailData = data.0.data;
+pub async fn email(headers: Headers, data: Json<EmailData>) -> Result<Json<Value>> {
+    let data: EmailData = data.0;
     let mut user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
@@ -172,9 +172,9 @@ pub async fn email(headers: Headers, data: Json<Upcase<EmailData>>) -> Result<Js
     log_user_event(EventType::UserUpdated2fa, user.uuid, headers.device.atype, Utc::now(), headers.ip, &mut conn).await?;
 
     Ok(Json(json!({
-        "Email": email_data.email,
-        "Enabled": "true",
-        "Object": "twoFactorEmail"
+        "email": email_data.email,
+        "enabled": "true",
+        "object": "twoFactorEmail"
     })))
 }
 

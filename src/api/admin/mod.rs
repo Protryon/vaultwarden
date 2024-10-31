@@ -459,8 +459,8 @@ async fn get_users_json(_token: AdminToken) -> Result<Json<Value>> {
     //TODO: N+1 query here
     for u in users {
         let mut usr = u.to_json(&conn).await?;
-        usr["UserEnabled"] = json!(u.enabled);
-        usr["CreatedAt"] = json!(format_naive_datetime_local(u.created_at, DT_FMT));
+        usr["userEnabled"] = json!(u.enabled);
+        usr["createdAt"] = json!(format_naive_datetime_local(u.created_at, DT_FMT));
         users_json.push(usr);
     }
 
@@ -496,8 +496,8 @@ async fn get_user_by_mail_json(Path(mail): Path<String>, _token: AdminToken) -> 
 
     if let Some(u) = User::find_by_email(&conn, &mail).await? {
         let mut usr = u.to_json(&conn).await?;
-        usr["UserEnabled"] = json!(u.enabled);
-        usr["CreatedAt"] = json!(format_naive_datetime_local(u.created_at, DT_FMT));
+        usr["userEnabled"] = json!(u.enabled);
+        usr["createdAt"] = json!(format_naive_datetime_local(u.created_at, DT_FMT));
         Ok(Json(usr))
     } else {
         err_code!("User doesn't exist", StatusCode::NotFound);
@@ -509,8 +509,8 @@ async fn get_user_json(Path(uuid): Path<Uuid>, _token: AdminToken) -> Result<Jso
 
     let u = get_user_or_404(uuid, &conn).await?;
     let mut usr = u.to_json(&conn).await?;
-    usr["UserEnabled"] = json!(u.enabled);
-    usr["CreatedAt"] = json!(format_naive_datetime_local(u.created_at, DT_FMT));
+    usr["userEnabled"] = json!(u.enabled);
+    usr["createdAt"] = json!(format_naive_datetime_local(u.created_at, DT_FMT));
     Ok(Json(usr))
 }
 

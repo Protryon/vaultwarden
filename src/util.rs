@@ -376,25 +376,33 @@ use serde_json::{self, Value};
 pub type JsonMap = serde_json::Map<String, Value>;
 
 #[derive(Serialize, Deserialize)]
-pub struct Upcase<T: DeserializeOwned> {
-    #[serde(deserialize_with = "upcase_deserialize")]
+pub struct LowerCase<T: DeserializeOwned> {
+    #[serde(deserialize_with = "lowercase_deserialize")]
     #[serde(flatten)]
     pub data: T,
 }
 
 // https://github.com/serde-rs/serde/issues/586
-pub fn upcase_deserialize<'de, T, D>(deserializer: D) -> Result<T, D::Error>
+pub fn lowercase_deserialize<'de, T, D>(deserializer: D) -> Result<T, D::Error>
 where
     T: DeserializeOwned,
     D: Deserializer<'de>,
 {
-    let d = deserializer.deserialize_any(UpcaseVisitor)?;
+    let d = deserializer.deserialize_any(LowercaseVisitor)?;
     T::deserialize(d).map_err(de::Error::custom)
 }
 
-struct UpcaseVisitor;
+impl Default for LowerCase<Value> {
+    fn default() -> Self {
+        Self {
+            data: Value::Null,
+        }
+    }
+}
 
-impl<'de> Visitor<'de> for UpcaseVisitor {
+struct LowercaseVisitor;
+
+impl<'de> Visitor<'de> for LowercaseVisitor {
     type Value = Value;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -408,7 +416,7 @@ impl<'de> Visitor<'de> for UpcaseVisitor {
         let mut result_map = JsonMap::new();
 
         while let Some((key, value)) = map.next_entry::<String, Value>()? {
-            result_map.insert(upcase_first(&key), upcase_value(value));
+            result_map.insert(_process_key(&key), convert_json_key_lcase_first(value));
         }
 
         Ok(Value::Object(result_map))
@@ -421,32 +429,10 @@ impl<'de> Visitor<'de> for UpcaseVisitor {
         let mut result_seq = Vec::<Value>::new();
 
         while let Some(value) = seq.next_element()? {
-            result_seq.push(upcase_value(value));
+            result_seq.push(convert_json_key_lcase_first(value));
         }
 
         Ok(Value::Array(result_seq))
-    }
-}
-
-fn upcase_value(value: Value) -> Value {
-    if let Value::Object(map) = value {
-        let mut new_value = Value::Object(serde_json::Map::new());
-
-        for (key, val) in map.into_iter() {
-            let processed_key = _process_key(&key);
-            new_value[processed_key] = upcase_value(val);
-        }
-        new_value
-    } else if let Value::Array(array) = value {
-        // Initialize array with null values
-        let mut new_value = Value::Array(vec![Value::Null; array.len()]);
-
-        for (index, val) in array.into_iter().enumerate() {
-            new_value[index] = upcase_value(val);
-        }
-        new_value
-    } else {
-        value
     }
 }
 
@@ -454,8 +440,8 @@ fn upcase_value(value: Value) -> Value {
 // This key is part of the Identity Cipher (Social Security Number)
 fn _process_key(key: &str) -> String {
     match key.to_lowercase().as_ref() {
-        "ssn" => "SSN".into(),
-        _ => self::upcase_first(key),
+        "ssn" => "ssn".into(),
+        _ => self::lcase_first(key),
     }
 }
 
@@ -490,25 +476,25 @@ pub fn convert_json_key_lcase_first(src_json: Value) -> Value {
 
         Value::Object(obj) => {
             let mut json_map = JsonMap::new();
-            for (key, value) in obj.iter() {
+            for (key, value) in obj.into_iter() {
                 match (key, value) {
                     (key, Value::Object(elm)) => {
-                        let inner_value = convert_json_key_lcase_first(Value::Object(elm.clone()));
-                        json_map.insert(lcase_first(key), inner_value);
+                        let inner_value = convert_json_key_lcase_first(Value::Object(elm));
+                        json_map.insert(_process_key(&key), inner_value);
                     }
 
                     (key, Value::Array(elm)) => {
                         let mut inner_array: Vec<Value> = Vec::with_capacity(elm.len());
 
                         for inner_obj in elm {
-                            inner_array.push(convert_json_key_lcase_first(inner_obj.clone()));
+                            inner_array.push(convert_json_key_lcase_first(inner_obj));
                         }
 
-                        json_map.insert(lcase_first(key), Value::Array(inner_array));
+                        json_map.insert(_process_key(&key), Value::Array(inner_array));
                     }
 
                     (key, value) => {
-                        json_map.insert(lcase_first(key), value.clone());
+                        json_map.insert(_process_key(&key), value.clone());
                     }
                 }
             }

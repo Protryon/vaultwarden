@@ -21,7 +21,7 @@ use crate::{
     auth::Headers,
     config::PUBLIC_NO_TRAILING_SLASH,
     db::DB,
-    util::{get_reqwest_client, Upcase},
+    util::get_reqwest_client,
     CONFIG,
 };
 
@@ -63,7 +63,7 @@ pub fn route() -> Router {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct GlobalDomain {
     r#type: i32,
     domains: Vec<String>,
@@ -95,21 +95,21 @@ async fn get_eq_domains(headers: Headers, Query(query): Query<GlobalDomainQuery>
     }
 
     Json(json!({
-        "EquivalentDomains": equivalent_domains,
-        "GlobalEquivalentDomains": globals,
-        "Object": "domains",
+        "equivalentDomains": equivalent_domains,
+        "globalEquivalentDomains": globals,
+        "object": "domains",
     }))
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct EquivDomainData {
     excluded_global_equivalent_domains: Option<Vec<i32>>,
     equivalent_domains: Option<Vec<Vec<String>>>,
 }
 
-async fn post_eq_domains(headers: Headers, data: Json<Upcase<EquivDomainData>>) -> Result<Json<Value>> {
-    let data: EquivDomainData = data.0.data;
+async fn post_eq_domains(headers: Headers, data: Json<EquivDomainData>) -> Result<Json<Value>> {
+    let data: EquivDomainData = data.0;
 
     let excluded_globals = data.excluded_global_equivalent_domains.unwrap_or_default();
     let equivalent_domains = data.equivalent_domains.unwrap_or_default();
@@ -154,15 +154,15 @@ async fn hibp_breach(
         Ok(Json(value))
     } else {
         Ok(Json(json!([{
-            "Name": "HaveIBeenPwned",
-            "Title": "Manual HIBP Check",
-            "Domain": "haveibeenpwned.com",
-            "BreachDate": "2019-08-18T00:00:00Z",
-            "AddedDate": "2019-08-18T00:00:00Z",
-            "Description": format!("Go to: <a href=\"https://haveibeenpwned.com/account/{username}\" target=\"_blank\" rel=\"noreferrer\">https://haveibeenpwned.com/account/{username}</a> for a manual check.<br/><br/>HaveIBeenPwned API key not set!<br/>Go to <a href=\"https://haveibeenpwned.com/API/Key\" target=\"_blank\" rel=\"noreferrer\">https://haveibeenpwned.com/API/Key</a> to purchase an API key from HaveIBeenPwned.<br/><br/>"),
-            "LogoPath": "vw_static/hibp.png",
-            "PwnCount": 0,
-            "DataClasses": [
+            "name": "HaveIBeenPwned",
+            "title": "Manual HIBP Check",
+            "domain": "haveibeenpwned.com",
+            "breachDate": "2019-08-18T00:00:00Z",
+            "addedDate": "2019-08-18T00:00:00Z",
+            "description": format!("Go to: <a href=\"https://haveibeenpwned.com/account/{username}\" target=\"_blank\" rel=\"noreferrer\">https://haveibeenpwned.com/account/{username}</a> for a manual check.<br/><br/>HaveIBeenPwned API key not set!<br/>Go to <a href=\"https://haveibeenpwned.com/API/Key\" target=\"_blank\" rel=\"noreferrer\">https://haveibeenpwned.com/API/Key</a> to purchase an API key from HaveIBeenPwned.<br/><br/>"),
+            "logoPath": "vw_static/hibp.png",
+            "pwnCount": 0,
+            "dataClasses": [
                 "Error - No API key set!"
             ]
         }])))

@@ -12,7 +12,7 @@ use crate::{
         UserOrganization, DB,
     },
     mail,
-    util::{AutoTxn, Upcase},
+    util::AutoTxn,
     CONFIG,
 };
 
@@ -48,9 +48,9 @@ async fn get_contacts(headers: Headers) -> Result<Json<Value>> {
     }
 
     Ok(Json(json!({
-      "Data": emergency_access_list_json,
-      "Object": "list",
-      "ContinuationToken": null
+      "data": emergency_access_list_json,
+      "object": "list",
+      "continuationToken": null
     })))
 }
 
@@ -65,9 +65,9 @@ async fn get_grantees(headers: Headers) -> Result<Json<Value>> {
     }
 
     Ok(Json(json!({
-      "Data": emergency_access_list_json,
-      "Object": "list",
-      "ContinuationToken": null
+      "data": emergency_access_list_json,
+      "object": "list",
+      "continuationToken": null
     })))
 }
 
@@ -83,7 +83,7 @@ async fn get_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers) 
 
 #[serde_as]
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct EmergencyAccessUpdateData {
     #[serde_as(as = "serde_with::PickFirst<(_, serde_with::DisplayFromStr)>")]
     r#type: EmergencyAccessType,
@@ -91,10 +91,10 @@ struct EmergencyAccessUpdateData {
     key_encrypted: Option<String>,
 }
 
-async fn post_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers, data: Json<Upcase<EmergencyAccessUpdateData>>) -> Result<Json<Value>> {
+async fn post_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers, data: Json<EmergencyAccessUpdateData>) -> Result<Json<Value>> {
     check_emergency_access_allowed()?;
 
-    let data: EmergencyAccessUpdateData = data.0.data;
+    let data: EmergencyAccessUpdateData = data.0;
     let conn = DB.get().await.ise()?;
 
     let mut emergency_access = match EmergencyAccess::get_with_grantor(&conn, emergency_id, headers.user.uuid).await? {
@@ -141,10 +141,10 @@ struct EmergencyAccessInviteData {
     wait_time_days: i32,
 }
 
-async fn send_invite(conn: AutoTxn, headers: Headers, data: Json<Upcase<EmergencyAccessInviteData>>) -> Result<()> {
+async fn send_invite(conn: AutoTxn, headers: Headers, data: Json<EmergencyAccessInviteData>) -> Result<()> {
     check_emergency_access_allowed()?;
 
-    let data: EmergencyAccessInviteData = data.0.data;
+    let data: EmergencyAccessInviteData = data.0;
     let email = data.email.to_lowercase();
     let wait_time_days = data.wait_time_days;
 
@@ -253,15 +253,15 @@ async fn resend_invite(Path(emergency_id): Path<Uuid>, headers: Headers) -> Resu
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct AcceptData {
     token: String,
 }
 
-async fn accept_invite(Path(emergency_id): Path<Uuid>, headers: Headers, data: Json<Upcase<AcceptData>>) -> Result<()> {
+async fn accept_invite(Path(emergency_id): Path<Uuid>, headers: Headers, data: Json<AcceptData>) -> Result<()> {
     check_emergency_access_allowed()?;
 
-    let data: AcceptData = data.0.data;
+    let data: AcceptData = data.0;
     let token = &data.token;
     let claims = decode_emergency_access_invite(token)?;
 
@@ -325,11 +325,11 @@ struct ConfirmData {
     Key: String,
 }
 
-async fn confirm_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers, data: Json<Upcase<ConfirmData>>) -> Result<Json<Value>> {
+async fn confirm_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers, data: Json<ConfirmData>) -> Result<Json<Value>> {
     check_emergency_access_allowed()?;
 
     let confirming_user = headers.user;
-    let data: ConfirmData = data.0.data;
+    let data: ConfirmData = data.0;
     let key = data.Key;
     let conn = DB.get().await.ise()?;
 
@@ -497,9 +497,9 @@ async fn view_emergency_access(Path(emergency_id): Path<Uuid>, headers: Headers)
     let ciphers_json = FullCipher::find_by_user(&conn, headers.user.uuid).await?.iter().map(|x| x.to_json(true)).collect::<Vec<_>>();
 
     Ok(Json(json!({
-      "Ciphers": ciphers_json,
-      "KeyEncrypted": &emergency_access.key_encrypted,
-      "Object": "emergencyAccessView",
+      "ciphers": ciphers_json,
+      "keyEncrypted": &emergency_access.key_encrypted,
+      "object": "emergencyAccessView",
     })))
 }
 
@@ -523,33 +523,28 @@ async fn takeover_emergency_access(Path(emergency_id): Path<Uuid>, headers: Head
     };
 
     let result = json!({
-        "Kdf": grantor_user.client_kdf_type,
-        "KdfIterations": grantor_user.client_kdf_iter,
-        "KdfMemory": grantor_user.client_kdf_memory,
-        "KdfParallelism": grantor_user.client_kdf_parallelism,
-        "KeyEncrypted": &emergency_access.key_encrypted,
-        "Object": "emergencyAccessTakeover",
+        "kdf": grantor_user.client_kdf_type,
+        "kdfIterations": grantor_user.client_kdf_iter,
+        "kdfMemory": grantor_user.client_kdf_memory,
+        "kdfParallelism": grantor_user.client_kdf_parallelism,
+        "keyEncrypted": &emergency_access.key_encrypted,
+        "object": "emergencyAccessTakeover",
     });
 
     Ok(Json(result))
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 struct EmergencyAccessPasswordData {
     new_master_password_hash: String,
     key: String,
 }
 
-async fn password_emergency_access(
-    conn: AutoTxn,
-    Path(emergency_id): Path<Uuid>,
-    headers: Headers,
-    data: Json<Upcase<EmergencyAccessPasswordData>>,
-) -> Result<()> {
+async fn password_emergency_access(conn: AutoTxn, Path(emergency_id): Path<Uuid>, headers: Headers, data: Json<EmergencyAccessPasswordData>) -> Result<()> {
     check_emergency_access_allowed()?;
 
-    let data: EmergencyAccessPasswordData = data.0.data;
+    let data: EmergencyAccessPasswordData = data.0;
     let new_master_password_hash = &data.new_master_password_hash;
 
     let requesting_user = headers.user;
@@ -606,9 +601,9 @@ async fn policies_emergency_access(Path(emergency_id): Path<Uuid>, headers: Head
     let policies_json: Vec<Value> = policies.iter().map(OrganizationPolicy::to_json).collect();
 
     Ok(Json(json!({
-        "Data": policies_json,
-        "Object": "list",
-        "ContinuationToken": null
+        "data": policies_json,
+        "object": "list",
+        "continuationToken": null
     })))
 }
 

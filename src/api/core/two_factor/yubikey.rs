@@ -10,14 +10,13 @@ use crate::{
     db::{EventType, TwoFactor, TwoFactorType, DB},
     error::MapResult,
     events::log_user_event,
-    util::Upcase,
     CONFIG,
 };
 
 use super::_generate_recover_code;
 
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct EnableYubikeyData {
     master_password_hash: String,
     key1: Option<String>,
@@ -29,7 +28,7 @@ pub struct EnableYubikeyData {
 }
 
 #[derive(Clone, Deserialize, Serialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct YubikeyMetadata {
     keys: Vec<String>,
     pub nfc: bool,
@@ -72,11 +71,11 @@ async fn verify_yubikey_otp(otp: String) -> Result<()> {
     Ok(())
 }
 
-pub async fn generate_yubikey(headers: Headers, data: Json<Upcase<PasswordData>>) -> Result<Json<Value>> {
+pub async fn generate_yubikey(headers: Headers, data: Json<PasswordData>) -> Result<Json<Value>> {
     // Make sure the credentials are set
     get_yubico_credentials()?;
 
-    let data: PasswordData = data.0.data;
+    let data: PasswordData = data.0;
     let user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
@@ -93,21 +92,21 @@ pub async fn generate_yubikey(headers: Headers, data: Json<Upcase<PasswordData>>
 
         let mut result = jsonify_yubikeys(yubikey_metadata.keys);
 
-        result["Enabled"] = Value::Bool(true);
-        result["Nfc"] = Value::Bool(yubikey_metadata.nfc);
-        result["Object"] = Value::String("twoFactorU2f".to_owned());
+        result["enabled"] = Value::Bool(true);
+        result["nfc"] = Value::Bool(yubikey_metadata.nfc);
+        result["object"] = Value::String("twoFactorU2f".to_owned());
 
         Ok(Json(result))
     } else {
         Ok(Json(json!({
-            "Enabled": false,
-            "Object": "twoFactorU2f",
+            "enabled": false,
+            "object": "twoFactorU2f",
         })))
     }
 }
 
-pub async fn activate_yubikey(headers: Headers, data: Json<Upcase<EnableYubikeyData>>) -> Result<Json<Value>> {
-    let data: EnableYubikeyData = data.0.data;
+pub async fn activate_yubikey(headers: Headers, data: Json<EnableYubikeyData>) -> Result<Json<Value>> {
+    let data: EnableYubikeyData = data.0;
     let mut user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
@@ -125,8 +124,8 @@ pub async fn activate_yubikey(headers: Headers, data: Json<Upcase<EnableYubikeyD
 
     if yubikeys.is_empty() {
         return Ok(Json(json!({
-            "Enabled": false,
-            "Object": "twoFactorU2f",
+            "enabled": false,
+            "object": "twoFactorU2f",
         })));
     }
 
@@ -156,9 +155,9 @@ pub async fn activate_yubikey(headers: Headers, data: Json<Upcase<EnableYubikeyD
 
     let mut result = jsonify_yubikeys(yubikey_metadata.keys);
 
-    result["Enabled"] = Value::Bool(true);
-    result["Nfc"] = Value::Bool(yubikey_metadata.nfc);
-    result["Object"] = Value::String("twoFactorU2f".to_owned());
+    result["enabled"] = Value::Bool(true);
+    result["nfc"] = Value::Bool(yubikey_metadata.nfc);
+    result["object"] = Value::String("twoFactorU2f".to_owned());
 
     Ok(Json(result))
 }

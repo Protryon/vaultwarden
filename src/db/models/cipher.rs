@@ -1,6 +1,11 @@
 use std::collections::HashMap;
 
-use crate::{api::core::CipherData, db::Conn, util::RowSlice, CONFIG};
+use crate::{
+    api::core::CipherData,
+    db::Conn,
+    util::{LowerCase, RowSlice},
+    CONFIG,
+};
 use axol::{Error, ErrorExt, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{json, Value};
@@ -22,11 +27,11 @@ pub struct Cipher {
     pub atype: CipherType,
     pub name: String,
     pub notes: Option<String>,
-    pub fields: Option<Value>,
+    pub fields: Option<Vec<Value>>,
 
     pub data: Value,
 
-    pub password_history: Option<Value>,
+    pub password_history: Option<Vec<Value>>,
     pub deleted_at: Option<DateTime<Utc>>,
     pub reprompt: Option<RepromptType>,
 }
@@ -72,9 +77,9 @@ impl<'a> From<RowSlice<'a>> for Cipher {
             atype: CipherType::from_repr(row.get(5)).unwrap_or(CipherType::Unknown),
             name: row.get(6),
             notes: row.get(7),
-            fields: row.get::<Option<Json<_>>>(8).map(|x| x.0),
-            data: row.get::<Json<_>>(9).0,
-            password_history: row.get::<Option<Json<_>>>(10).map(|x| x.0),
+            fields: row.get::<Option<Json<Vec<LowerCase<_>>>>>(8).map(|x| x.0.into_iter().map(|x| x.data).collect()),
+            data: row.get::<Json<LowerCase<_>>>(9).0.data,
+            password_history: row.get::<Option<Json<Vec<LowerCase<_>>>>>(10).map(|x| x.0.into_iter().map(|x| x.data).collect()),
             deleted_at: row.get(11),
             reprompt: reprompt.and_then(RepromptType::from_repr),
         }
@@ -235,23 +240,82 @@ impl FullCipher {
         // Set the first element of the Uris array as Uri, this is needed several (mobile) clients.
         if self.cipher.atype == CipherType::Login {
             //todo: check if this can panic
-            if data["Uris"].is_array() {
-                let uri = data["Uris"][0]["Uri"].clone();
-                data["Uri"] = uri;
+            if data["uris"].is_array() {
+                let uri = data["uris"][0]["uri"].clone();
+                data["uri"] = uri;
             } else {
                 // Upstream always has an Uri key/value
-                data["Uri"] = Value::Null;
+                data["uri"] = Value::Null;
+            }
+        }
+
+        if self.cipher.atype == CipherType::SecureNote {
+            match data {
+                Value::Object(ref t) if t.get("type").is_some_and(|t| t.is_number()) => {}
+                _ => {
+                    data = json!({"type": 0});
+                }
             }
         }
 
         let mut data_json = data.clone();
 
-        // NOTE: This was marked as *Backwards Compatibility Code*, but as of January 2021 this is still being used by upstream
-        // data_json should always contain the following keys with every atype
-        data_json["Fields"] = self.cipher.fields.clone().unwrap_or_default();
-        data_json["Name"] = Value::String(self.cipher.name.clone());
-        data_json["Notes"] = Value::String(self.cipher.notes.clone().unwrap_or_default());
-        data_json["PasswordHistory"] = self.cipher.password_history.clone().unwrap_or(Value::Null);
+        data_json["fields"] = self
+            .cipher
+            .fields
+            .clone()
+            .map(|d| {
+                d.into_iter()
+                    .map(|mut f| {
+                        // Check if the `type` key is a number, strings break some clients
+                        // The fallback type is the hidden type `1`. this should prevent accidental data disclosure
+                        // If not try to convert the string value to a number and fallback to `1`
+                        // If it is both not a number and not a string, fallback to `1`
+                        match f.get("type") {
+                            Some(t) if t.is_number() => {}
+                            Some(t) if t.is_string() => {
+                                let type_num = &t.as_str().unwrap_or("1").parse::<u8>().unwrap_or(1);
+                                f["type"] = json!(type_num);
+                            }
+                            _ => {
+                                f["type"] = json!(1);
+                            }
+                        }
+                        f
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let password_history_json: Vec<_> = self
+            .cipher
+            .password_history
+            .clone()
+            .map(|d| {
+                // Check every password history item if they are valid and return it.
+                // If a password field has the type `null` skip it, it breaks newer Bitwarden clients
+                // A second check is done to verify the lastUsedDate exists and is a valid DateTime string, if not the epoch start time will be used
+                d.into_iter()
+                    .filter_map(|d| match d.get("password") {
+                        Some(p) if p.is_string() => Some(d),
+                        _ => None,
+                    })
+                    .map(|d| match d.get("lastUsedDate").and_then(|l| l.as_str()) {
+                        Some(l) if DateTime::parse_from_rfc3339(l).is_ok() => d,
+                        _ => {
+                            let mut d = d;
+                            d["lastUsedDate"] = json!("1970-01-01T00:00:00.000Z");
+                            d
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        data_json["passwordHistory"] = Value::Array(password_history_json.clone());
+
+        data_json["name"] = Value::String(self.cipher.name.clone());
+        data_json["notes"] = Value::String(self.cipher.notes.clone().unwrap_or_default());
 
         // There are three types of cipher response models in upstream
         // Bitwarden: "cipherMini", "cipher", and "cipherDetails" (in order
@@ -261,57 +325,58 @@ impl FullCipher {
         //
         // Ref: https://github.com/bitwarden/server/blob/master/src/Core/Models/Api/Response/CipherResponseModel.cs
         let mut json_object = json!({
-            "Object": "cipherDetails",
-            "Id": self.cipher.uuid,
-            "Type": self.cipher.atype as i32,
-            "CreationDate": format_date(&self.cipher.created_at),
-            "RevisionDate": format_date(&self.cipher.updated_at),
-            "DeletedDate": self.cipher.deleted_at.map_or(Value::Null, |d| Value::String(format_date(&d))),
-            "Reprompt": self.cipher.reprompt.unwrap_or(RepromptType::None) as i32,
-            "OrganizationId": self.cipher.organization_uuid,
-            "Attachments": attachments_json,
+            "object": "cipherDetails",
+            "id": self.cipher.uuid,
+            "type": self.cipher.atype as i32,
+            "creationDate": format_date(&self.cipher.created_at),
+            "revisionDate": format_date(&self.cipher.updated_at),
+            "deletedDate": self.cipher.deleted_at.map_or(Value::Null, |d| Value::String(format_date(&d))),
+            "reprompt": self.cipher.reprompt.unwrap_or(RepromptType::None) as i32,
+            "organizationId": self.cipher.organization_uuid,
+            "key": null,
+            "attachments": attachments_json,
             // We have UseTotp set to true by default within the Organization model.
             // This variable together with UsersGetPremium is used to show or hide the TOTP counter.
-            "OrganizationUseTotp": true,
+            "organizationUseTotp": true,
 
             // This field is specific to the cipherDetails type.
-            "CollectionIds": self.collection_uuids,
+            "collectionIds": self.collection_uuids,
 
-            "Name": self.cipher.name,
-            "Notes": self.cipher.notes,
-            "Fields": self.cipher.fields,
+            "name": self.cipher.name,
+            "notes": self.cipher.notes,
+            "fields": self.cipher.fields,
 
-            "Data": data_json,
+            "data": data_json,
 
-            "PasswordHistory": self.cipher.password_history,
+            "passwordHistory": password_history_json,
 
             // All Cipher types are included by default as null, but only the matching one will be populated
-            "Login": null,
-            "SecureNote": null,
-            "Card": null,
-            "Identity": null,
-            "Fido2Key": null,
+            "login": null,
+            "secureNote": null,
+            "card": null,
+            "identity": null,
+            "fido2Key": null,
         });
 
         // These values are only needed for user/default syncs
         // Not during an organizational sync like `get_org_details`
         // Skip adding these fields in that case
         if for_user {
-            json_object["FolderId"] = json!(self.folder_uuid);
-            json_object["Favorite"] = json!(self.is_favorite);
+            json_object["folderId"] = json!(self.folder_uuid);
+            json_object["favorite"] = json!(self.is_favorite);
             // These values are true by default, but can be false if the
             // cipher belongs to a collection or group where the org owner has enabled
             // the "Read Only" or "Hide Passwords" restrictions for the user.
-            json_object["Edit"] = json!(!access.read_only);
-            json_object["ViewPassword"] = json!(!access.hide_passwords);
+            json_object["edit"] = json!(!access.read_only);
+            json_object["viewPassword"] = json!(!access.hide_passwords);
         }
 
         let key = match self.cipher.atype {
-            CipherType::Login => "Login",
-            CipherType::SecureNote => "SecureNote",
-            CipherType::Card => "Card",
-            CipherType::Identity => "Identity",
-            CipherType::Fido2Key => "Fido2Key",
+            CipherType::Login => "login",
+            CipherType::SecureNote => "secureNote",
+            CipherType::Card => "card",
+            CipherType::Identity => "identity",
+            CipherType::Fido2Key => "fido2Key",
             _ => panic!("Wrong type"),
         };
 

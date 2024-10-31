@@ -10,9 +10,7 @@ use crate::{
     crypto,
     db::{Conn, EventType, OrgPolicyType, Organization, TwoFactor, TwoFactorType, User, UserOrgType, UserOrganization, DB},
     events::log_user_event,
-    mail,
-    util::Upcase,
-    CONFIG,
+    mail, CONFIG,
 };
 
 pub mod authenticator;
@@ -55,14 +53,14 @@ pub async fn get_twofactor(headers: Headers) -> Result<Json<Value>> {
     let twofactors_json: Vec<Value> = twofactors.iter().map(TwoFactor::to_json_provider).collect();
 
     Ok(Json(json!({
-        "Data": twofactors_json,
-        "Object": "list",
-        "ContinuationToken": null,
+        "data": twofactors_json,
+        "object": "list",
+        "continuationToken": null,
     })))
 }
 
-pub async fn get_recover(headers: Headers, data: Json<Upcase<PasswordData>>) -> Result<Json<Value>> {
-    let data: PasswordData = data.0.data;
+pub async fn get_recover(headers: Headers, data: Json<PasswordData>) -> Result<Json<Value>> {
+    let data: PasswordData = data.0;
     let user = headers.user;
 
     if !user.check_valid_password(&data.master_password_hash) {
@@ -70,21 +68,21 @@ pub async fn get_recover(headers: Headers, data: Json<Upcase<PasswordData>>) -> 
     }
 
     Ok(Json(json!({
-        "Code": user.totp_recover,
-        "Object": "twoFactorRecover"
+        "code": user.totp_recover,
+        "object": "twoFactorRecover"
     })))
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct RecoverTwoFactor {
     master_password_hash: String,
     email: String,
     recovery_code: String,
 }
 
-pub async fn recover(client_headers: ClientHeaders, data: Json<Upcase<RecoverTwoFactor>>) -> Result<Json<Value>> {
-    let data: RecoverTwoFactor = data.0.data;
+pub async fn recover(client_headers: ClientHeaders, data: Json<RecoverTwoFactor>) -> Result<Json<Value>> {
+    let data: RecoverTwoFactor = data.0;
     let mut conn = DB.get().await.ise()?;
 
     // Get the user
@@ -124,15 +122,15 @@ pub async fn _generate_recover_code(user: &mut User, conn: &Conn) -> Result<()> 
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "camelCase")]
 pub struct DisableTwoFactorData {
     master_password_hash: String,
     #[serde(deserialize_with = "serde_aux::field_attributes::deserialize_number_from_string")]
     r#type: i32,
 }
 
-pub async fn disable_twofactor(headers: Headers, data: Json<Upcase<DisableTwoFactorData>>) -> Result<Json<Value>> {
-    let data: DisableTwoFactorData = data.0.data;
+pub async fn disable_twofactor(headers: Headers, data: Json<DisableTwoFactorData>) -> Result<Json<Value>> {
+    let data: DisableTwoFactorData = data.0;
     let password_hash = data.master_password_hash;
     let user = headers.user;
 
@@ -163,9 +161,9 @@ pub async fn disable_twofactor(headers: Headers, data: Json<Upcase<DisableTwoFac
     }
 
     Ok(Json(json!({
-        "Enabled": false,
-        "Type": type_,
-        "Object": "twoFactorProvider"
+        "enabled": false,
+        "type": type_,
+        "object": "twoFactorProvider"
     })))
 }
 
