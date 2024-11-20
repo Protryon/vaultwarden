@@ -438,9 +438,9 @@ impl Cipher {
             &(self.atype as i32),
             &self.name,
             &self.notes,
-            &self.fields,
+            &self.fields.clone().map(Value::Array),
             &self.data,
-            &self.password_history,
+            &self.password_history.clone().map(Value::Array),
             &self.deleted_at,
             &self.reprompt.map(|x| x as i32),
         ]).await.ise()?;
