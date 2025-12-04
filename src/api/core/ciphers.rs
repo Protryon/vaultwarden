@@ -618,7 +618,9 @@ pub async fn post_collections(conn: AutoTxn, Path(uuid): Path<Uuid>, headers: He
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShareCipherData {
+    #[serde(alias = "Cipher")]
     cipher: CipherData,
+    #[serde(alias = "CollectionIds")]
     collection_ids: Vec<Uuid>,
 }
 

@@ -3,7 +3,7 @@ use std::str::FromStr;
 use axol::prelude::*;
 use chrono::Utc;
 use log::error;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -87,13 +87,6 @@ pub struct SetPasswordData {
 pub struct KeysData {
     encrypted_private_key: String,
     public_key: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct TokenPayload {
-    exp: i64,
-    email: String,
-    nonce: String,
 }
 
 /// Trims whitespace from password hints, and converts blank password hints to `None`.

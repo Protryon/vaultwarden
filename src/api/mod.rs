@@ -5,6 +5,8 @@ mod identity;
 mod notifications;
 mod web;
 
+mod log_client_error;
+
 use std::time::Duration;
 
 use axol::{trace::Trace, Logger, RealIp, Result, Router};
@@ -29,7 +31,7 @@ fn route() -> Router {
     if !CONFIG.advanced.ip_header.is_empty() {
         api = api.request_hook_direct("/", RealIp(CONFIG.advanced.ip_header.clone()));
     }
-    api = api.late_response_hook("/", app_headers).plugin("/", build_cors()).plugin("/", Logger::default());
+    api = api.late_response_hook("/", app_headers).plugin("/", build_cors()).plugin("/", Logger::default()).plugin("/", log_client_error::LogClientError);
     if CONFIG.opentelemetry.is_some() {
         api = api.plugin("/", Trace::default());
     }
