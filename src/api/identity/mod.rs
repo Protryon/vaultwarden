@@ -401,6 +401,31 @@ async fn password_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &
         json!({"object": "masterPasswordPolicy"})
     };
 
+    let has_master_password = !user.password_hash.is_empty();
+    let master_password_unlock = if has_master_password {
+        json!({
+            "Kdf": {
+                "KdfType": user.client_kdf_type,
+                "Iterations": user.client_kdf_iter,
+                "Memory": user.client_kdf_memory,
+                "Parallelism": user.client_kdf_parallelism
+            },
+            "MasterKeyEncryptedUserKey": user.akey,
+            "Salt": user.email
+        })
+    } else {
+        Value::Null
+    };
+
+    let account_keys = json!({
+        "publicKeyEncryptionKeyPair": {
+            "wrappedPrivateKey": user.private_key,
+            "publicKey": user.public_key,
+            "Object": "publicKeyEncryptionKeyPair"
+        },
+        "Object": "privateKeys"
+    });
+
     let mut result = json!({
         "access_token": access_token,
         "expires_in": expires_in,
@@ -419,9 +444,11 @@ async fn password_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &
         "MasterPasswordPolicy": master_password_policy,
 
         "scope": scope,
+        "AccountKeys": account_keys,
         "unofficialServer": true,
         "UserDecryptionOptions": {
             "HasMasterPassword": !user.password_hash.is_empty(),
+            "MasterPasswordUnlock": master_password_unlock,
             "Object": "userDecryptionOptions"
         },
     });

@@ -103,6 +103,3 @@ opt-level = 3
 # A little bit of a speedup
 [profile.dev]
 split-debuginfo = "unpacked"
-
-[patch.crates-io]
-tokio-postgres = { version = "0.7", git = "https://github.com/Protryon/rust-postgres.git" }

@@ -477,7 +477,7 @@ pub async fn post_rotatekey(mut conn: AutoTxn, headers: Headers, data: Json<KeyD
     // Bitwarden does not process the import if there is one item invalid.
     // Since we check for the size of the encrypted note length, we need to do that here to pre-validate it.
     // TODO: See if we can optimize the whole cipher adding/importing and prevent duplicate code and checks.
-    Cipher::validate_notes(&data.ciphers)?;
+    Cipher::validate_cipher_data(&data.ciphers)?;
 
     let user_uuid = headers.user.uuid;
 
@@ -529,7 +529,7 @@ pub async fn post_sstamp(headers: Headers, conn: AutoTxn, data: Json<PasswordDat
     let data: PasswordData = data.0;
     let mut user = headers.user;
 
-    if !user.check_valid_password(&data.master_password_hash) {
+    if data.master_password_hash.as_ref().map(|x| !user.check_valid_password(x)).unwrap_or(false) {
         err!("Invalid password")
     }
 
@@ -746,9 +746,7 @@ pub async fn delete_account(headers: Headers, data: Json<PasswordData>) -> Resul
     let data: PasswordData = data.0;
     let user = headers.user;
 
-    if !user.check_valid_password(&data.master_password_hash) {
-        err!("Invalid password")
-    }
+    user.check_valid_password_data(&data)?;
     let conn = DB.get().await.ise()?;
 
     user.delete(&conn).await?;

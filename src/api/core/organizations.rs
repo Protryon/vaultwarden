@@ -192,11 +192,8 @@ async fn create_organization(conn: AutoTxn, headers: Headers, data: Json<OrgData
 
 async fn delete_organization(Path(org_uuid): Path<Uuid>, headers: OrgOwnerHeaders, data: Json<PasswordData>) -> Result<()> {
     let data: PasswordData = data.0;
-    let password_hash = data.master_password_hash;
 
-    if !headers.user.check_valid_password(&password_hash) {
-        err!("Invalid password")
-    }
+    headers.user.check_valid_password_data(&data)?;
     let conn = DB.get().await.ise()?;
 
     match Organization::get(&conn, org_uuid).await? {
@@ -1429,7 +1426,7 @@ async fn post_org_import(mut conn: AutoTxn, Query(query): Query<OrgIdData>, head
     // Bitwarden does not process the import if there is one item invalid.
     // Since we check for the size of the encrypted note length, we need to do that here to pre-validate it.
     // TODO: See if we can optimize the whole cipher adding/importing and prevent duplicate code and checks.
-    Cipher::validate_notes(&data.ciphers)?;
+    Cipher::validate_cipher_data(&data.ciphers)?;
 
     let mut collections = Vec::new();
     for coll in data.collections {
@@ -2664,9 +2661,7 @@ async fn _api_key(org_uuid: Uuid, rotate: bool, headers: OrgAdminHeaders, data: 
     let user = headers.user;
 
     // Validate the admin users password
-    if !user.check_valid_password(&data.master_password_hash) {
-        err!("Invalid password")
-    }
+    user.check_valid_password_data(&data)?;
     let conn = DB.get().await.ise()?;
 
     let org_api_key = match OrganizationApiKey::find_by_org_uuid(&conn, org_uuid).await? {

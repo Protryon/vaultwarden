@@ -78,9 +78,7 @@ pub async fn generate_yubikey(headers: Headers, data: Json<PasswordData>) -> Res
     let data: PasswordData = data.0;
     let user = headers.user;
 
-    if !user.check_valid_password(&data.master_password_hash) {
-        err!("Invalid password");
-    }
+    user.check_valid_password_data(&data)?;
 
     let user_uuid = user.uuid;
     let conn = DB.get().await.ise()?;

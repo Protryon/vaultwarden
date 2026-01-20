@@ -112,7 +112,7 @@ impl Cipher {
         }
     }
 
-    pub fn validate_notes(cipher_data: &[CipherData]) -> Result<()> {
+    pub fn validate_cipher_data(cipher_data: &[CipherData]) -> Result<()> {
         let mut validation_errors = serde_json::Map::new();
         for (index, cipher) in cipher_data.iter().enumerate() {
             if let Some(note) = &cipher.notes {
@@ -121,6 +121,21 @@ impl Cipher {
                         format!("Ciphers[{index}].Notes"),
                         serde_json::to_value(["The field Notes exceeds the maximum encrypted value length of 10000 characters."]).unwrap(),
                     );
+                }
+            }
+
+            // Validate the password history if it contains `null` values and if so, return a warning
+            if let Some(Value::Array(password_history)) = &cipher.password_history {
+                for pwh in password_history {
+                    if let Value::Object(pwo) = pwh {
+                        if pwo.get("password").is_some_and(|p| !p.is_string()) {
+                            validation_errors.insert(
+                                format!("Ciphers[{index}].Notes"),
+                                serde_json::to_value(["The password history contains a `null` value. Only strings are allowed."]).unwrap(),
+                            );
+                            break;
+                        }
+                    }
                 }
             }
         }

@@ -89,9 +89,7 @@ const DISABLED_MESSAGE_DEFAULT: &str = "<To use the global Duo keys, please leav
 pub async fn get_duo(headers: Headers, data: Json<PasswordData>) -> Result<Json<Value>> {
     let data: PasswordData = data.0;
 
-    if !headers.user.check_valid_password(&data.master_password_hash) {
-        err!("Invalid password");
-    }
+    headers.user.check_valid_password_data(&data)?;
     let conn = DB.get().await.ise()?;
 
     let data = get_user_duo_data(headers.user.uuid, &conn).await?;

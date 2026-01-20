@@ -34,6 +34,7 @@ pub fn route(router: Router) -> Router {
         .post("/two-factor/get-authenticator", authenticator::generate_authenticator)
         .post("/two-factor/authenticator", authenticator::activate_authenticator)
         .put("/two-factor/authenticator", authenticator::activate_authenticator)
+        //TODO https://github.com/Protryon/vaultwarden/commit/08183fc9992c39c8e7649f730f38d89c265417c2
         .post("/two-factor/get-yubikey", yubikey::generate_yubikey)
         .post("/two-factor/yubikey", yubikey::activate_yubikey)
         .put("/two-factor/yubikey", yubikey::activate_yubikey)
@@ -63,9 +64,7 @@ pub async fn get_recover(headers: Headers, data: Json<PasswordData>) -> Result<J
     let data: PasswordData = data.0;
     let user = headers.user;
 
-    if !user.check_valid_password(&data.master_password_hash) {
-        err!("Invalid password");
-    }
+    user.check_valid_password_data(&data)?;
 
     Ok(Json(json!({
         "code": user.totp_recover,

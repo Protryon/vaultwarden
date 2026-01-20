@@ -72,9 +72,7 @@ pub async fn get_email(headers: Headers, data: Json<PasswordData>) -> Result<Jso
     let data: PasswordData = data.0;
     let user = headers.user;
 
-    if !user.check_valid_password(&data.master_password_hash) {
-        err!("Invalid password");
-    }
+    user.check_valid_password_data(&data)?;
     let conn = DB.get().await.ise()?;
 
     let (enabled, mfa_email) = match TwoFactor::find_by_user_and_type(&conn, user.uuid, TwoFactorType::Email).await? {

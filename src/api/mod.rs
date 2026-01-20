@@ -60,5 +60,6 @@ pub async fn run_api_server() {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PasswordData {
-    master_password_hash: String,
+    #[serde(alias = "MasterPasswordHash")]
+    pub master_password_hash: Option<String>,
 }

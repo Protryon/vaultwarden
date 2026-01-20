@@ -6,6 +6,7 @@ use serde_json::json;
 use serde_json::Value;
 use tokio_postgres::Row;
 
+use crate::api::PasswordData;
 use crate::crypto;
 use crate::db::Conn;
 use crate::db::TwoFactor;
@@ -166,6 +167,21 @@ impl User {
 
     pub fn check_valid_password(&self, password: &str) -> bool {
         crypto::verify_password_hash(password.as_bytes(), &self.salt, &self.password_hash, self.password_iterations as u32)
+    }
+
+    pub fn check_valid_password_data(&self, data: &PasswordData) -> Result<()> {
+        match &data.master_password_hash {
+            Some(mph) => {
+                if !self.check_valid_password(mph) {
+                    err!("Invalid password");
+                }
+            }
+            None => {
+                err!("No validation");
+            }
+        }
+
+        Ok(())
     }
 
     pub fn check_valid_recovery_code(&self, recovery_code: &str) -> bool {

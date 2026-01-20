@@ -1,4 +1,4 @@
-FROM docker.io/vaultwarden/web-vault@sha256:409ab328ca931439cb916b388a4bb784bd44220717aaf74cf71620c23e34fc2b as vault
+FROM docker.io/vaultwarden/web-vault@sha256:bf5aa55dc7bcb99f85d2a88ff44d32cdc832e934a0603fe28e5c3f92904bad42 as vault
 
 FROM lukemathwalker/cargo-chef:0.1.73-rust-1.91.1-slim-bullseye AS planner
 WORKDIR /plan

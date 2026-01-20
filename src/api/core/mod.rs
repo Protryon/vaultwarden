@@ -173,14 +173,16 @@ async fn now() -> Json<String> {
     Json(crate::util::format_date(&chrono::Utc::now()))
 }
 
+const VW_VERSION: &str = "2025.12.0";
+
 async fn version() -> Json<&'static str> {
-    Json(crate::VERSION)
+    Json(VW_VERSION)
 }
 
 async fn config() -> Json<Value> {
     let domain = &*PUBLIC_NO_TRAILING_SLASH;
     Json(json!({
-        "version": crate::VERSION,
+        "version": VW_VERSION,
         "gitHash": option_env!("GIT_REV"),
         "server": {
           "name": "Vaultwarden",

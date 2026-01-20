@@ -180,7 +180,7 @@ pub struct CipherData {
     favorite: Option<bool>,
     reprompt: Option<RepromptType>,
 
-    password_history: Option<Value>,
+    pub password_history: Option<Value>,
 
     // These are used during key rotation
     // 'Attachments' is unused, contains map of {id: filename}
@@ -478,7 +478,7 @@ pub async fn post_ciphers_import(mut conn: AutoTxn, headers: Headers, data: Json
     // Bitwarden does not process the import if there is one item invalid.
     // Since we check for the size of the encrypted note length, we need to do that here to pre-validate it.
     // TODO: See if we can optimize the whole cipher adding/importing and prevent duplicate code and checks.
-    Cipher::validate_notes(&data.ciphers)?;
+    Cipher::validate_cipher_data(&data.ciphers)?;
 
     // Read and create the folders
     let mut folders: Vec<_> = Vec::new();
@@ -1074,13 +1074,10 @@ pub struct OrganizationId {
 
 pub async fn delete_all(conn: AutoTxn, Query(organization): Query<Option<OrganizationId>>, headers: Headers, data: Json<PasswordData>) -> Result<()> {
     let data: PasswordData = data.0;
-    let password_hash = data.master_password_hash;
 
     let user = headers.user;
 
-    if !user.check_valid_password(&password_hash) {
-        err!("Invalid password")
-    }
+    user.check_valid_password_data(&data)?;
 
     match organization {
         Some(org_data) => {

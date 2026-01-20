@@ -76,9 +76,7 @@ impl WebauthnRegistration {
 }
 
 pub async fn get_webauthn(headers: Headers, data: Json<PasswordData>) -> Result<Json<Value>> {
-    if !headers.user.check_valid_password(&data.master_password_hash) {
-        err!("Invalid password");
-    }
+    headers.user.check_valid_password_data(&data)?;
 
     let conn = DB.get().await.ise()?;
 
@@ -93,9 +91,7 @@ pub async fn get_webauthn(headers: Headers, data: Json<PasswordData>) -> Result<
 }
 
 pub async fn generate_webauthn_challenge(headers: Headers, data: Json<PasswordData>) -> Result<Json<Value>> {
-    if !headers.user.check_valid_password(&data.master_password_hash) {
-        err!("Invalid password");
-    }
+    headers.user.check_valid_password_data(&data)?;
     let conn = DB.get().await.ise()?;
 
     let registrations = get_webauthn_registrations(headers.user.uuid, &conn)
