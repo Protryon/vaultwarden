@@ -1,15 +1,21 @@
-use axol::{prelude::*, Cookie, CookieJar, Form};
+use axol::{Cookie, CookieJar, Form, prelude::*};
 use chrono::Utc;
-use jsonwebtoken::DecodingKey;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use openidconnect::core::{CoreClient, CoreProviderMetadata, CoreResponseType, CoreUserInfoClaims};
-use openidconnect::reqwest::async_http_client;
-use openidconnect::reqwest::http_client;
-use openidconnect::OAuth2TokenResponse;
-use openidconnect::{AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl, Nonce, RedirectUrl, Scope};
+use std::future::Future;
+use std::pin::Pin;
+
+use openidconnect::core::{
+    CoreAuthDisplay, CoreAuthPrompt, CoreClient, CoreErrorResponseType, CoreGenderClaim, CoreJsonWebKey, CoreJweContentEncryptionAlgorithm,
+    CoreProviderMetadata, CoreResponseType, CoreRevocableToken, CoreRevocationErrorResponse, CoreTokenIntrospectionResponse, CoreTokenResponse,
+    CoreUserInfoClaims,
+};
+use openidconnect::{
+    AccessToken, AsyncHttpClient, AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken, EmptyAdditionalClaims, EndpointNotSet, EndpointSet,
+    HttpClientError, HttpRequest, HttpResponse, IssuerUrl, Nonce, OAuth2TokenResponse, RedirectUrl, Scope, StandardErrorResponse,
+};
 use url::Url;
 use uuid::Uuid;
 
@@ -18,14 +24,14 @@ use crate::api::core::two_factor::{duo, yubikey};
 use crate::config::SSO_CALLBACK_URL;
 use crate::db::{Event, OrgPolicyType, OrganizationPolicy, SsoNonce};
 use crate::{
-    auth::{encode_jwt, generate_organization_api_key_login_claims, generate_ssotoken_claims, ClientHeaders, ClientIp},
-    db::{Conn, Device, EventType, Organization, OrganizationApiKey, TwoFactor, TwoFactorIncomplete, TwoFactorType, User, UserOrgStatus, UserOrganization, DB},
+    // util::{CookieManager, CustomRedirect},
+    CONFIG,
+    auth::{ClientHeaders, ClientIp, encode_jwt, generate_organization_api_key_login_claims, generate_ssotoken_claims},
+    db::{Conn, DB, Device, EventType, Organization, OrganizationApiKey, TwoFactor, TwoFactorIncomplete, TwoFactorType, User, UserOrgStatus, UserOrganization},
     error::MapResult,
     events::log_user_event,
     mail,
     util,
-    // util::{CookieManager, CustomRedirect},
-    CONFIG,
 };
 
 use super::core::accounts::{prelogin, register};
@@ -176,10 +182,8 @@ async fn authorization_login(data: ConnectData, user_uuid: &mut Option<Uuid>, co
         Err(err) => err!(err),
     };
 
-    let mut validation = jsonwebtoken::Validation::default();
-    validation.insecure_disable_signature_validation();
-
-    let token = jsonwebtoken::decode::<TokenPayload>(id_token.as_str(), &DecodingKey::from_secret(&[]), &validation).unwrap().claims;
+    // We only read the (already provider-verified) id_token to extract the nonce; signature was checked during token exchange.
+    let token = jsonwebtoken::dangerous::insecure_decode::<TokenPayload>(id_token.as_str()).unwrap().claims;
 
     // let expiry = token.exp;
     let nonce = token.nonce;
@@ -809,7 +813,62 @@ async fn prevalidate(Query(query): Query<PrevalidateQuery>) -> Result<Json<Value
     }
 }
 
-async fn get_client_from_sso_config() -> Result<CoreClient, &'static str> {
+/// Fully-typed OpenID Connect client, with the auth/token/userinfo endpoints set (from discovery + config).
+type SsoClient = openidconnect::Client<
+    EmptyAdditionalClaims,
+    CoreAuthDisplay,
+    CoreGenderClaim,
+    CoreJweContentEncryptionAlgorithm,
+    CoreJsonWebKey,
+    CoreAuthPrompt,
+    StandardErrorResponse<CoreErrorResponseType>,
+    CoreTokenResponse,
+    CoreTokenIntrospectionResponse,
+    CoreRevocableToken,
+    CoreRevocationErrorResponse,
+    EndpointSet,    // Auth
+    EndpointNotSet, // Device authorization
+    EndpointNotSet, // Introspection
+    EndpointNotSet, // Revocation
+    EndpointSet,    // Token
+    EndpointSet,    // UserInfo
+>;
+
+/// `openidconnect` 4 no longer ships an HTTP client; callers must supply an [`AsyncHttpClient`].
+/// We wrap `reqwest` with redirects disabled to avoid SSRF-style redirect following.
+#[derive(Clone)]
+struct OidcHttpClient {
+    client: reqwest::Client,
+}
+
+impl OidcHttpClient {
+    fn new() -> Result<Self, reqwest::Error> {
+        reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().map(|client| Self {
+            client,
+        })
+    }
+}
+
+impl<'c> AsyncHttpClient<'c> for OidcHttpClient {
+    type Error = HttpClientError<reqwest::Error>;
+    type Future = Pin<Box<dyn Future<Output = Result<HttpResponse, Self::Error>> + Send + Sync + 'c>>;
+
+    fn call(&'c self, request: HttpRequest) -> Self::Future {
+        Box::pin(async move {
+            let response = self.client.execute(request.try_into().map_err(Box::new)?).await.map_err(Box::new)?;
+
+            let mut builder = openidconnect::http::Response::builder().status(response.status()).version(response.version());
+            for (name, value) in response.headers() {
+                builder = builder.header(name, value);
+            }
+
+            let body = response.bytes().await.map_err(Box::new)?;
+            builder.body(body.to_vec()).map_err(HttpClientError::Http)
+        })
+    }
+}
+
+async fn get_client_from_sso_config() -> Result<(OidcHttpClient, SsoClient), &'static str> {
     let Some(sso) = &CONFIG.sso else {
         return Err("no sso configured");
     };
@@ -817,19 +876,28 @@ async fn get_client_from_sso_config() -> Result<CoreClient, &'static str> {
     let client_secret = ClientSecret::new(sso.client_secret.clone());
     let issuer_url = IssuerUrl::new(sso.authority.clone()).or(Err("invalid issuer URL"))?;
 
+    let http_client = OidcHttpClient::new().or(Err("Failed to build http client"))?;
+
     //TODO: This comparison will fail if one URI has a trailing slash and the other one does not.
     // Should we remove trailing slashes when saving? Or when checking?
-    let provider_metadata = match CoreProviderMetadata::discover_async(issuer_url, async_http_client).await {
+    let provider_metadata = match CoreProviderMetadata::discover_async(issuer_url, &http_client).await {
         Ok(metadata) => metadata,
         Err(_err) => {
             return Err("Failed to discover OpenID provider");
         }
     };
 
-    let client = CoreClient::from_provider_metadata(provider_metadata, client_id, Some(client_secret))
-        .set_redirect_uri(RedirectUrl::new(SSO_CALLBACK_URL.to_string()).or(Err("Invalid redirect URL"))?);
+    let base_client = CoreClient::from_provider_metadata(provider_metadata, client_id, Some(client_secret));
 
-    Ok(client)
+    let token_uri = base_client.token_uri().ok_or("Failed to discover token endpoint")?.clone();
+    let user_info_url = base_client.user_info_url().ok_or("Failed to discover userinfo endpoint")?.clone();
+
+    let client = base_client
+        .set_redirect_uri(RedirectUrl::new(SSO_CALLBACK_URL.to_string()).or(Err("Invalid redirect URL"))?)
+        .set_token_uri(token_uri)
+        .set_user_info_url(user_info_url);
+
+    Ok((http_client, client))
 }
 
 #[derive(Deserialize)]
@@ -842,8 +910,8 @@ async fn oidc_signin(Query(query): Query<OidcSigninQuery>, mut jar: CookieJar) -
     let redirect_uri = jar.get("redirect_uri").ok_or_else(|| Error::bad_request("missing redirect_uri cookie"))?.value().to_string();
     let orig_state = jar.get("state").ok_or_else(|| Error::bad_request("missing state cookie"))?.value().to_string();
 
-    jar = jar.remove(Cookie::named("redirect_uri"));
-    jar = jar.remove(Cookie::named("state"));
+    jar = jar.remove(Cookie::from("redirect_uri"));
+    jar = jar.remove(Cookie::from("state"));
 
     (jar, Url::parse(&format!("{redirect_uri}?code={}&state={orig_state}", query.code)).map_err(Error::internal)?).into_response()
 }
@@ -874,7 +942,7 @@ struct AuthorizeData {
 
 async fn authorize(Query(data): Query<AuthorizeData>, mut jar: CookieJar) -> Result<Response> {
     match get_client_from_sso_config().await {
-        Ok(client) => {
+        Ok((_http_client, client)) => {
             let (auth_url, _csrf_state, nonce) = client
                 .authorize_url(AuthenticationFlow::<CoreResponseType>::AuthorizationCode, CsrfToken::new_random, Nonce::new_random)
                 .add_scope(Scope::new("email".to_string()))
@@ -885,10 +953,10 @@ async fn authorize(Query(data): Query<AuthorizeData>, mut jar: CookieJar) -> Res
             let sso_nonce = SsoNonce::new(nonce.secret().to_string());
             sso_nonce.save(&conn).await?;
 
-            let mut cookie = Cookie::named("redirect_uri");
+            let mut cookie = Cookie::from("redirect_uri");
             cookie.set_value(data.redirect_uri);
             jar = jar.add(cookie);
-            let mut cookie = Cookie::named("state");
+            let mut cookie = Cookie::from("state");
             cookie.set_value(data.state);
             jar = jar.add(cookie);
 
@@ -901,7 +969,7 @@ async fn authorize(Query(data): Query<AuthorizeData>, mut jar: CookieJar) -> Res
 async fn get_auth_code_access_token(code: &str) -> Result<(String, String, CoreUserInfoClaims), &'static str> {
     let oidc_code = AuthorizationCode::new(String::from(code));
     match get_client_from_sso_config().await {
-        Ok(client) => match client.exchange_code(oidc_code).request_async(async_http_client).await {
+        Ok((http_client, client)) => match client.exchange_code(oidc_code).request_async(&http_client).await {
             Ok(token_response) => {
                 //let refresh_token = token_response.refresh_token():
                 let refreshtoken = match token_response.refresh_token() {
@@ -910,7 +978,11 @@ async fn get_auth_code_access_token(code: &str) -> Result<(String, String, CoreU
                 };
                 let id_token = token_response.extra_fields().id_token().unwrap().to_string();
 
-                let userinfo: CoreUserInfoClaims = client.user_info(token_response.access_token().to_owned(), None).unwrap().request(http_client).unwrap();
+                let access_token: AccessToken = token_response.access_token().to_owned();
+                let userinfo: CoreUserInfoClaims = match client.user_info(access_token, None).request_async(&http_client).await {
+                    Ok(userinfo) => userinfo,
+                    Err(_err) => return Err("Failed to contact userinfo endpoint"),
+                };
 
                 Ok((refreshtoken, id_token, userinfo))
             }

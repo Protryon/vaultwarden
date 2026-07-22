@@ -1,25 +1,25 @@
-use axol::{prelude::*, Cookie, CookieJar, Form, Html, SameSite};
+use axol::{Cookie, CookieJar, Form, Html, SameSite, prelude::*};
 use chrono::Utc;
 use log::error;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
 use serde_with::serde_as;
 use std::env;
 use url::Url;
 use uuid::Uuid;
 
 use crate::{
-    auth::{decode_admin, encode_jwt, generate_admin_claims, ClientIp},
+    CONFIG, VERSION,
+    auth::{ClientIp, decode_admin, encode_jwt, generate_admin_claims},
     config::PUBLIC_NO_TRAILING_SLASH,
     db::{
-        Attachment, Cipher, Collection, Conn, Device, Event, EventType, Group, Invitation, OrgPolicyErr, Organization, OrganizationPolicy, TwoFactor, User,
-        UserOrgType, UserOrganization, DB,
+        Attachment, Cipher, Collection, Conn, DB, Device, Event, EventType, Group, Invitation, OrgPolicyErr, Organization, OrganizationPolicy, TwoFactor, User,
+        UserOrgType, UserOrganization,
     },
     events::log_event,
     mail,
     push::unregister_push_device,
-    util::{docker_base_image, format_naive_datetime_local, get_display_size, get_reqwest_client, is_running_in_docker, AutoTxn},
-    CONFIG, VERSION,
+    util::{AutoTxn, docker_base_image, format_naive_datetime_local, get_display_size, get_reqwest_client, is_running_in_docker},
 };
 
 pub fn route() -> Router {
@@ -125,12 +125,12 @@ async fn post_admin_login(mut jar: CookieJar, ip: ClientIp, data: Form<LoginForm
     let claims = generate_admin_claims();
     let jwt = encode_jwt(&claims);
 
-    let cookie = Cookie::build(COOKIE_NAME, jwt)
+    let cookie = Cookie::build((COOKIE_NAME, jwt))
         .path(admin_path().to_string())
         .max_age(cookie::time::Duration::minutes(CONFIG.advanced.admin_session_lifetime))
         .same_site(SameSite::Strict)
         .http_only(true)
-        .finish();
+        .build();
 
     jar = jar.add(cookie);
     if let Some(redirect) = redirect {
@@ -448,7 +448,7 @@ async fn test_smtp(_token: AdminToken, data: Json<InviteData>) -> Result<()> {
 }
 
 async fn logout(mut cookies: CookieJar) -> (CookieJar, Url) {
-    cookies = cookies.remove(Cookie::build(COOKIE_NAME, "").path(admin_path().to_string()).finish());
+    cookies = cookies.remove(Cookie::build((COOKIE_NAME, "")).path(admin_path().to_string()).build());
     (cookies, admin_path())
 }
 
@@ -744,7 +744,7 @@ use cached::proc_macro::cached;
 use super::ws_users;
 /// Cache this function to prevent API call rate limit. Github only allows 60 requests per hour, and we use 3 here already.
 /// It will cache this function for 300 seconds (5 minutes) which should prevent the exhaustion of the rate limit.
-#[cached(time = 300, sync_writes = true)]
+#[cached(time = 300, sync_writes = "default")]
 async fn get_release_info(has_http_access: bool, running_within_docker: bool) -> (String, String, String) {
     // If the HTTP Check failed, do not even attempt to check for new versions since we were not able to connect with github.com anyway.
     if has_http_access {
@@ -956,7 +956,7 @@ impl<'a> FromRequestParts<'a> for AdminToken {
 
         if decode_admin(access_token).is_err() {
             // Remove admin cookie
-            cookies = cookies.remove(Cookie::build(COOKIE_NAME, "").path(admin_path().to_string()).finish());
+            cookies = cookies.remove(Cookie::build((COOKIE_NAME, "")).path(admin_path().to_string()).build());
             error!("Invalid or expired admin JWT. IP: {}.", &ip.ip);
             return Err(Error::response((cookies, admin_path())));
         }

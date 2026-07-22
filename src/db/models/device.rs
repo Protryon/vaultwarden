@@ -4,9 +4,8 @@ use tokio_postgres::Row;
 use uuid::Uuid;
 
 use crate::{
-    crypto,
+    CONFIG, crypto,
     db::{Conn, UserOrgType},
-    CONFIG,
 };
 
 #[derive(Debug)]
@@ -93,7 +92,7 @@ impl Device {
         let orgmanager: Vec<_> = orgs.iter().filter(|o| o.atype == UserOrgType::Manager).map(|o| o.organization_uuid.clone()).collect();
 
         // Create the JWT claims struct, to send to the client
-        use crate::auth::{encode_jwt, LoginJwtClaims, DEFAULT_VALIDITY, JWT_LOGIN_ISSUER};
+        use crate::auth::{DEFAULT_VALIDITY, JWT_LOGIN_ISSUER, LoginJwtClaims, encode_jwt};
         let claims = LoginJwtClaims {
             nbf: time_now.timestamp(),
             exp: (time_now + *DEFAULT_VALIDITY).timestamp(),

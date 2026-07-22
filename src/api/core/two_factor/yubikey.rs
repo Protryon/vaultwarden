@@ -1,16 +1,16 @@
 use axol::prelude::*;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use yubico::{config::Config, verify};
 
 use crate::{
+    CONFIG,
     api::PasswordData,
     auth::Headers,
-    db::{EventType, TwoFactor, TwoFactorType, DB},
+    db::{DB, EventType, TwoFactor, TwoFactorType},
     error::MapResult,
     events::log_user_event,
-    CONFIG,
 };
 
 use super::_generate_recover_code;

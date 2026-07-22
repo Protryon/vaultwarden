@@ -1,14 +1,14 @@
 use axol::prelude::*;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::{
-    auth::{Headers, OrgAdminHeaders},
-    db::{Cipher, Event, EventType, UserOrganization, DB},
-    events::{log_event, log_user_event},
     CONFIG,
+    auth::{Headers, OrgAdminHeaders},
+    db::{Cipher, DB, Event, EventType, UserOrganization},
+    events::{log_event, log_user_event},
 };
 
 #[derive(Deserialize)]

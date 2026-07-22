@@ -37,8 +37,11 @@ use std::{panic, path::Path, process::exit, str::FromStr, thread, time::Duration
 
 use axol::Result;
 use log::{error, info};
-use opentelemetry::{runtime::Tokio, sdk::propagation::TraceContextPropagator};
-use opentelemetry_otlp::{ExportConfig, Protocol, WithExportConfig};
+use opentelemetry::trace::TracerProvider as _;
+use opentelemetry_otlp::{Protocol, SpanExporter, WithExportConfig};
+use opentelemetry_sdk::Resource;
+use opentelemetry_sdk::propagation::TraceContextPropagator;
+use opentelemetry_sdk::trace::SdkTracerProvider;
 use tokio::{
     fs::File,
     io::{AsyncBufReadExt, BufReader},
@@ -62,7 +65,7 @@ mod util;
 
 pub use config::CONFIG;
 pub use error::MapResult;
-use tracing_subscriber::{layer::SubscriberExt, Registry};
+use tracing_subscriber::{Registry, layer::SubscriberExt};
 pub use util::is_running_in_docker;
 
 #[tokio::main]
@@ -75,20 +78,24 @@ async fn main() {
     init_logging(level).ok();
 
     if let Some(config) = &CONFIG.opentelemetry {
-        let tracer = opentelemetry_otlp::new_pipeline()
-            .tracing()
-            .with_exporter(opentelemetry_otlp::new_exporter().tonic().with_export_config(ExportConfig {
-                endpoint: config.endpoint.to_string(),
-                protocol: Protocol::Grpc,
-                timeout: Duration::from_secs_f64(config.timeout_sec),
-            }))
-            .install_batch(Tokio)
-            .expect("tracer init failed");
+        let exporter = SpanExporter::builder()
+            .with_tonic()
+            .with_endpoint(config.endpoint.to_string())
+            .with_protocol(Protocol::Grpc)
+            .with_timeout(Duration::from_secs_f64(config.timeout_sec))
+            .build()
+            .expect("otlp exporter init failed");
+
+        let tracer_provider =
+            SdkTracerProvider::builder().with_batch_exporter(exporter).with_resource(Resource::builder().with_service_name("vaultwarden").build()).build();
+
+        let tracer = tracer_provider.tracer("vaultwarden");
+        opentelemetry::global::set_tracer_provider(tracer_provider);
 
         let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
 
         tracing::subscriber::set_global_default(Registry::default().with(telemetry)).unwrap();
-        opentelemetry::global::set_text_map_propagator(TraceContextPropagator::default());
+        opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
         info!("otel tracing initialized");
     }
 
@@ -137,9 +144,9 @@ fn launch_info() {
 }
 
 fn init_logging(level: log::LevelFilter) -> Result<(), fern::InitError> {
-    // Depending on the main log level we either want to disable or enable logging for trust-dns.
-    // Else if there are timeouts it will clutter the logs since trust-dns uses warn for this.
-    let trust_dns_level = if level >= log::LevelFilter::Debug {
+    // Depending on the main log level we either want to disable or enable logging for hickory-dns.
+    // Else if there are timeouts it will clutter the logs since hickory-dns uses warn for this.
+    let hickory_level = if level >= log::LevelFilter::Debug {
         level
     } else {
         log::LevelFilter::Off
@@ -154,9 +161,9 @@ fn init_logging(level: log::LevelFilter) -> Result<(), fern::InitError> {
         .level_for("hyper::client", log::LevelFilter::Off)
         // Prevent cookie_store logs
         .level_for("cookie_store", log::LevelFilter::Off)
-        // Variable level for trust-dns used by reqwest
-        .level_for("trust_dns_resolver::name_server::name_server", trust_dns_level)
-        .level_for("trust_dns_proto::xfer", trust_dns_level)
+        // Variable level for hickory-dns used by reqwest
+        .level_for("hickory_resolver::name_server::name_server", hickory_level)
+        .level_for("hickory_proto::xfer", hickory_level)
         .chain(std::io::stdout());
 
     // Enable smtp debug logging only specifically for smtp when need.

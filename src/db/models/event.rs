@@ -1,10 +1,10 @@
 use axol::{ErrorExt, Result};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio_postgres::Row;
 use uuid::Uuid;
 
-use crate::{db::Conn, CONFIG};
+use crate::{CONFIG, db::Conn};
 
 use chrono::{DateTime, Duration, Utc};
 

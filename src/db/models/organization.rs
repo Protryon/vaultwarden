@@ -1,13 +1,13 @@
 use axol::{Error, ErrorExt, Result};
 use chrono::{DateTime, Utc};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use std::{cmp::Ordering, str::FromStr};
 use tokio_postgres::Row;
 use uuid::Uuid;
 
 use super::{CollectionUser, GroupUser, OrgPolicyType, TwoFactor, User};
-use crate::{db::Conn, CONFIG};
+use crate::{CONFIG, db::Conn};
 
 #[derive(Debug)]
 pub struct Organization {

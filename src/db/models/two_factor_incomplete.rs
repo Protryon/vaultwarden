@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use tokio_postgres::Row;
 use uuid::Uuid;
 
-use crate::{db::Conn, CONFIG};
+use crate::{CONFIG, db::Conn};
 
 #[derive(Debug)]
 pub struct TwoFactorIncomplete {

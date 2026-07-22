@@ -9,16 +9,16 @@ mod log_client_error;
 
 use std::time::Duration;
 
-use axol::{trace::Trace, Logger, RealIp, Result, Router};
+use axol::{Logger, RealIp, Result, Router, trace::Trace};
 use log::{error, info};
 use serde::Deserialize;
 
 use crate::{
-    util::{app_headers, build_cors},
     CONFIG,
+    util::{app_headers, build_cors},
 };
 
-pub use crate::api::notifications::{ws_users, UpdateType};
+pub use crate::api::notifications::{UpdateType, ws_users};
 
 fn route() -> Router {
     let mut api = web::route(Router::new())
@@ -42,7 +42,7 @@ pub async fn run_api_server() {
     tokio::spawn(async move {
         async fn run() -> anyhow::Result<()> {
             info!("Listening on {}", CONFIG.settings.api_bind);
-            axol::Server::bind(CONFIG.settings.api_bind)?.router(route()).serve().await?;
+            axol::Server::bind(CONFIG.settings.api_bind, route()).await?.serve().await?;
             Ok(())
         }
         loop {

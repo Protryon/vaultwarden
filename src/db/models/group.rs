@@ -1,6 +1,6 @@
 use axol::{ErrorExt, Result};
 use chrono::{DateTime, Utc};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_postgres::Row;
 use uuid::Uuid;
 

@@ -5,8 +5,8 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::{
-    db::{Conn, Event, EventType, UserOrganization},
     CONFIG,
+    db::{Conn, Event, EventType, UserOrganization},
 };
 
 pub async fn log_user_event(event_type: EventType, user_uuid: Uuid, device_type: i32, event_date: DateTime<Utc>, ip: IpAddr, conn: &mut Conn) -> Result<()> {

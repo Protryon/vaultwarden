@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use axol::{Error, ErrorExt, Result};
 use chrono::{DateTime, Utc};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio_postgres::Row;
 use uuid::Uuid;

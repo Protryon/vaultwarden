@@ -4,15 +4,15 @@ use chrono::Utc;
 use log::{debug, error};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::{
+    CONFIG,
     api::UpdateType,
     db::{Cipher, Conn, Device, Folder, User},
     util::get_reqwest_client,
-    CONFIG,
 };
 
 use once_cell::sync::Lazy;

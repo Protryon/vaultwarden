@@ -6,7 +6,7 @@ use always_cell::AlwaysCell;
 use bb8::{Pool, PooledConnection};
 use bb8_postgres::PostgresConnectionManager;
 use log::info;
-use tokio_postgres::{config::SslMode, Client, Config, NoTls};
+use tokio_postgres::{Client, Config, NoTls, config::SslMode};
 
 use crate::config::CONFIG;
 

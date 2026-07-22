@@ -2,7 +2,7 @@
 // Error generator macro
 //
 use axol::{Error, Json};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub fn api_error(msg: impl AsRef<str>) -> Json<Value> {
     let msg = msg.as_ref();

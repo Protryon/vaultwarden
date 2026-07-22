@@ -3,8 +3,8 @@ use chrono::{Duration, Utc};
 use log::{debug, error};
 
 use crate::{
-    db::{EmergencyAccess, EmergencyAccessStatus, User, DB},
     CONFIG,
+    db::{DB, EmergencyAccess, EmergencyAccessStatus, User},
 };
 
 pub async fn emergency_request_timeout_job() -> Result<()> {

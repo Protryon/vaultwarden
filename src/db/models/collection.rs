@@ -1,12 +1,12 @@
 use axol::{ErrorExt, Result};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use tokio_postgres::Row;
 use uuid::Uuid;
 
 use crate::{db::Conn, util::RowSlice};
 
-use super::{cipher::AccessRestrictions, User};
+use super::{User, cipher::AccessRestrictions};
 
 #[derive(Debug)]
 pub struct Collection {

@@ -11,26 +11,26 @@ use axol::http::{
 };
 use axol::prelude::*;
 use bytes::{Bytes, BytesMut};
-use futures::{stream::StreamExt, TryFutureExt};
+use futures::{TryFutureExt, stream::StreamExt};
 use log::{debug, error, info, warn};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use reqwest::{
-    header::{self, HeaderMap, HeaderValue},
     Client, Response,
+    header::{self, HeaderMap, HeaderValue},
 };
 use tokio::{
-    fs::{create_dir_all, remove_file, symlink_metadata, File},
+    fs::{File, create_dir_all, remove_file, symlink_metadata},
     io::{AsyncReadExt, AsyncWriteExt},
     net::lookup_host,
 };
 
-use html5gum::{Emitter, EndTag, HtmlString, InfallibleTokenizer, Readable, StartTag, StringReader, Tokenizer};
+use html5gum::{Emitter, HtmlString, Readable, StringReader, Tokenizer};
 
 use crate::{
+    CONFIG, MapResult,
     config::IconService,
-    util::{get_reqwest_client_builder, Cached},
-    MapResult, CONFIG,
+    util::{Cached, get_reqwest_client_builder},
 };
 
 // TODO: unpanickify this file
@@ -281,38 +281,37 @@ impl Icon {
     }
 }
 
-fn get_favicons_node(dom: InfallibleTokenizer<StringReader<'_>, FaviconEmitter>, icons: &mut Vec<Icon>, url: &url::Url) {
+fn get_favicons_node(dom: Tokenizer<StringReader<'_>, FaviconEmitter>, icons: &mut Vec<Icon>, url: &url::Url) {
     const TAG_LINK: &[u8] = b"link";
     const TAG_BASE: &[u8] = b"base";
     const TAG_HEAD: &[u8] = b"head";
-    const ATTR_REL: &[u8] = b"rel";
     const ATTR_HREF: &[u8] = b"href";
     const ATTR_SIZES: &[u8] = b"sizes";
 
     let mut base_url = url.clone();
-    let mut icon_tags: Vec<StartTag> = Vec::new();
-    for token in dom {
-        match token {
-            FaviconToken::StartTag(tag) => {
-                if *tag.name == TAG_LINK && tag.attributes.contains_key(ATTR_REL) && tag.attributes.contains_key(ATTR_HREF) {
-                    let rel_value = std::str::from_utf8(tag.attributes.get(ATTR_REL).unwrap()).unwrap_or_default().to_ascii_lowercase();
-                    if rel_value.contains("icon") && !rel_value.contains("mask-icon") {
-                        icon_tags.push(tag);
-                    }
-                } else if *tag.name == TAG_BASE && tag.attributes.contains_key(ATTR_HREF) {
-                    let href = std::str::from_utf8(tag.attributes.get(ATTR_HREF).unwrap()).unwrap_or_default();
+    let mut icon_tags: Vec<Tag> = Vec::new();
+    for Ok(token) in dom {
+        let tag_name: &[u8] = &token.tag.name;
+        match tag_name {
+            TAG_LINK => {
+                icon_tags.push(token.tag);
+            }
+            TAG_BASE => {
+                base_url = if let Some(href) = token.tag.attributes.get(ATTR_HREF) {
+                    let href = std::str::from_utf8(href).unwrap_or_default();
                     debug!("Found base href: {href}");
-                    base_url = match base_url.join(href) {
+                    match base_url.join(href) {
                         Ok(inner_url) => inner_url,
-                        _ => url.clone(),
-                    };
-                }
+                        _ => continue,
+                    }
+                } else {
+                    continue;
+                };
             }
-            FaviconToken::EndTag(tag) => {
-                if *tag.name == TAG_HEAD {
-                    break;
-                }
+            TAG_HEAD if token.closing => {
+                break;
             }
+            _ => {}
         }
     }
 
@@ -406,7 +405,7 @@ async fn get_icon_url(domain: &str) -> Result<IconUrlResult, Error> {
         // 384KB should be more than enough for the HTML, though as we only really need the HTML header.
         let limited_reader = stream_to_bytes_limit(content, 384 * 1024).await.map_res("failed to read html")?.to_vec();
 
-        let dom = Tokenizer::new_with_emitter(limited_reader.to_reader(), FaviconEmitter::default()).infallible();
+        let dom = Tokenizer::new_with_emitter(limited_reader.to_reader(), FaviconEmitter::default());
         get_favicons_node(dom, &mut iconlist, &url);
     } else {
         // Add the default favicon.ico to the list with just the given domain
@@ -676,43 +675,63 @@ impl reqwest::cookie::CookieStore for Jar {
 }
 
 /// Custom FaviconEmitter for the html5gum parser.
-/// The FaviconEmitter is using an almost 1:1 copy of the DefaultEmitter with some small changes.
+/// The FaviconEmitter is using an optimized version of the DefaultEmitter.
 /// This prevents emitting tags like comments, doctype and also strings between the tags.
-/// Therefor parsing the HTML content is faster.
-use std::collections::{BTreeSet, VecDeque};
+/// But it will also only emit the tags we need and only if they have the correct attributes
+/// Therefore parsing the HTML content is faster.
+use std::collections::BTreeMap;
 
-#[derive(Debug)]
-enum FaviconToken {
-    StartTag(StartTag),
-    EndTag(EndTag),
+#[derive(Default)]
+pub struct Tag {
+    /// The tag's name, such as `"link"` or `"base"`.
+    pub name: HtmlString,
+
+    /// A mapping for any HTML attributes this start tag may have.
+    ///
+    /// Duplicate attributes are ignored after the first one as per WHATWG spec.
+    pub attributes: BTreeMap<HtmlString, HtmlString>,
 }
 
-#[derive(Default, Debug)]
+struct FaviconToken {
+    tag: Tag,
+    closing: bool,
+}
+
+#[derive(Default)]
 struct FaviconEmitter {
     current_token: Option<FaviconToken>,
     last_start_tag: HtmlString,
     current_attribute: Option<(HtmlString, HtmlString)>,
-    seen_attributes: BTreeSet<HtmlString>,
-    emitted_tokens: VecDeque<FaviconToken>,
+    emit_token: bool,
 }
 
 impl FaviconEmitter {
-    fn emit_token(&mut self, token: FaviconToken) {
-        self.emitted_tokens.push_front(token);
-    }
+    fn flush_current_attribute(&mut self, emit_current_tag: bool) {
+        const ATTR_HREF: &[u8] = b"href";
+        const ATTR_REL: &[u8] = b"rel";
+        const TAG_LINK: &[u8] = b"link";
+        const TAG_BASE: &[u8] = b"base";
+        const TAG_HEAD: &[u8] = b"head";
 
-    fn flush_current_attribute(&mut self) {
-        if let Some((k, v)) = self.current_attribute.take() {
-            match self.current_token {
-                Some(FaviconToken::StartTag(ref mut tag)) => {
-                    tag.attributes.entry(k).and_modify(|_| {}).or_insert(v);
+        if let Some(ref mut token) = self.current_token {
+            let tag_name: &[u8] = &token.tag.name;
+
+            if self.current_attribute.is_some() && (tag_name == TAG_BASE || tag_name == TAG_LINK) {
+                let (k, v) = self.current_attribute.take().unwrap();
+                token.tag.attributes.entry(k).and_modify(|_| {}).or_insert(v);
+            }
+
+            let tag_attr = &token.tag.attributes;
+            match tag_name {
+                TAG_HEAD if token.closing => self.emit_token = true,
+                TAG_BASE if tag_attr.contains_key(ATTR_HREF) => self.emit_token = true,
+                TAG_LINK if emit_current_tag && tag_attr.contains_key(ATTR_REL) && tag_attr.contains_key(ATTR_HREF) => {
+                    let rel_value = std::str::from_utf8(token.tag.attributes.get(ATTR_REL).unwrap()).unwrap_or_default();
+                    if rel_value.contains("icon") && !rel_value.contains("mask-icon") {
+                        self.emit_token = true;
+                    }
                 }
-                Some(FaviconToken::EndTag(_)) => {
-                    self.seen_attributes.insert(k);
-                }
-                _ => {
-                    debug_assert!(false);
-                }
+                _ => (),
             }
         }
     }
@@ -727,87 +746,74 @@ impl Emitter for FaviconEmitter {
     }
 
     fn pop_token(&mut self) -> Option<Self::Token> {
-        self.emitted_tokens.pop_back()
-    }
-
-    fn init_start_tag(&mut self) {
-        self.current_token = Some(FaviconToken::StartTag(StartTag::default()));
-    }
-
-    fn init_end_tag(&mut self) {
-        self.current_token = Some(FaviconToken::EndTag(EndTag::default()));
-        self.seen_attributes.clear();
-    }
-
-    fn emit_current_tag(&mut self) -> Option<html5gum::State> {
-        self.flush_current_attribute();
-        let mut token = self.current_token.take().unwrap();
-        let mut emit = false;
-        match token {
-            FaviconToken::EndTag(ref mut tag) => {
-                // Always clean seen attributes
-                self.seen_attributes.clear();
-                self.set_last_start_tag(None);
-
-                // Only trigger an emit for the </head> tag.
-                // This is matched, and will break the for-loop.
-                if *tag.name == b"head" {
-                    emit = true;
-                }
-            }
-            FaviconToken::StartTag(ref mut tag) => {
-                // Only trriger an emit for <link> and <base> tags.
-                // These are the only tags we want to parse.
-                if *tag.name == b"link" || *tag.name == b"base" {
-                    self.set_last_start_tag(Some(&tag.name));
-                    emit = true;
-                } else {
-                    self.set_last_start_tag(None);
-                }
-            }
-        }
-
-        // Only emit the tags we want to parse.
-        if emit {
-            self.emit_token(token);
+        if self.emit_token {
+            self.emit_token = false;
+            return self.current_token.take();
         }
         None
     }
 
-    fn push_tag_name(&mut self, s: &[u8]) {
-        match self.current_token {
-            Some(
-                FaviconToken::StartTag(StartTag {
-                    ref mut name,
-                    ..
-                })
-                | FaviconToken::EndTag(EndTag {
-                    ref mut name,
-                    ..
-                }),
-            ) => {
-                name.extend(s);
+    fn init_start_tag(&mut self) {
+        self.current_token = Some(FaviconToken {
+            tag: Tag::default(),
+            closing: false,
+        });
+    }
+
+    fn init_end_tag(&mut self) {
+        self.current_token = Some(FaviconToken {
+            tag: Tag::default(),
+            closing: true,
+        });
+    }
+
+    fn emit_current_tag(&mut self) -> Option<html5gum::State> {
+        self.flush_current_attribute(true);
+        self.last_start_tag.clear();
+        match &self.current_token {
+            Some(token) if !token.closing => {
+                self.last_start_tag.extend(&*token.tag.name);
             }
-            _ => debug_assert!(false),
+            _ => {}
+        }
+        html5gum::naive_next_state(&self.last_start_tag)
+    }
+
+    fn push_tag_name(&mut self, s: &[u8]) {
+        if let Some(ref mut token) = self.current_token {
+            token.tag.name.extend(s);
         }
     }
 
     fn init_attribute(&mut self) {
-        self.flush_current_attribute();
-        self.current_attribute = Some(Default::default());
+        self.flush_current_attribute(false);
+        self.current_attribute = match &self.current_token {
+            Some(token) => {
+                let tag_name: &[u8] = &token.tag.name;
+                match tag_name {
+                    b"link" | b"head" | b"base" => Some(Default::default()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
     }
 
     fn push_attribute_name(&mut self, s: &[u8]) {
-        self.current_attribute.as_mut().unwrap().0.extend(s);
+        if let Some(attr) = &mut self.current_attribute {
+            attr.0.extend(s);
+        }
     }
 
     fn push_attribute_value(&mut self, s: &[u8]) {
-        self.current_attribute.as_mut().unwrap().1.extend(s);
+        if let Some(attr) = &mut self.current_attribute {
+            attr.1.extend(s);
+        }
     }
 
     fn current_is_appropriate_end_tag_token(&mut self) -> bool {
-        match self.current_token {
-            Some(FaviconToken::EndTag(ref tag)) => !self.last_start_tag.is_empty() && self.last_start_tag == tag.name,
+        match &self.current_token {
+            Some(token) if token.closing => !self.last_start_tag.is_empty() && self.last_start_tag == token.tag.name,
             _ => false,
         }
     }

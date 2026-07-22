@@ -4,16 +4,16 @@ use axol::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use axol::http::response::Response;
 use axol::http::typed_headers::ContentType;
 use axol::http::{StatusCode, Uri};
-use axol::{prelude::*, Html};
+use axol::{Html, prelude::*};
 use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::CONFIG;
 use crate::config::PUBLIC_NO_TRAILING_SLASH;
 use crate::db::{Attachment, DB};
 use crate::templates::render_template;
 use crate::util::Cached;
-use crate::CONFIG;
 
 pub fn route(mut router: Router) -> Router {
     if CONFIG.settings.web_vault_enabled {

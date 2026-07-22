@@ -5,19 +5,19 @@ use axol::prelude::*;
 use chrono::Utc;
 use log::{debug, error};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use serde_with::serde_as;
 use uuid::Uuid;
 
-use crate::api::{ws_users, PasswordData, UpdateType};
-use crate::auth::{decode_invite, Headers, ManagerHeaders, ManagerHeadersLoose, OrgAdminHeaders, OrgOwnerHeaders};
+use crate::api::{PasswordData, UpdateType, ws_users};
+use crate::auth::{Headers, ManagerHeaders, ManagerHeadersLoose, OrgAdminHeaders, OrgOwnerHeaders, decode_invite};
 use crate::db::{
-    Cipher, Collection, CollectionCipher, CollectionGroup, CollectionUser, Conn, EventType, FullCipher, Group, GroupUser, Invitation, OrgPolicyErr,
-    OrgPolicyType, Organization, OrganizationApiKey, OrganizationPolicy, TwoFactor, User, UserOrgStatus, UserOrgType, UserOrganization, DB,
+    Cipher, Collection, CollectionCipher, CollectionGroup, CollectionUser, Conn, DB, EventType, FullCipher, Group, GroupUser, Invitation, OrgPolicyErr,
+    OrgPolicyType, Organization, OrganizationApiKey, OrganizationPolicy, TwoFactor, User, UserOrgStatus, UserOrgType, UserOrganization,
 };
 use crate::events::log_event;
 use crate::util::AutoTxn;
-use crate::{mail, util::convert_json_key_lcase_first, CONFIG};
+use crate::{CONFIG, mail, util::convert_json_key_lcase_first};
 
 pub fn route(router: Router) -> Router {
     router
@@ -1398,8 +1398,8 @@ async fn bulk_public_keys(conn: AutoTxn, Path(org_uuid): Path<Uuid>, _headers: O
     })))
 }
 
-use super::ciphers::update_cipher_from_data;
 use super::ciphers::CipherData;
+use super::ciphers::update_cipher_from_data;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

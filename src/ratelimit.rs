@@ -1,8 +1,8 @@
-use axol::{http::StatusCode, Result};
+use axol::{Result, http::StatusCode};
 use once_cell::sync::Lazy;
 use std::{net::IpAddr, num::NonZeroU32, time::Duration};
 
-use governor::{clock::DefaultClock, state::keyed::DashMapStateStore, Quota, RateLimiter};
+use governor::{Quota, RateLimiter, clock::DefaultClock, state::keyed::DashMapStateStore};
 
 use crate::CONFIG;
 

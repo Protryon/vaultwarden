@@ -1,7 +1,7 @@
 use axol::http::{
+    Body,
     request::{Request, RequestPartsRef},
     response::Response,
-    Body,
 };
 
 use axol::{ConnectInfo, LateResponseHook, Plugin, RequestHook, Result, Router};

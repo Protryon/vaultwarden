@@ -2,19 +2,19 @@ use axol::prelude::*;
 use chrono::Utc;
 use data_encoding::BASE64;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use url::Url;
 use uuid::Uuid;
 
 use crate::{
+    CONFIG,
     api::PasswordData,
     auth::Headers,
     crypto,
-    db::{Conn, Event, EventType, TwoFactor, TwoFactorType, User, DB},
+    db::{Conn, DB, Event, EventType, TwoFactor, TwoFactorType, User},
     error::MapResult,
     events::log_user_event,
     util::get_reqwest_client,
-    CONFIG,
 };
 
 use super::_generate_recover_code;
@@ -184,7 +184,7 @@ pub async fn activate_duo(headers: Headers, data: Json<EnableDuoData>) -> Result
 }
 
 async fn duo_api_request(method: &str, path: &str, params: &str, data: &DuoData) -> Result<()> {
-    use reqwest::{header, Method};
+    use reqwest::{Method, header};
     use std::str::FromStr;
 
     // https://duo.com/docs/authapi#api-details

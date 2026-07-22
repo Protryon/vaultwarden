@@ -1,15 +1,15 @@
-use axol::{prelude::*, ConnectInfo, MatchedPath};
+use axol::{ConnectInfo, MatchedPath, prelude::*};
 use chrono::{Duration, Utc};
 use log::{error, warn};
 use once_cell::sync::Lazy;
 
-use jsonwebtoken::{self, errors::ErrorKind, Algorithm, DecodingKey, EncodingKey, Header};
+use jsonwebtoken::{self, Algorithm, DecodingKey, EncodingKey, Header, errors::ErrorKind};
 use serde::Deserialize;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use uuid::Uuid;
 
-use crate::db::{Collection, Conn, Device, User, UserOrgStatus, UserOrgType, UserOrganization, UserStampException, DB};
 use crate::CONFIG;
+use crate::db::{Collection, Conn, DB, Device, User, UserOrgStatus, UserOrgType, UserOrganization, UserStampException};
 
 const JWT_ALGORITHM: Algorithm = Algorithm::RS256;
 

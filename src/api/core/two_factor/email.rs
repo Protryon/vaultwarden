@@ -1,19 +1,19 @@
 use axol::prelude::*;
-use chrono::{Duration, NaiveDateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::{
+    CONFIG,
     api::PasswordData,
     auth::Headers,
     crypto,
-    db::{Conn, Event, EventType, TwoFactor, TwoFactorType, User, DB},
+    db::{Conn, DB, Event, EventType, TwoFactor, TwoFactorType, User},
     error::MapResult,
     events::log_user_event,
     mail,
     util::AutoTxn,
-    CONFIG,
 };
 
 use super::_generate_recover_code;
@@ -210,7 +210,7 @@ pub async fn validate_email_code_str(user_uuid: Uuid, token: &str, data: Value) 
     twofactor.save(txn.client()).await?;
     txn.commit().await.ise()?;
 
-    let date = NaiveDateTime::from_timestamp_opt(email_data.token_sent, 0).map_res("invalid timestamp")?.and_utc();
+    let date = DateTime::from_timestamp(email_data.token_sent, 0).map_res("invalid timestamp")?;
     let max_time = CONFIG.email_2fa.as_ref().map(|x| x.email_expiration_time).unwrap_or_default() as i64;
     if date + Duration::seconds(max_time) < Utc::now() {
         Event::new(EventType::UserFailedLogIn2fa, None).with_user_uuid(user_uuid).save(&conn).await?;

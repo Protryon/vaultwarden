@@ -8,17 +8,17 @@ use std::{
 
 use axol::{
     cors::{AllowHeaders, AllowMethods, Cors},
-    http::{response::ResponsePartsRef, Uri},
+    http::{Uri, response::ResponsePartsRef},
     prelude::*,
 };
 use log::error;
 use tokio::{fs::File, io::AsyncWriteExt, time::Duration};
-use tokio_postgres::{types::FromSql, Row};
+use tokio_postgres::{Row, types::FromSql};
 
 use crate::{
+    CONFIG,
     config::ICON_SERVICE_CSP,
     db::{Conn, ConnOwned, DB},
-    CONFIG,
 };
 
 pub async fn app_headers(uri: Uri, mut res: Response) -> Response {
@@ -333,7 +333,7 @@ pub fn format_naive_datetime_local(dt: DateTime<Utc>, fmt: &str) -> String {
 ///
 /// https://httpwg.org/specs/rfc7231.html#http.date
 pub fn format_datetime_http(dt: &DateTime<Local>) -> String {
-    let expiry_time: chrono::DateTime<chrono::Utc> = chrono::DateTime::from_utc(dt.naive_utc(), chrono::Utc);
+    let expiry_time: chrono::DateTime<chrono::Utc> = dt.to_utc();
 
     // HACK: HTTP expects the date to always be GMT (UTC) rather than giving an
     // offset (which would always be 0 in UTC anyway)
@@ -368,8 +368,8 @@ pub fn docker_base_image() -> &'static str {
 use std::fmt;
 
 use serde::{
-    de::{self, DeserializeOwned, Deserializer, MapAccess, SeqAccess, Visitor},
     Deserialize, Serialize,
+    de::{self, DeserializeOwned, Deserializer, MapAccess, SeqAccess, Visitor},
 };
 use serde_json::{self, Value};
 
@@ -445,14 +445,14 @@ fn _process_key(key: &str) -> String {
     }
 }
 
-use reqwest::{header, Client, ClientBuilder};
+use reqwest::{Client, ClientBuilder, header};
 
 pub fn get_reqwest_client() -> Client {
     match get_reqwest_client_builder().build() {
         Ok(client) => client,
         Err(e) => {
-            error!("Possible trust-dns error, trying with trust-dns disabled: '{e}'");
-            get_reqwest_client_builder().trust_dns(false).build().expect("Failed to build client")
+            error!("Possible hickory-dns error, trying with hickory-dns disabled: '{e}'");
+            get_reqwest_client_builder().hickory_dns(false).build().expect("Failed to build client")
         }
     }
 }
@@ -531,9 +531,7 @@ impl<'a> RowSlice<'a> {
 
     pub fn get<T: FromSql<'a>>(&self, idx: usize) -> T {
         let idx = self.start + idx;
-        if idx >= self.end {
-            panic!("error retrieving column {}: out of bounds", idx);
-        }
+        assert!(idx < self.end, "error retrieving column {idx}: out of bounds");
         self.inner.get(idx)
     }
 

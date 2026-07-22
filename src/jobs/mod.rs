@@ -7,8 +7,8 @@ use chrono::{Duration, Utc};
 use log::{debug, error, info};
 
 use crate::{
-    db::{Cipher, Event, SsoNonce, TwoFactorIncomplete, User, DB},
     CONFIG,
+    db::{Cipher, DB, Event, SsoNonce, TwoFactorIncomplete, User},
 };
 
 pub fn schedule_jobs() {

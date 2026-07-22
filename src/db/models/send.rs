@@ -2,11 +2,11 @@ use axol::{Error, ErrorExt, Result};
 use chrono::{DateTime, Utc};
 use data_encoding::BASE64URL_NOPAD;
 use log::error;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use tokio_postgres::{types::Json, Row};
+use tokio_postgres::{Row, types::Json};
 
-use crate::{db::Conn, util::LowerCase, CONFIG};
+use crate::{CONFIG, db::Conn, util::LowerCase};
 
 use super::User;
 use uuid::Uuid;

@@ -2,15 +2,16 @@ use axol::prelude::*;
 use chrono::Utc;
 use data_encoding::BASE32;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
+    CONFIG,
     api::PasswordData,
     auth::{ClientHeaders, Headers},
     crypto,
-    db::{Conn, EventType, OrgPolicyType, Organization, TwoFactor, TwoFactorType, User, UserOrgType, UserOrganization, DB},
+    db::{Conn, DB, EventType, OrgPolicyType, Organization, TwoFactor, TwoFactorType, User, UserOrgType, UserOrganization},
     events::log_user_event,
-    mail, CONFIG,
+    mail,
 };
 
 pub mod authenticator;

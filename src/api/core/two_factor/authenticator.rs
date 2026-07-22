@@ -1,18 +1,18 @@
 use std::net::IpAddr;
 
 use axol::prelude::*;
-use chrono::{Duration, NaiveDateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use data_encoding::BASE32;
 use log::warn;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::{
     api::PasswordData,
     auth::Headers,
     crypto,
-    db::{Conn, Event, EventType, TwoFactor, TwoFactorType, DB},
+    db::{Conn, DB, Event, EventType, TwoFactor, TwoFactorType},
     events::log_user_event,
 };
 
@@ -97,7 +97,7 @@ pub async fn validate_totp_code_str(user_uuid: Uuid, totp_code: &str, secret: Va
 }
 
 pub async fn validate_totp_code(user_uuid: Uuid, totp_code: &str, secret: Value, ip: IpAddr, conn: &Conn) -> Result<()> {
-    use totp_lite::{totp_custom, Sha1};
+    use totp_lite::{Sha1, totp_custom};
 
     let decoded_secret = match secret.as_str().map(|x| BASE32.decode(x.as_bytes())) {
         Some(Ok(s)) => s,
@@ -136,7 +136,7 @@ pub async fn validate_totp_code(user_uuid: Uuid, totp_code: &str, secret: Value,
 
             // Save the last used time step so only totp time steps higher then this one are allowed.
             // This will also save a newly created twofactor if the code is correct.
-            twofactor.last_used = Some(NaiveDateTime::from_timestamp_opt(time_step * 30, 0).expect("timestamp overflow").and_utc());
+            twofactor.last_used = Some(DateTime::from_timestamp(time_step * 30, 0).expect("timestamp overflow"));
             twofactor.save(conn).await?;
             return Ok(());
         } else if generated == totp_code && time_step <= last_used {

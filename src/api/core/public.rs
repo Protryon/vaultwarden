@@ -7,11 +7,10 @@ use uuid::Uuid;
 use std::collections::HashSet;
 
 use crate::{
-    auth,
-    db::{Group, GroupUser, Invitation, Organization, OrganizationApiKey, User, UserOrgStatus, UserOrgType, UserOrganization, DB},
+    CONFIG, auth,
+    db::{DB, Group, GroupUser, Invitation, Organization, OrganizationApiKey, User, UserOrgStatus, UserOrgType, UserOrganization},
     mail,
     util::AutoTxn,
-    CONFIG,
 };
 
 #[derive(Deserialize)]

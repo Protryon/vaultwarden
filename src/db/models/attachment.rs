@@ -2,12 +2,12 @@ use std::{io::ErrorKind, path::PathBuf};
 
 use axol::{ErrorExt, Result};
 use log::debug;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_postgres::Row;
 use url::Url;
 use uuid::Uuid;
 
-use crate::{db::Conn, CONFIG};
+use crate::{CONFIG, db::Conn};
 
 use super::Cipher;
 

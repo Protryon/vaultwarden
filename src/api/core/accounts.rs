@@ -4,19 +4,19 @@ use axol::prelude::*;
 use chrono::Utc;
 use log::error;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::{
-    api::{ws_users, PasswordData, UpdateType},
-    auth::{decode_delete, decode_invite, decode_verify_email, Headers},
+    CONFIG,
+    api::{PasswordData, UpdateType, ws_users},
+    auth::{Headers, decode_delete, decode_invite, decode_verify_email},
     crypto,
-    db::{Cipher, Device, EmergencyAccess, EventType, Folder, Invitation, User, UserKdfType, UserOrgStatus, UserOrganization, DB},
+    db::{Cipher, DB, Device, EmergencyAccess, EventType, Folder, Invitation, User, UserKdfType, UserOrgStatus, UserOrganization},
     events::log_user_event,
     mail,
     push::{register_push_device, unregister_push_device},
     util::AutoTxn,
-    CONFIG,
 };
 
 pub fn route(router: Router) -> Router {
@@ -783,10 +783,9 @@ pub async fn password_hint(data: Json<PasswordHintData>) -> Result<()> {
                 // There is still a timing side channel here in that the code
                 // paths that send mail take noticeably longer than ones that
                 // don't. Add a randomized sleep to mitigate this somewhat.
-                use rand::{rngs::SmallRng, Rng, SeedableRng};
-                let mut rng = SmallRng::from_entropy();
+                use rand::RngExt;
                 let delta: i32 = 100;
-                let sleep_ms = (1_000 + rng.gen_range(-delta..=delta)) as u64;
+                let sleep_ms = (1_000 + rand::rng().random_range(-delta..=delta)) as u64;
                 tokio::time::sleep(tokio::time::Duration::from_millis(sleep_ms)).await;
                 Ok(())
             } else {

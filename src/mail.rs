@@ -3,23 +3,23 @@ use std::{net::IpAddr, str::FromStr};
 use axol::{Error, Result};
 use chrono::{DateTime, Utc};
 use log::debug;
-use percent_encoding::{percent_encode, NON_ALPHANUMERIC};
+use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
 
-use crate::config::{SmtpSecurity, PUBLIC_NO_TRAILING_SLASH, SMTP_IMAGE_SRC};
+use crate::config::{PUBLIC_NO_TRAILING_SLASH, SMTP_IMAGE_SRC, SmtpSecurity};
 use lettre::{
+    Address, AsyncSmtpTransport, AsyncTransport, Tokio1Executor,
     message::{Attachment, Body, Mailbox, Message, MultiPart, SinglePart},
     transport::smtp::authentication::Credentials,
     transport::smtp::client::{Tls, TlsParameters},
     transport::smtp::extension::ClientId,
-    Address, AsyncSmtpTransport, AsyncTransport, Tokio1Executor,
 };
 use serde_json::json;
 use std::time::Duration;
 use uuid::Uuid;
 
 use crate::{
-    auth::{encode_jwt, generate_delete_claims, generate_emergency_access_invite_claims, generate_invite_claims, generate_verify_email_claims},
     CONFIG,
+    auth::{encode_jwt, generate_delete_claims, generate_emergency_access_invite_claims, generate_invite_claims, generate_verify_email_claims},
 };
 
 lazy_static::lazy_static! {

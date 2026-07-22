@@ -2,16 +2,16 @@ use axol::{Error, ErrorExt, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 use serde::Serialize;
-use serde_json::json;
 use serde_json::Value;
+use serde_json::json;
 use tokio_postgres::Row;
 
+use crate::CONFIG;
 use crate::api::PasswordData;
 use crate::crypto;
 use crate::db::Conn;
 use crate::db::TwoFactor;
 use crate::util::format_date;
-use crate::CONFIG;
 use uuid::Uuid;
 
 use super::Device;

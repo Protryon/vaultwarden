@@ -1,28 +1,28 @@
 use std::collections::{HashMap, HashSet};
 
-use axol::prelude::*;
 use axol::Multipart;
+use axol::prelude::*;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use log::warn;
 use serde::Deserialize;
-use serde::{de::Error as _E, Deserializer};
-use serde_json::{json, Value};
+use serde::{Deserializer, de::Error as _E};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::{
-    api::{self, ws_users, PasswordData, UpdateType},
+    CONFIG,
+    api::{self, PasswordData, UpdateType, ws_users},
     auth::Headers,
     db::{
-        Attachment, Cipher, CipherType, Collection, CollectionCipher, CollectionWithAccess, Conn, EventType, Folder, FullCipher, OrgPolicyType,
-        OrganizationPolicy, RepromptType, UserOrgType, UserOrganization, DB,
+        Attachment, Cipher, CipherType, Collection, CollectionCipher, CollectionWithAccess, Conn, DB, EventType, Folder, FullCipher, OrgPolicyType,
+        OrganizationPolicy, RepromptType, UserOrgType, UserOrganization,
     },
     events::log_event,
     util::AutoTxn,
-    CONFIG,
 };
 
-use super::{folders::FolderData, GlobalDomainQuery};
+use super::{GlobalDomainQuery, folders::FolderData};
 
 pub fn route(router: Router) -> Router {
     router
@@ -398,7 +398,7 @@ pub async fn update_cipher_from_data(
         CipherType::Card => data.card,
         CipherType::Identity => data.identity,
         CipherType::Fido2Key => data.fido2_key,
-        _ => err!("Invalid type"),
+        CipherType::Unknown => err!("Invalid type"),
     };
 
     let type_data = match type_data_opt {

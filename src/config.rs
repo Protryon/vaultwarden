@@ -10,9 +10,9 @@ use log::warn;
 use regex::Regex;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr};
+use serde_with::{DisplayFromStr, serde_as};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 pub static CONFIG: AlwaysCell<Config> = AlwaysCell::new();
 

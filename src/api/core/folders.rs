@@ -1,12 +1,12 @@
 use axol::prelude::*;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::{
-    api::{ws_users, UpdateType},
+    api::{UpdateType, ws_users},
     auth::Headers,
-    db::{Folder, DB},
+    db::{DB, Folder},
 };
 
 pub async fn get_folders(headers: Headers) -> Result<Json<Value>> {

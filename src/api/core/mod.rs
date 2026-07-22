@@ -12,17 +12,17 @@ pub use ciphers::CipherData;
 
 use axol::prelude::*;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub use events::post_events_collect;
 
 use crate::{
-    api::{ws_users, UpdateType},
+    CONFIG,
+    api::{UpdateType, ws_users},
     auth::Headers,
     config::PUBLIC_NO_TRAILING_SLASH,
     db::DB,
     util::get_reqwest_client,
-    CONFIG,
 };
 
 pub fn route() -> Router {

@@ -1,19 +1,19 @@
 use axol::prelude::*;
 use chrono::Utc;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use serde_with::serde_as;
 use uuid::Uuid;
 
 use crate::{
-    auth::{decode_emergency_access_invite, Headers},
+    CONFIG,
+    auth::{Headers, decode_emergency_access_invite},
     db::{
-        Conn, EmergencyAccess, EmergencyAccessStatus, EmergencyAccessType, FullCipher, Invitation, OrganizationPolicy, TwoFactor, User, UserOrgType,
-        UserOrganization, DB,
+        Conn, DB, EmergencyAccess, EmergencyAccessStatus, EmergencyAccessType, FullCipher, Invitation, OrganizationPolicy, TwoFactor, User, UserOrgType,
+        UserOrganization,
     },
     mail,
     util::AutoTxn,
-    CONFIG,
 };
 
 pub fn route(router: Router) -> Router {

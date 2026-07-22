@@ -1,16 +1,16 @@
 use std::collections::HashMap;
 
 use crate::{
+    CONFIG,
     api::core::CipherData,
     db::Conn,
     util::{LowerCase, RowSlice},
-    CONFIG,
 };
 use axol::{Error, ErrorExt, Result};
 use chrono::{DateTime, Duration, Utc};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use tokio_postgres::{types::Json, Row};
+use tokio_postgres::{Row, types::Json};
 use uuid::Uuid;
 
 use super::{Attachment, Favorite, FolderCipher, Organization, User};
@@ -392,7 +392,7 @@ impl FullCipher {
             CipherType::Card => "card",
             CipherType::Identity => "identity",
             CipherType::Fido2Key => "fido2Key",
-            _ => panic!("Wrong type"),
+            CipherType::Unknown => panic!("Wrong type"),
         };
 
         json_object[key] = data;
