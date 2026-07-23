@@ -266,7 +266,7 @@ impl Event {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<Vec<Self>> {
-        Ok(conn.query(r"SELECT * FROM events WHERE organization_uuid = $1 AND event.user_uuid = $5 OR event.act_user_id = $5 AND event_date BETWEEN $2 AND $3 ORDER BY event_date DESC LIMIT $4", &[&organization_uuid, &start, &end, &Self::PAGE_SIZE, &user_uuid]).await.ise()?.into_iter().map(|x| x.into()).collect())
+        Ok(conn.query(r"SELECT * FROM events WHERE organization_uuid = $1 AND (user_uuid = $5 OR act_user_uuid = $5) AND event_date BETWEEN $2 AND $3 ORDER BY event_date DESC LIMIT $4", &[&organization_uuid, &start, &end, &Self::PAGE_SIZE, &user_uuid]).await.ise()?.into_iter().map(|x| x.into()).collect())
     }
 
     pub async fn find_by_cipher(conn: &Conn, cipher_uuid: Uuid, start: DateTime<Utc>, end: DateTime<Utc>) -> Result<Vec<Self>> {

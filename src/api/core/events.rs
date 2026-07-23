@@ -157,3 +157,85 @@ pub async fn post_events_collect(headers: Headers, data: Json<Vec<EventCollectio
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use chrono::{Duration, SecondsFormat, Utc};
+    use serde_json::json;
+
+    use crate::test_harness::TestClient;
+
+    /// A `?start=..&end=..` range bracketing "now", for the event query endpoints.
+    fn range_query() -> String {
+        let start = (Utc::now() - Duration::days(1)).to_rfc3339_opts(SecondsFormat::Secs, true);
+        let end = (Utc::now() + Duration::days(1)).to_rfc3339_opts(SecondsFormat::Secs, true);
+        format!("?start={start}&end={end}")
+    }
+
+    /// A fresh owner + org + an org-owned cipher whose creation logs a
+    /// `CipherCreated` (1100) event tied to the org, cipher, and acting user.
+    async fn org_with_cipher() -> (TestClient, String, String) {
+        let owner = TestClient::register_and_login().await;
+        let org_id = owner.create_org("Events").await["id"].as_str().unwrap().to_string();
+        let cols = owner.get(&format!("/api/organizations/{org_id}/collections")).await;
+        let col_id = cols.json()["data"].as_array().unwrap()[0]["id"].as_str().unwrap().to_string();
+        let cipher_id = owner.create_org_cipher(&org_id, &col_id, "2.evented|mac").await["id"].as_str().unwrap().to_string();
+        (owner, org_id, cipher_id)
+    }
+
+    #[tokio::test]
+    async fn org_events_lists_logged_actions() {
+        let (owner, org_id, _cipher_id) = org_with_cipher().await;
+
+        let resp = owner.get(&format!("/api/organizations/{org_id}/events{}", range_query())).await;
+        resp.assert_ok();
+        assert_eq!(resp.json()["object"], "list");
+        let types: Vec<i64> = resp.json()["data"].as_array().unwrap().iter().filter_map(|e| e["type"].as_i64()).collect();
+        assert!(types.contains(&1100), "org events should include CipherCreated (1100): {}", resp.body);
+    }
+
+    #[tokio::test]
+    async fn cipher_events_lists_its_events() {
+        let (owner, _org_id, cipher_id) = org_with_cipher().await;
+
+        let resp = owner.get(&format!("/api/ciphers/{cipher_id}/events{}", range_query())).await;
+        resp.assert_ok();
+        let types: Vec<i64> = resp.json()["data"].as_array().unwrap().iter().filter_map(|e| e["type"].as_i64()).collect();
+        assert!(types.contains(&1100), "cipher events should include CipherCreated (1100): {}", resp.body);
+    }
+
+    #[tokio::test]
+    async fn user_events_lists_acting_user_events() {
+        // Exercises find_by_organization_and_user, which matches on act_user_uuid.
+        let (owner, org_id, _cipher_id) = org_with_cipher().await;
+        let owner_id = owner.user_id.unwrap();
+
+        let resp = owner.get(&format!("/api/organizations/{org_id}/users/{owner_id}/events{}", range_query())).await;
+        resp.assert_ok();
+        assert!(!resp.json()["data"].as_array().unwrap().is_empty(), "user events should include the owner's actions: {}", resp.body);
+    }
+
+    #[tokio::test]
+    async fn collect_client_event_is_recorded() {
+        let (owner, _org_id, cipher_id) = org_with_cipher().await;
+        let date = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+
+        // A client-side "viewed" event (1107) for the org cipher, pushed via collect.
+        owner.post("/events/collect", json!([{ "type": 1107, "date": date, "cipherId": cipher_id }])).await.assert_ok();
+
+        let resp = owner.get(&format!("/api/ciphers/{cipher_id}/events{}", range_query())).await;
+        resp.assert_ok();
+        let types: Vec<i64> = resp.json()["data"].as_array().unwrap().iter().filter_map(|e| e["type"].as_i64()).collect();
+        assert!(types.contains(&1107), "collected client-viewed event (1107) should be recorded: {}", resp.body);
+    }
+
+    #[tokio::test]
+    async fn org_events_require_admin() {
+        let owner = TestClient::register_and_login().await;
+        let outsider = TestClient::register_and_login().await;
+        let org_id = owner.create_org("Locked").await["id"].as_str().unwrap().to_string();
+
+        let resp = outsider.get(&format!("/api/organizations/{org_id}/events{}", range_query())).await;
+        assert!(resp.status >= 400, "non-admin should not read org events, got {}: {}", resp.status, resp.body);
+    }
+}
