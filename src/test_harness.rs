@@ -597,6 +597,24 @@ impl TestClient {
         resp.json()
     }
 
+    /// Enable TOTP (authenticator) 2FA for this user, returning the base32 shared
+    /// secret. Drives the real two-step get-authenticator → activate flow with a
+    /// freshly computed code, so the account genuinely requires 2FA afterwards.
+    pub async fn enable_totp(&self) -> String {
+        let gen_resp = self.post("/api/two-factor/get-authenticator", json!({ "masterPasswordHash": self.master_password_hash })).await;
+        gen_resp.assert_ok();
+        let secret = gen_resp.json()["key"].as_str().expect("totp key").to_string();
+
+        let activate = self
+            .post(
+                "/api/two-factor/authenticator",
+                json!({ "masterPasswordHash": self.master_password_hash, "key": secret, "token": totp_code(&secret, 0) }),
+            )
+            .await;
+        activate.assert_ok();
+        secret
+    }
+
     /// Create an org-owned login cipher in `col_id`, returning the cipher JSON.
     pub async fn create_org_cipher(&self, org_id: &str, col_id: &str, name: &str) -> Value {
         let body = json!({
@@ -613,6 +631,18 @@ impl TestClient {
         resp.assert_ok();
         resp.json()
     }
+}
+
+/// Compute a 6-digit TOTP code for a base32 secret, `step_offset` 30-second
+/// windows from now (0 = current window). Mirrors the server's
+/// `totp_custom::<Sha1>(30, 6, ...)`, letting tests produce codes the server
+/// accepts. Offsetting by +1 avoids the server's replay guard when a code for
+/// the current window was already consumed (e.g. during activation).
+pub fn totp_code(secret_b32: &str, step_offset: i64) -> String {
+    use totp_lite::{Sha1, totp_custom};
+    let decoded = data_encoding::BASE32.decode(secret_b32.as_bytes()).expect("valid base32 secret");
+    let time = (chrono::Utc::now().timestamp() + step_offset * 30) as u64;
+    totp_custom::<Sha1>(30, 6, &decoded, time)
 }
 
 #[cfg(test)]

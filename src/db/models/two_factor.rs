@@ -22,7 +22,10 @@ impl From<Row> for TwoFactor {
             user_uuid: row.get(0),
             atype: TwoFactorType::from_repr(row.get(1)).unwrap_or(TwoFactorType::Unknown),
             enabled: row.get(2),
-            data: row.get(3),
+            // `data` is stored as JSON text (the column is TEXT), so parse it back
+            // into a Value. Different 2FA types store either a bare string
+            // (authenticator secret) or a JSON object (email/yubikey/webauthn/duo).
+            data: serde_json::from_str(&row.get::<_, String>(3)).unwrap_or(Value::Null),
             last_used: row.get(4),
         }
     }
@@ -84,13 +87,15 @@ impl TwoFactor {
 /// Database methods
 impl TwoFactor {
     pub async fn save(&self, conn: &Conn) -> Result<()> {
+        // The `data` column is TEXT; store the Value as JSON text (see From<Row>).
+        let data = serde_json::to_string(&self.data).ise()?;
         conn.execute(
-            r"INSERT INTO twofactor (user_uuid, atype, enabled, data, last_used) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (user_uuid, atype) DO UPDATE
+            r"INSERT INTO twofactor (user_uuid, atype, enabled, data, last_used) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (user_uuid, atype) DO UPDATE
         SET
         enabled = EXCLUDED.enabled,
         data = EXCLUDED.data,
         last_used = EXCLUDED.last_used",
-            &[&self.user_uuid, &(self.atype as i32), &self.enabled, &self.data, &self.last_used],
+            &[&self.user_uuid, &(self.atype as i32), &self.enabled, &data, &self.last_used],
         )
         .await
         .ise()?;
