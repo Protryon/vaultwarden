@@ -100,6 +100,28 @@ pub async fn sync(Query(data): Query<SyncData>, headers: Headers) -> Result<Json
     let policies_json: Vec<Value> =
         OrganizationPolicy::find_confirmed_by_user(&conn, headers.user.uuid).await?.iter().map(OrganizationPolicy::to_json).collect();
 
+    // This is very similar to the userDecryptionOptions sent in connect/token,
+    // but as of 2025-12-19 they're both using different casing conventions.
+    // Computed before `domains_json` since `get_eq_domains` consumes `headers`.
+    let has_master_password = !headers.user.password_hash.is_empty();
+    let master_password_unlock = if has_master_password {
+        json!({
+            "kdf": {
+                "kdfType": headers.user.client_kdf_type,
+                "iterations": headers.user.client_kdf_iter,
+                "memory": headers.user.client_kdf_memory,
+                "parallelism": headers.user.client_kdf_parallelism
+            },
+            // This field is named inconsistently and will be removed and replaced by the "wrapped" variant in the apps.
+            // https://github.com/bitwarden/android/blob/release/2025.12-rc41/network/src/main/kotlin/com/bitwarden/network/model/MasterPasswordUnlockDataJson.kt#L22-L26
+            "masterKeyEncryptedUserKey": headers.user.akey,
+            "masterKeyWrappedUserKey": headers.user.akey,
+            "salt": headers.user.email
+        })
+    } else {
+        Value::Null
+    };
+
     let domains_json = if data.exclude_domains {
         Value::Null
     } else {
@@ -121,6 +143,9 @@ pub async fn sync(Query(data): Query<SyncData>, headers: Headers) -> Result<Json
         "ciphers": ciphers_json,
         "domains": domains_json,
         "sends": sends_json,
+        "userDecryption": {
+            "masterPasswordUnlock": master_password_unlock,
+        },
         "unofficialServer": true,
         "object": "sync"
     })))
@@ -163,7 +188,7 @@ pub struct CipherData {
     SecureNote = 2,
     Card = 3,
     Identity = 4
-    Fido2Key = 5
+    SshKey = 5
     */
     pub r#type: CipherType,
     pub name: String,
@@ -175,7 +200,7 @@ pub struct CipherData {
     secure_note: Option<Value>,
     card: Option<Value>,
     identity: Option<Value>,
-    fido2_key: Option<Value>,
+    ssh_key: Option<Value>,
 
     favorite: Option<bool>,
     reprompt: Option<RepromptType>,
@@ -397,7 +422,7 @@ pub async fn update_cipher_from_data(
         CipherType::SecureNote => data.secure_note,
         CipherType::Card => data.card,
         CipherType::Identity => data.identity,
-        CipherType::Fido2Key => data.fido2_key,
+        CipherType::SshKey => data.ssh_key,
         CipherType::Unknown => err!("Invalid type"),
     };
 

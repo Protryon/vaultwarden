@@ -90,6 +90,8 @@ async fn main() {
             SdkTracerProvider::builder().with_batch_exporter(exporter).with_resource(Resource::builder().with_service_name("vaultwarden").build()).build();
 
         let tracer = tracer_provider.tracer("vaultwarden");
+        // Keep a handle so the shutdown signal handler can flush pending spans before exiting.
+        let _ = TRACER_PROVIDER.set(tracer_provider.clone());
         opentelemetry::global::set_tracer_provider(tracer_provider);
 
         let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
@@ -115,7 +117,55 @@ async fn main() {
     jobs::schedule_jobs();
     // crate::db::models::TwoFactor::migrate_u2f_to_webauthn(&mut pool.get().await.unwrap()).await.unwrap();
 
+    spawn_shutdown_signal_handler();
+
     api::run_api_server().await;
+}
+
+/// Holds the OpenTelemetry tracer provider so the shutdown handler can flush
+/// any spans still buffered in the batch exporter before the process exits.
+static TRACER_PROVIDER: std::sync::OnceLock<SdkTracerProvider> = std::sync::OnceLock::new();
+
+/// Flush and shut down telemetry, ignoring the case where it was never initialized.
+fn shutdown_telemetry() {
+    if let Some(provider) = TRACER_PROVIDER.get()
+        && let Err(e) = provider.shutdown()
+    {
+        error!("Error shutting down tracer provider: {e}");
+    }
+}
+
+/// Handle process shutdown signals so containers stop cleanly.
+/// Without this, a `SIGTERM`/`SIGQUIT` (e.g. `docker stop`) terminates the process
+/// immediately and any buffered telemetry spans are lost.
+#[cfg(unix)]
+fn spawn_shutdown_signal_handler() {
+    use tokio::signal::unix::{SignalKind, signal};
+    tokio::spawn(async move {
+        let mut sigint = signal(SignalKind::interrupt()).expect("Error setting SIGINT handler");
+        let mut sigterm = signal(SignalKind::terminate()).expect("Error setting SIGTERM handler");
+        let mut sigquit = signal(SignalKind::quit()).expect("Error setting SIGQUIT handler");
+
+        let signal_name = tokio::select! {
+            _ = sigint.recv() => "SIGINT",
+            _ = sigterm.recv() => "SIGTERM",
+            _ = sigquit.recv() => "SIGQUIT",
+        };
+
+        info!("Received {signal_name}, initiating graceful shutdown");
+        shutdown_telemetry();
+        exit(0);
+    });
+}
+
+#[cfg(not(unix))]
+fn spawn_shutdown_signal_handler() {
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.expect("Error setting Ctrl-C handler");
+        info!("Received Ctrl-C, initiating graceful shutdown");
+        shutdown_telemetry();
+        exit(0);
+    });
 }
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

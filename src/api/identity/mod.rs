@@ -318,7 +318,7 @@ async fn password_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &
     // Change the KDF Iterations
     if user.password_iterations != CONFIG.settings.password_iterations {
         user.password_iterations = CONFIG.settings.password_iterations;
-        user.set_password(password, None, false, None);
+        user.set_password(password, None, false, None, conn).await?;
 
         if let Err(e) = user.save(conn).await {
             error!("Error updating user: {:#?}", e);
@@ -414,7 +414,10 @@ async fn password_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &
                 "Memory": user.client_kdf_memory,
                 "Parallelism": user.client_kdf_parallelism
             },
+            // This field is named inconsistently and will be removed and replaced by the "wrapped" variant in the apps.
+            // https://github.com/bitwarden/android/blob/release/2025.12-rc41/network/src/main/kotlin/com/bitwarden/network/model/MasterPasswordUnlockDataJson.kt#L22-L26
             "MasterKeyEncryptedUserKey": user.akey,
+            "MasterKeyWrappedUserKey": user.akey,
             "Salt": user.email
         })
     } else {

@@ -219,7 +219,14 @@ impl User {
     ///                       These routes are able to use the previous stamp id for the next 2 minutes.
     ///                       After these 2 minutes this stamp will expire.
     ///
-    pub fn set_password(&mut self, password: &str, new_key: Option<String>, reset_security_stamp: bool, allow_next_route: Option<Vec<String>>) {
+    pub async fn set_password(
+        &mut self,
+        password: &str,
+        new_key: Option<String>,
+        reset_security_stamp: bool,
+        allow_next_route: Option<Vec<String>>,
+        conn: &Conn,
+    ) -> Result<()> {
         self.password_hash = crypto::hash_password(password.as_bytes(), &self.salt, self.password_iterations as u32);
 
         if let Some(route) = allow_next_route {
@@ -231,12 +238,16 @@ impl User {
         }
 
         if reset_security_stamp {
-            self.reset_security_stamp()
+            self.reset_security_stamp(conn).await?;
         }
+        Ok(())
     }
 
-    pub fn reset_security_stamp(&mut self) {
+    pub async fn reset_security_stamp(&mut self, conn: &Conn) -> Result<()> {
         self.security_stamp = Uuid::new_v4();
+        // Invalidate all existing refresh-tokens so they can no longer be used.
+        Device::rotate_refresh_tokens_by_user(conn, self.uuid).await?;
+        Ok(())
     }
 
     /// Set the stamp_exception to only allow a subsequent request matching a specific route using the current security-stamp.

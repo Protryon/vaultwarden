@@ -46,6 +46,16 @@ pub fn route(router: Router) -> Router {
         .post("/accounts/prelogin", prelogin)
         .post("/accounts/api-key", api_key)
         .post("/accounts/rotate-api-key", rotate_api_key)
+        .get("/tasks", get_tasks)
+}
+
+/// Stub for the security-tasks endpoint so newer web-vault/clients don't error.
+/// Vaultwarden does not implement security tasks, so this always returns an empty list.
+async fn get_tasks(_headers: Headers) -> Json<Value> {
+    Json(json!({
+        "data": [],
+        "object": "list"
+    }))
 }
 
 #[derive(Deserialize, Debug)]
@@ -180,7 +190,7 @@ pub async fn register(conn: AutoTxn, data: Json<RegisterData>) -> Result<Json<Va
     user.client_kdf_memory = data.kdf_memory;
     user.client_kdf_parallelism = data.kdf_parallelism;
 
-    user.set_password(&data.master_password_hash, Some(data.key), true, None);
+    user.set_password(&data.master_password_hash, Some(data.key), true, None, &conn).await?;
     user.password_hint = password_hint;
 
     // Add extra fields if present
@@ -238,7 +248,7 @@ pub async fn post_set_password(headers: Headers, data: Json<SetPasswordData>) ->
     user.client_kdf_memory = data.kdf_memory;
     user.client_kdf_parallelism = data.kdf_parallelism;
 
-    user.set_password(&data.master_password_hash, Some(data.key), false, routes);
+    user.set_password(&data.master_password_hash, Some(data.key), false, routes, &conn).await?;
     user.password_hint = password_hint;
 
     if let Some(keys) = data.keys {
@@ -374,7 +384,9 @@ pub async fn post_password(headers: Headers, data: Json<ChangePassData>) -> Resu
         Some(data.key),
         true,
         Some(vec![String::from("post_rotatekey"), String::from("get_contacts"), String::from("get_public_keys")]),
-    );
+        &conn,
+    )
+    .await?;
 
     user.save(&conn).await?;
 
@@ -437,8 +449,8 @@ pub async fn post_kdf(headers: Headers, data: Json<ChangeKdfData>) -> Result<()>
     }
     user.client_kdf_iter = data.kdf_iterations;
     user.client_kdf_type = data.kdf;
-    user.set_password(&data.new_master_password_hash, Some(data.key), true, None);
     let conn = DB.get().await.ise()?;
+    user.set_password(&data.new_master_password_hash, Some(data.key), true, None, &conn).await?;
 
     user.save(&conn).await?;
 
@@ -512,7 +524,7 @@ pub async fn post_rotatekey(mut conn: AutoTxn, headers: Headers, data: Json<KeyD
 
     user.akey = data.key;
     user.private_key = Some(data.private_key);
-    user.reset_security_stamp();
+    user.reset_security_stamp(&conn).await?;
 
     user.save(&conn).await?;
 
@@ -534,7 +546,7 @@ pub async fn post_sstamp(headers: Headers, conn: AutoTxn, data: Json<PasswordDat
     }
 
     Device::delete_all_by_user(&conn, user.uuid).await?;
-    user.reset_security_stamp();
+    user.reset_security_stamp(&conn).await?;
     user.save(&conn).await?;
 
     ws_users().send_logout(&user, &conn, None).await?;
@@ -633,7 +645,7 @@ pub async fn post_email(headers: Headers, data: Json<ChangeEmailData>) -> Result
     user.email_new = None;
     user.email_new_token = None;
 
-    user.set_password(&data.new_master_password_hash, Some(data.key), true, None);
+    user.set_password(&data.new_master_password_hash, Some(data.key), true, None, &conn).await?;
 
     user.save(&conn).await?;
 

@@ -555,7 +555,7 @@ async fn deauth_user(Path(uuid): Path<Uuid>, _token: AdminToken) -> Result<()> {
     }
 
     Device::delete_all_by_user(&conn, user.uuid).await?;
-    user.reset_security_stamp();
+    user.reset_security_stamp(&conn).await?;
 
     user.save(&conn).await
 }
@@ -564,7 +564,7 @@ async fn disable_user(Path(uuid): Path<Uuid>, _token: AdminToken) -> Result<()> 
     let conn = DB.get().await.map_err(Error::internal)?;
     let mut user = get_user_or_404(uuid, &conn).await?;
     Device::delete_all_by_user(&conn, user.uuid).await?;
-    user.reset_security_stamp();
+    user.reset_security_stamp(&conn).await?;
     user.enabled = false;
 
     let save_result = user.save(&conn).await;

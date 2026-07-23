@@ -21,6 +21,7 @@ pub fn route(mut router: Router) -> Router {
         router = router.get("/app-id.json", app_id);
         router = router.fallback("/", web_files);
     }
+    router = router.get("/.well-known/apple-app-site-association", apple_app_site_association);
     router = router.get("/attachments/:uuid/:filename", attachments);
     router = router.get("/alive", alive);
     router = router.get("/vw_static/:filename", static_files);
@@ -64,6 +65,23 @@ async fn app_id() -> Result<Response> {
                 "ios:bundle-id:com.8bit.bitwarden",
                 "android:apk-key-hash:dUGFzUzf3lmHSLBDBIv+WaFyZMI" ]
             }]
+        })),
+    )
+        .into_response()
+}
+
+// Needed for iOS AutoFill to associate credentials with the Bitwarden apps.
+// https://developer.apple.com/documentation/xcode/supporting-associated-domains
+async fn apple_app_site_association() -> Result<Response> {
+    (
+        Cached::long(true),
+        Json(json!({
+            "webcredentials": {
+                "apps": [
+                    "LTZ2PFU5D6.com.8bit.bitwarden",
+                    "LTZ2PFU5D6.com.8bit.bitwarden.beta"
+                ]
+            }
         })),
     )
         .into_response()

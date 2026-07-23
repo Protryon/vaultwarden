@@ -61,7 +61,7 @@ pub enum CipherType {
     SecureNote = 2,
     Card = 3,
     Identity = 4,
-    Fido2Key = 5,
+    SshKey = 5,
     Unknown = i32::MAX,
 }
 
@@ -273,6 +273,17 @@ impl FullCipher {
             }
         }
 
+        // Fix invalid SSH key entries by setting the type data to `null`.
+        // Mandatory fields being empty breaks at least the native mobile client, which
+        // will crash on such a cipher unless the whole type payload is null.
+        if self.cipher.atype == CipherType::SshKey
+            && (data["keyFingerprint"].as_str().is_none_or(str::is_empty)
+                || data["privateKey"].as_str().is_none_or(str::is_empty)
+                || data["publicKey"].as_str().is_none_or(str::is_empty))
+        {
+            data = Value::Null;
+        }
+
         let mut data_json = data.clone();
 
         data_json["fields"] = self
@@ -370,7 +381,7 @@ impl FullCipher {
             "secureNote": null,
             "card": null,
             "identity": null,
-            "fido2Key": null,
+            "sshKey": null,
         });
 
         // These values are only needed for user/default syncs
@@ -391,7 +402,7 @@ impl FullCipher {
             CipherType::SecureNote => "secureNote",
             CipherType::Card => "card",
             CipherType::Identity => "identity",
-            CipherType::Fido2Key => "fido2Key",
+            CipherType::SshKey => "sshKey",
             CipherType::Unknown => panic!("Wrong type"),
         };
 

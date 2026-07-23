@@ -75,11 +75,15 @@ impl Device {
         self.twofactor_remember = None;
     }
 
+    pub fn generate_refresh_token() -> String {
+        use data_encoding::BASE64URL;
+        crypto::encode_random_bytes::<64>(BASE64URL)
+    }
+
     pub fn refresh_tokens(&mut self, user: &super::User, orgs: Vec<super::UserOrganization>, scope: Vec<String>) -> (String, i64) {
         // If there is no refresh token, we create one
         if self.refresh_token.is_empty() {
-            use data_encoding::BASE64URL;
-            self.refresh_token = crypto::encode_random_bytes::<64>(BASE64URL);
+            self.refresh_token = Device::generate_refresh_token();
         }
 
         // Update the expiration of the device and the last update date
@@ -166,6 +170,21 @@ impl Device {
 
     pub async fn find_by_refresh_token(conn: &Conn, refresh_token: &str) -> Result<Option<Self>> {
         Ok(conn.query_opt(r"SELECT * FROM devices WHERE refresh_token = $1", &[&refresh_token]).await.ise()?.map(Into::into))
+    }
+
+    pub async fn find_by_user(conn: &Conn, user_uuid: Uuid) -> Result<Vec<Self>> {
+        Ok(conn.query(r"SELECT * FROM devices WHERE user_uuid = $1", &[&user_uuid]).await.ise()?.into_iter().map(Into::into).collect())
+    }
+
+    /// Rotate the refresh-token of every device belonging to a user.
+    /// Called when a security-stamp is reset so that old refresh-tokens can no longer be used.
+    /// Each device needs a unique token, so a single UPDATE with one value cannot be used.
+    pub async fn rotate_refresh_tokens_by_user(conn: &Conn, user_uuid: Uuid) -> Result<()> {
+        for mut device in Self::find_by_user(conn, user_uuid).await? {
+            device.refresh_token = Device::generate_refresh_token();
+            device.save(conn).await?;
+        }
+        Ok(())
     }
 
     pub async fn find_latest_active_by_user(conn: &Conn, user_uuid: Uuid) -> Result<Option<Self>> {

@@ -103,6 +103,18 @@ pub fn route(router: Router) -> Router {
         .get("/organizations/:org_uuid/export", get_org_export)
         .post("/organizations/:org_uuid/api-key", api_key)
         .post("/organizations/:org_uuid/rotate-api-key", rotate_api_key)
+        .get("/organizations/:org_uuid/billing/vnext/warnings", get_billing_warnings)
+}
+
+#[allow(unused_variables)]
+async fn get_billing_warnings(Path(org_uuid): Path<Uuid>, _headers: Headers) -> Json<Value> {
+    // Prevent a 404 error, which also causes Javascript errors in newer web-vault clients.
+    Json(json!({
+        "freeTrial": null,
+        "inactiveSubscription": null,
+        "resellerRenewal": null,
+        "taxId": null,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -2486,7 +2498,7 @@ async fn put_reset_password(
     let reset_request = data.0;
 
     let mut user = user;
-    user.set_password(reset_request.new_master_password_hash.as_str(), Some(reset_request.key), true, None);
+    user.set_password(reset_request.new_master_password_hash.as_str(), Some(reset_request.key), true, None, &conn).await?;
     user.save(&conn).await?;
 
     ws_users().send_logout(&user, &conn, None).await?;

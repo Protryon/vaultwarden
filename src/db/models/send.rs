@@ -169,7 +169,7 @@ impl Send {
             "accessCount": self.access_count,
             "password": self.password_hash.as_deref().map(|h| BASE64URL_NOPAD.encode(h)),
             "disabled": self.disabled,
-            "hideEmail": self.hide_email,
+            "hideEmail": self.hide_email.unwrap_or(false),
 
             "revisionDate": format_date(&self.revision_date),
             "expirationDate": self.expiration_date.as_ref().map(format_date),
