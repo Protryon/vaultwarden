@@ -61,6 +61,8 @@ mod jobs;
 mod mail;
 mod push;
 mod ratelimit;
+#[cfg(test)]
+mod test_harness;
 mod util;
 
 pub use config::CONFIG;

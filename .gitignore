@@ -4,6 +4,9 @@ target
 # Data folder
 data
 
+# Test harness data folder (generated RSA keys, etc.)
+testing/data
+
 # IDE files
 .vscode
 .idea

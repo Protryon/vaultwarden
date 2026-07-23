@@ -1,0 +1,29 @@
+# Postgres instance backing the Rust test harness (`src/test_harness.rs`).
+#
+#   docker compose -f testing/docker-compose.yml up -d
+#   cargo test
+#   docker compose -f testing/docker-compose.yml down -v
+#
+# Credentials and port are intentionally hardcoded to match the constants in
+# src/test_harness.rs. Each test creates and drops its own database on this
+# server, so the `postgres` maintenance database below is only used to issue
+# CREATE/DROP DATABASE.
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: vaultwarden-test-postgres
+    environment:
+      POSTGRES_USER: vaultwarden
+      POSTGRES_PASSWORD: vaultwarden
+      POSTGRES_DB: postgres
+    ports:
+      - "127.0.0.1:5433:5432"
+    # Keep it snappy for tests: no durable fsync, everything in a tmpfs.
+    command: ["postgres", "-c", "fsync=off", "-c", "full_page_writes=off", "-c", "synchronous_commit=off"]
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vaultwarden -d postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

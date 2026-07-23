@@ -657,7 +657,15 @@ pub async fn load() -> Result<()> {
     } else {
         path
     };
-    let config: Config = serde_yaml::from_str(&tokio::fs::read_to_string(&path).await?)?;
+    load_str(&tokio::fs::read_to_string(&path).await?)
+}
+
+/// Parse and install a config from a YAML string, setting the global `CONFIG`
+/// and the derived global cells. Split out from [`load`] so tests can install a
+/// config without touching the filesystem. Panics (via `AlwaysCell::set`) if a
+/// config has already been installed in this process.
+pub fn load_str(yaml: &str) -> Result<()> {
+    let config: Config = serde_yaml::from_str(yaml)?;
     validate_config(&config)?;
 
     let mut public = config.settings.public.to_string();

@@ -42,11 +42,20 @@ pub(super) async fn init() -> anyhow::Result<()> {
         .await?;
 
     let mut conn = pool.get().await?;
-    embedded::migrations::runner().run_async(&mut *conn).await?;
+    // `conn` is a pooled connection; deref to the underlying `Client`.
+    run_migrations(&mut conn).await?;
     info!("finished psql migrations");
 
     drop(conn);
 
     AlwaysCell::set(&DB, pool);
+    Ok(())
+}
+
+/// Run all embedded refinery migrations against the given client. Used both by
+/// [`init`] at startup and by the test harness to bring a throwaway database up
+/// to the current schema.
+pub async fn run_migrations(conn: &mut Client) -> Result<(), refinery::Error> {
+    embedded::migrations::runner().run_async(conn).await?;
     Ok(())
 }
