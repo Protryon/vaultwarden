@@ -695,4 +695,86 @@ mod tests {
         let client = TestClient::new().await;
         client.get("/api/sends").await.assert_status(401);
     }
+
+    #[tokio::test]
+    async fn legacy_file_send_upload() {
+        let owner = TestClient::register_and_login().await;
+        let contents = "legacy-send-file-bytes";
+        let deletion = (chrono::Utc::now() + chrono::Duration::days(7)).to_rfc3339();
+
+        // The legacy endpoint takes the model and the bytes in one multipart POST.
+        let model = json!({
+            "type": 1, // File
+            "key": "2.sendkey|mac",
+            "name": "2.legacyfile|mac",
+            "file": { "fileName": "2.secret.txt|mac" },
+            "fileLength": contents.len(),
+            "deletionDate": deletion,
+            "disabled": false,
+        })
+        .to_string();
+
+        let resp = owner
+            .post_multipart("/api/sends/file", &[("model", None, model.as_bytes()), ("data", Some("2.secret.txt|mac"), contents.as_bytes())])
+            .await;
+        resp.assert_ok();
+        let created = resp.json();
+        assert_eq!(created["type"], 1);
+        let id = created["id"].as_str().expect("send id").to_string();
+
+        // It's listed.
+        let list = owner.get("/api/sends").await;
+        let ids: Vec<String> = list.json()["data"].as_array().unwrap().iter().filter_map(|s| s["id"].as_str().map(String::from)).collect();
+        assert!(ids.contains(&id), "legacy file send not listed: {}", list.body);
+    }
+
+    #[tokio::test]
+    async fn file_send_v2_upload_access_download() {
+        let owner = TestClient::register_and_login().await;
+        let contents = "encrypted-send-file-bytes";
+        let deletion = (chrono::Utc::now() + chrono::Duration::days(7)).to_rfc3339();
+
+        // 1. Reserve the file send (v2 handshake) and get the upload URL.
+        let create = owner
+            .post(
+                "/api/sends/file/v2",
+                json!({
+                    "type": 1, // File
+                    "key": "2.sendkey|mac",
+                    "name": "2.filesend|mac",
+                    "file": { "fileName": "2.secret.txt|mac" },
+                    "fileLength": contents.len(),
+                    "deletionDate": deletion,
+                    "disabled": false,
+                }),
+            )
+            .await;
+        create.assert_ok();
+        let cj = create.json();
+        assert_eq!(cj["object"], "send-fileUpload");
+        let upload_path = cj["url"].as_str().expect("upload url").to_string(); // /sends/{uuid}/file/{file_id}
+        let send_id = cj["sendResponse"]["id"].as_str().unwrap().to_string();
+        let access_id = cj["sendResponse"]["accessId"].as_str().expect("accessId").to_string();
+        let file_id = upload_path.rsplit('/').next().unwrap().to_string();
+
+        // 2. Upload the bytes to the returned URL (server routes are under /api).
+        owner.post_multipart(&format!("/api{upload_path}"), &[("data", Some("2.secret.txt|mac"), contents.as_bytes())]).await.assert_ok();
+
+        // 3. Anonymous access to the send metadata by accessId.
+        let anon = TestClient::new().await;
+        let access = anon.post(&format!("/api/sends/access/{access_id}"), json!({ "password": null })).await;
+        access.assert_ok();
+        assert_eq!(access.json()["type"], 1, "should be a file send: {}", access.body);
+
+        // 4. Request a download token for the file, then download it.
+        let file_access = anon.post(&format!("/api/sends/{send_id}/access/file/{file_id}"), json!({ "password": null })).await;
+        file_access.assert_ok();
+        let dl_url = file_access.json()["url"].as_str().expect("download url").to_string();
+        // The URL is absolute (built from the public config); take the path+query and
+        // fetch it against the test server (same host) so the JWT `t` token is preserved.
+        let rel = &dl_url[dl_url.find("/api/").expect("api path in download url")..];
+        let download = anon.get(rel).await;
+        download.assert_ok();
+        assert_eq!(download.body, contents, "downloaded bytes should match what was uploaded");
+    }
 }
