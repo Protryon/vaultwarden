@@ -65,6 +65,11 @@ async fn global_init() {
             if !always_cell::AlwaysCell::is_set(&crate::config::CONFIG) {
                 crate::config::load_str(TEST_CONFIG_YAML).expect("failed to load test config");
             }
+            // Surface server-side errors (500s show up as empty bodies over HTTP)
+            // to stderr. Off unless VW_TEST_LOG is set, so normal runs stay quiet.
+            if std::env::var_os("VW_TEST_LOG").is_some() {
+                let _ = fern::Dispatch::new().level(log::LevelFilter::Debug).chain(std::io::stderr()).apply();
+            }
             ensure_rsa_keys().await.expect("failed to create RSA keys for tests");
         })
         .await;

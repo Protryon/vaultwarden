@@ -2710,6 +2710,8 @@ async fn rotate_api_key(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, da
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use crate::test_harness::TestClient;
 
     #[tokio::test]
@@ -2862,6 +2864,118 @@ mod tests {
         });
         let resp = member.put(&format!("/api/ciphers/{cipher_id}"), update).await;
         assert!(resp.status >= 400, "read-only member should not edit cipher, got {}: {}", resp.status, resp.body);
+    }
+
+    #[tokio::test]
+    async fn promote_member_to_admin() {
+        let owner = TestClient::register_and_login().await;
+        let member = TestClient::register_and_login().await;
+        let org_id = owner.create_org("Promote").await["id"].as_str().unwrap().to_string();
+        let member_id = owner.add_org_member(&org_id, &member).await;
+
+        let edit = json!({ "type": 1, "accessAll": true, "collections": null, "groups": null }); // Admin
+        owner.put(&format!("/api/organizations/{org_id}/users/{member_id}"), edit).await.assert_ok();
+
+        let got = owner.get(&format!("/api/organizations/{org_id}/users/{member_id}")).await;
+        got.assert_ok();
+        assert_eq!(got.json()["type"], 1, "member should be Admin: {}", got.body);
+    }
+
+    #[tokio::test]
+    async fn revoke_and_restore_member() {
+        let owner = TestClient::register_and_login().await;
+        let member = TestClient::register_and_login().await;
+        let org_id = owner.create_org("RevokeOrg").await["id"].as_str().unwrap().to_string();
+        let member_id = owner.add_org_member(&org_id, &member).await;
+
+        // Revoke → status -1.
+        owner.put(&format!("/api/organizations/{org_id}/users/{member_id}/revoke"), json!({})).await.assert_ok();
+        let revoked = owner.get(&format!("/api/organizations/{org_id}/users/{member_id}")).await;
+        revoked.assert_ok();
+        assert_eq!(revoked.json()["status"], -1, "member should be Revoked: {}", revoked.body);
+
+        // Restore → status 2 (Confirmed).
+        owner.put(&format!("/api/organizations/{org_id}/users/{member_id}/restore"), json!({})).await.assert_ok();
+        let restored = owner.get(&format!("/api/organizations/{org_id}/users/{member_id}")).await;
+        restored.assert_ok();
+        assert_eq!(restored.json()["status"], 2, "member should be Confirmed again: {}", restored.body);
+    }
+
+    #[tokio::test]
+    async fn remove_member_from_org() {
+        let owner = TestClient::register_and_login().await;
+        let member = TestClient::register_and_login().await;
+        let org_id = owner.create_org("RemoveOrg").await["id"].as_str().unwrap().to_string();
+        let member_id = owner.add_org_member(&org_id, &member).await;
+
+        owner.delete(&format!("/api/organizations/{org_id}/users/{member_id}")).await.assert_ok();
+
+        let after = owner.get(&format!("/api/organizations/{org_id}/users/{member_id}")).await;
+        assert!(after.status >= 400, "removed member should not be found, got {}: {}", after.status, after.body);
+    }
+
+    #[tokio::test]
+    async fn create_get_delete_group() {
+        let owner = TestClient::register_and_login().await;
+        let org_id = owner.create_org("Grouped").await["id"].as_str().unwrap().to_string();
+
+        let body = json!({ "name": "Engineers", "accessAll": true, "externalId": null, "collections": [], "users": [] });
+        let created = owner.post(&format!("/api/organizations/{org_id}/groups"), body).await;
+        created.assert_ok();
+        let group_id = created.json()["id"].as_str().expect("group id").to_string();
+
+        // Get by id returns the group object.
+        let got = owner.get(&format!("/api/organizations/{org_id}/groups/{group_id}")).await;
+        got.assert_ok();
+        assert_eq!(got.json()["object"], "group");
+        assert_eq!(got.json()["id"], group_id);
+
+        // Present in the group list.
+        let list = owner.get(&format!("/api/organizations/{org_id}/groups")).await;
+        list.assert_ok();
+        let list_json = list.json();
+        let ids: Vec<&str> = list_json["data"].as_array().unwrap().iter().filter_map(|g| g["id"].as_str()).collect();
+        assert!(ids.contains(&group_id.as_str()), "created group not in list: {}", list.body);
+
+        // Delete.
+        owner.delete(&format!("/api/organizations/{org_id}/groups/{group_id}")).await.assert_ok();
+        let after = owner.get(&format!("/api/organizations/{org_id}/groups/{group_id}")).await;
+        assert!(after.status >= 400, "deleted group should be gone, got {}: {}", after.status, after.body);
+    }
+
+    #[tokio::test]
+    async fn assign_member_to_group() {
+        let owner = TestClient::register_and_login().await;
+        let member = TestClient::register_and_login().await;
+        let org_id = owner.create_org("GroupMembers").await["id"].as_str().unwrap().to_string();
+        let member_id = owner.add_org_member(&org_id, &member).await;
+
+        let body = json!({ "name": "Squad", "accessAll": true, "externalId": null, "collections": [], "users": [] });
+        let group_id = owner.post(&format!("/api/organizations/{org_id}/groups"), body).await.json()["id"].as_str().unwrap().to_string();
+
+        // Assign the member to the group.
+        owner.put(&format!("/api/organizations/{org_id}/groups/{group_id}/users"), json!([member_id])).await.assert_ok();
+
+        let users = owner.get(&format!("/api/organizations/{org_id}/groups/{group_id}/users")).await;
+        users.assert_ok();
+        assert!(users.body.contains(&member_id.to_string()), "member should be in group users: {}", users.body);
+    }
+
+    #[tokio::test]
+    async fn enable_and_read_org_policy() {
+        let owner = TestClient::register_and_login().await;
+        let org_id = owner.create_org("Policies").await["id"].as_str().unwrap().to_string();
+
+        // Enable the PasswordGenerator policy (type 2) — minimal side effects.
+        let put = owner.put(&format!("/api/organizations/{org_id}/policies/2"), json!({ "enabled": true, "data": null })).await;
+        put.assert_ok();
+        assert_eq!(put.json()["enabled"], true);
+        assert_eq!(put.json()["type"], 2);
+
+        // Read it back.
+        let got = owner.get(&format!("/api/organizations/{org_id}/policies/2")).await;
+        got.assert_ok();
+        assert_eq!(got.json()["enabled"], true, "policy should be enabled: {}", got.body);
     }
 
     #[tokio::test]

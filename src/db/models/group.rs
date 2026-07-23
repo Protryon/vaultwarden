@@ -305,7 +305,7 @@ impl GroupUser {
     pub async fn delete_all_by_user(conn: &Conn, user_uuid: Uuid, organization_uuid: Uuid) -> Result<()> {
         User::flag_revision_for(conn, user_uuid).await.ise()?;
         conn.execute(
-            r"DELETE FROM group_users gu INNER JOIN groups g ON g.uuid = gu.group_uuid WHERE gu.user_uuid = $1 AND g.organization_uuid = $2",
+            r"DELETE FROM group_users gu USING groups g WHERE g.uuid = gu.group_uuid AND gu.user_uuid = $1 AND g.organization_uuid = $2",
             &[&user_uuid, &organization_uuid],
         )
         .await
