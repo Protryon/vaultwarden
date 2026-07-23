@@ -8,20 +8,31 @@
 //! cargo test
 //! ```
 //!
-//! Each test gets its own throwaway database. [`run_db_test`] handles the full
-//! lifecycle: it (1) creates a uniquely named database, (2) runs the same
-//! migrations `main.rs` runs at startup and installs the global `CONFIG`, (3)
-//! runs the test body against a connection to that database, and (4) drops the
-//! database afterwards — awaiting the drop even if the test body panics, so no
-//! stray databases are left behind.
+//! There are two layers of harness here:
+//!
+//! * [`run_db_test`] — a throwaway database per test with a direct connection,
+//!   for unit-testing model/query logic. It (1) creates a uniquely named
+//!   database, (2) runs migrations and installs the global `CONFIG`, (3) runs
+//!   the body against a connection, and (4) drops the database afterwards,
+//!   awaiting the drop even if the body panics so nothing is leaked.
+//!
+//! * [`TestClient`] — an HTTP client against the real axol server booted once
+//!   per test binary against a dedicated `vw_integration` database, for
+//!   end-to-end endpoint tests. Isolation between tests comes from each test
+//!   registering its own randomly-named user; the API scopes data per user, so
+//!   tests do not collide and can run in parallel.
 
+use std::net::SocketAddr;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use futures::future::FutureExt;
+use serde_json::{Value, json};
 use tokio::sync::OnceCell;
 use tokio::task::JoinHandle;
 use tokio_postgres::{Client, NoTls, config::SslMode};
+use uuid::Uuid;
 
 use crate::db::Conn;
 
@@ -195,6 +206,347 @@ where
     match result {
         Ok(value) => value,
         Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+// ===========================================================================
+// HTTP integration harness
+// ===========================================================================
+
+/// Booted once per test binary: recreates the integration database, runs the
+/// same `db::init` startup `main.rs` runs, boots the axol server, and yields its
+/// base URL (e.g. `http://127.0.0.1:10899`).
+static SERVER: OnceCell<String> = OnceCell::const_new();
+
+/// Boot the API server (once) and return its base URL.
+///
+/// The server runs on its own dedicated thread and runtime, independent of the
+/// per-test `#[tokio::test]` runtimes. That is essential: each `#[tokio::test]`
+/// spins up and tears down its own runtime, so a server (and its connection
+/// pool) spawned onto a test's runtime would die when that test finishes.
+async fn ensure_server() -> &'static str {
+    SERVER
+        .get_or_init(|| async {
+            // CONFIG + RSA keys are process globals; fine to set from here.
+            global_init().await;
+
+            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<String>();
+
+            std::thread::Builder::new()
+                .name("integration-server".to_string())
+                .spawn(move || {
+                    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("build server runtime");
+                    rt.block_on(async move {
+                        // Recreate the dedicated integration database from scratch so each
+                        // `cargo test` run starts clean. Name comes from the test config.
+                        let db_name = crate::CONFIG.db.database.clone();
+                        let (admin, admin_task) = connect(MAINTENANCE_DB).await.expect("connect to maintenance db");
+                        admin.batch_execute(&format!("DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)")).await.expect("drop integration db");
+                        admin.batch_execute(&format!("CREATE DATABASE \"{db_name}\"")).await.expect("create integration db");
+                        drop(admin);
+                        admin_task.abort();
+
+                        // Same startup path as main.rs: build the global pool + run migrations.
+                        // Done on this runtime so the pool lives as long as the server.
+                        crate::db::init().await.expect("db::init for integration server");
+
+                        let addr = crate::CONFIG.settings.api_bind;
+                        let server = axol::Server::bind(addr, crate::api::route()).await.expect("bind integration server");
+                        tokio::spawn(async move {
+                            if let Err(e) = server.serve().await {
+                                log::error!("integration test server exited: {e}");
+                            }
+                        });
+
+                        wait_until_ready(addr).await;
+                        ready_tx.send(format!("http://{addr}")).expect("signal server ready");
+
+                        // Keep this runtime (and the server) alive for the whole test binary.
+                        std::future::pending::<()>().await;
+                    });
+                })
+                .expect("spawn integration server thread");
+
+            ready_rx.await.expect("integration server failed to start")
+        })
+        .await
+        .as_str()
+}
+
+/// Poll until the server accepts TCP connections, so tests don't race the boot.
+async fn wait_until_ready(addr: SocketAddr) {
+    for _ in 0..200 {
+        if tokio::net::TcpStream::connect(addr).await.is_ok() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("integration test server did not become ready at {addr}");
+}
+
+/// The outcome of an HTTP request: status plus raw body, with JSON helpers.
+pub struct TestResponse {
+    pub status: u16,
+    pub body: String,
+}
+
+impl TestResponse {
+    /// Parse the body as JSON (panics if it isn't valid JSON).
+    pub fn json(&self) -> Value {
+        serde_json::from_str(&self.body).unwrap_or_else(|e| panic!("response body was not JSON ({e}): {}", self.body))
+    }
+
+    /// Assert a 2xx status, returning `self` for chaining. Includes the body in
+    /// the failure message so test output is actionable.
+    pub fn assert_ok(&self) -> &Self {
+        assert!((200..300).contains(&self.status), "expected 2xx, got {}: {}", self.status, self.body);
+        self
+    }
+
+    /// Assert an exact status code.
+    pub fn assert_status(&self, status: u16) -> &Self {
+        assert_eq!(self.status, status, "unexpected status; body: {}", self.body);
+        self
+    }
+}
+
+/// An HTTP client bound to the integration server. Construct an authenticated
+/// one with [`TestClient::register_and_login`], which creates a fresh user.
+pub struct TestClient {
+    http: reqwest::Client,
+    base: &'static str,
+    token: Option<String>,
+    pub email: String,
+    pub master_password_hash: String,
+    pub akey: String,
+    pub public_key: String,
+    pub private_key: String,
+    pub device_id: String,
+    pub user_id: Option<Uuid>,
+}
+
+impl TestClient {
+    /// An unauthenticated client with a fresh, unique identity prepared but not
+    /// yet registered.
+    pub async fn new() -> TestClient {
+        let base = ensure_server().await;
+        let n = DB_COUNTER.fetch_add(1, Ordering::Relaxed);
+        TestClient {
+            http: reqwest::Client::new(),
+            base,
+            token: None,
+            email: format!("user_{}_{n}@test.example", std::process::id()),
+            // The server treats this as an opaque credential (it hashes it
+            // again server-side), so any stable string works — no client-side
+            // Bitwarden crypto is required.
+            master_password_hash: Uuid::new_v4().simple().to_string(),
+            akey: "0.testkey|testmac".to_string(),
+            public_key: "testpublickey".to_string(),
+            private_key: "2.testprivatekey|testmac".to_string(),
+            device_id: Uuid::new_v4().to_string(),
+            user_id: None,
+        }
+    }
+
+    /// Register the prepared identity via `/identity/accounts/register`.
+    pub async fn register(&mut self) -> &mut Self {
+        let body = json!({
+            "email": self.email,
+            "kdf": 0,
+            "kdfIterations": 600_000,
+            "key": self.akey,
+            "keys": { "encryptedPrivateKey": self.private_key, "publicKey": self.public_key },
+            "masterPasswordHash": self.master_password_hash,
+            "name": "Test User",
+        });
+        self.post("/identity/accounts/register", body).await.assert_ok();
+        self
+    }
+
+    /// Log in via `/identity/connect/token`, storing the access token for
+    /// subsequent authenticated requests, and capturing the user id.
+    pub async fn login(&mut self) -> &mut Self {
+        let form = [
+            ("grant_type", "password"),
+            ("username", self.email.as_str()),
+            ("password", self.master_password_hash.as_str()),
+            ("scope", "api offline_access"),
+            ("client_id", "web"),
+            ("device_identifier", self.device_id.as_str()),
+            ("device_name", "test-harness"),
+            ("device_type", "14"),
+        ];
+        let resp = self.send(self.request(reqwest::Method::POST, "/identity/connect/token").form(&form)).await;
+        resp.assert_ok();
+        let token = resp.json()["access_token"].as_str().expect("login response had no access_token").to_string();
+        self.token = Some(token);
+
+        // Capture the user id from the profile for tests that need it.
+        let profile = self.get("/api/accounts/profile").await;
+        profile.assert_ok();
+        self.user_id = profile.json()["id"].as_str().and_then(|s| s.parse().ok());
+        self
+    }
+
+    /// Convenience: a fully registered and authenticated client.
+    pub async fn register_and_login() -> TestClient {
+        let mut client = TestClient::new().await;
+        client.register().await;
+        client.login().await;
+        client
+    }
+
+    fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+        let mut builder = self.http.request(method, format!("{}{path}", self.base)).header("x-real-ip", "127.0.0.1");
+        if let Some(token) = &self.token {
+            builder = builder.bearer_auth(token);
+        }
+        builder
+    }
+
+    async fn send(&self, builder: reqwest::RequestBuilder) -> TestResponse {
+        let resp = builder.send().await.expect("HTTP request failed");
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        TestResponse {
+            status,
+            body,
+        }
+    }
+
+    pub async fn get(&self, path: &str) -> TestResponse {
+        self.send(self.request(reqwest::Method::GET, path)).await
+    }
+
+    pub async fn post(&self, path: &str, body: Value) -> TestResponse {
+        self.send(self.request(reqwest::Method::POST, path).json(&body)).await
+    }
+
+    /// POST a URL-encoded form (e.g. the OAuth token endpoint).
+    pub async fn post_form(&self, path: &str, form: &[(&str, &str)]) -> TestResponse {
+        self.send(self.request(reqwest::Method::POST, path).form(form)).await
+    }
+
+    pub async fn put(&self, path: &str, body: Value) -> TestResponse {
+        self.send(self.request(reqwest::Method::PUT, path).json(&body)).await
+    }
+
+    pub async fn delete(&self, path: &str) -> TestResponse {
+        self.send(self.request(reqwest::Method::DELETE, path)).await
+    }
+
+    // --- fixtures -----------------------------------------------------------
+    // Convenience builders returning the created object's JSON. All values are
+    // opaque "encrypted" strings — the server never decrypts them.
+
+    /// Create a personal folder, returning its id.
+    pub async fn create_folder(&self, name: &str) -> String {
+        let resp = self.post("/api/folders", json!({ "name": name })).await;
+        resp.assert_ok();
+        resp.json()["id"].as_str().expect("folder id").to_string()
+    }
+
+    /// Create a personal login cipher, returning the full cipher JSON.
+    pub async fn create_login_cipher(&self, name: &str) -> Value {
+        let body = json!({
+            "type": 1, // Login
+            "name": name,
+            "login": { "username": "2.user|mac", "password": "2.pass|mac" },
+            "lastKnownRevisionDate": null,
+        });
+        let resp = self.post("/api/ciphers", body).await;
+        resp.assert_ok();
+        resp.json()
+    }
+
+    /// Create an organization owned by this user (Owner, access-all, one
+    /// collection), returning the full organization JSON.
+    pub async fn create_org(&self, name: &str) -> Value {
+        let body = json!({
+            "name": name,
+            "billingEmail": self.email,
+            "collectionName": "2.collection|mac",
+            "key": "0.orgkey|mac",
+            "keys": { "encryptedPrivateKey": "2.orgpriv|mac", "publicKey": "orgpub" },
+        });
+        let resp = self.post("/api/organizations", body).await;
+        resp.assert_ok();
+        resp.json()
+    }
+
+    /// Invite `member` into `org_id` (which this client owns) and confirm them,
+    /// yielding a Confirmed member with access to all collections. Returns the
+    /// member's user id.
+    ///
+    /// Mail is disabled in tests, so an already-registered invitee is
+    /// auto-accepted on invite (see `send_invite`) and only needs confirming.
+    pub async fn add_org_member(&self, org_id: &str, member: &TestClient) -> Uuid {
+        let member_id = member.user_id.expect("member must be registered and logged in first");
+
+        let invite = json!({
+            "emails": [member.email],
+            "type": 2, // User
+            "accessAll": true,
+            "groups": [],
+            "collections": null,
+        });
+        self.post(&format!("/api/organizations/{org_id}/users/invite"), invite).await.assert_ok();
+
+        self.confirm_org_member(org_id, member_id).await;
+        member_id
+    }
+
+    /// Like [`add_org_member`](Self::add_org_member) but scoped: the member is
+    /// invited with `accessAll = false` and granted only the given collections,
+    /// each as `(collection_id, read_only, hide_passwords)`. Returns the
+    /// member's user id.
+    pub async fn add_org_member_scoped(&self, org_id: &str, member: &TestClient, collections: &[(&str, bool, bool)]) -> Uuid {
+        let member_id = member.user_id.expect("member must be registered and logged in first");
+
+        let cols: Vec<Value> = collections.iter().map(|(id, read_only, hide_passwords)| json!({ "id": id, "readOnly": read_only, "hidePasswords": hide_passwords })).collect();
+        let invite = json!({
+            "emails": [member.email],
+            "type": 2, // User
+            "accessAll": false,
+            "groups": [],
+            "collections": cols,
+        });
+        self.post(&format!("/api/organizations/{org_id}/users/invite"), invite).await.assert_ok();
+
+        self.confirm_org_member(org_id, member_id).await;
+        member_id
+    }
+
+    /// Confirm an already-invited (auto-accepted) member. The wrapped org key is
+    /// opaque to the server, so any stable string works.
+    async fn confirm_org_member(&self, org_id: &str, member_id: Uuid) {
+        let confirm = json!({ "key": "2.memberorgkey|mac", "Key": "2.memberorgkey|mac" });
+        self.post(&format!("/api/organizations/{org_id}/users/{member_id}/confirm"), confirm).await.assert_ok();
+    }
+
+    /// Create an organization collection, returning its id.
+    pub async fn create_org_collection(&self, org_id: &str, name: &str) -> String {
+        let body = json!({ "name": name, "groups": [], "users": [] });
+        let resp = self.post(&format!("/api/organizations/{org_id}/collections"), body).await;
+        resp.assert_ok();
+        resp.json()["id"].as_str().expect("collection id").to_string()
+    }
+
+    /// Create an org-owned login cipher in `col_id`, returning the cipher JSON.
+    pub async fn create_org_cipher(&self, org_id: &str, col_id: &str, name: &str) -> Value {
+        let body = json!({
+            "cipher": {
+                "type": 1,
+                "name": name,
+                "organizationId": org_id,
+                "login": { "username": "2.u|mac", "password": "2.p|mac" },
+                "lastKnownRevisionDate": null,
+            },
+            "collectionIds": [col_id],
+        });
+        let resp = self.post("/api/ciphers/create", body).await;
+        resp.assert_ok();
+        resp.json()
     }
 }
 

@@ -1130,3 +1130,87 @@ pub async fn put_clear_device_token(Path(uuid): Path<Uuid>) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::test_harness::TestClient;
+
+    #[tokio::test]
+    async fn register_then_login_returns_token() {
+        let mut client = TestClient::new().await;
+        client.register().await;
+        client.login().await;
+
+        // login() only succeeds if it got an access_token and could load the profile.
+        assert!(client.user_id.is_some(), "expected a user id after login");
+    }
+
+    #[tokio::test]
+    async fn profile_reflects_registered_user() {
+        let client = TestClient::register_and_login().await;
+
+        let resp = client.get("/api/accounts/profile").await;
+        resp.assert_ok();
+        let profile = resp.json();
+        assert_eq!(profile["email"].as_str().unwrap().to_lowercase(), client.email.to_lowercase());
+        assert_eq!(profile["object"], "profile");
+    }
+
+    #[tokio::test]
+    async fn profile_requires_authentication() {
+        // An unauthenticated client (no token) must be rejected.
+        let client = TestClient::new().await;
+        client.get("/api/accounts/profile").await.assert_status(401);
+    }
+
+    #[tokio::test]
+    async fn login_with_wrong_password_is_rejected() {
+        let mut client = TestClient::new().await;
+        client.register().await;
+
+        let form = [
+            ("grant_type", "password"),
+            ("username", client.email.as_str()),
+            ("password", "definitely-not-the-hash"),
+            ("scope", "api offline_access"),
+            ("client_id", "web"),
+            ("device_identifier", client.device_id.as_str()),
+            ("device_name", "test-harness"),
+            ("device_type", "14"),
+        ];
+        let resp = client.post_form("/identity/connect/token", &form).await;
+        assert!(resp.status >= 400, "expected auth failure, got {}: {}", resp.status, resp.body);
+    }
+
+    #[tokio::test]
+    async fn prelogin_returns_kdf_settings() {
+        let client = TestClient::register_and_login().await;
+
+        let resp = client.post("/identity/accounts/prelogin", json!({ "email": client.email })).await;
+        resp.assert_ok();
+        let body = resp.json();
+        // Pbkdf2 == 0, which is what the harness registers with.
+        assert_eq!(body["kdf"], 0);
+        assert!(body["kdfIterations"].as_i64().unwrap() >= 100_000);
+    }
+
+    #[tokio::test]
+    async fn duplicate_registration_is_rejected() {
+        let mut client = TestClient::new().await;
+        client.register().await;
+
+        // Registering the same email again (already has a password) must fail.
+        let body = json!({
+            "email": client.email,
+            "kdf": 0,
+            "kdfIterations": 600_000,
+            "key": client.akey,
+            "masterPasswordHash": client.master_password_hash,
+            "name": "Dup",
+        });
+        let resp = client.post("/identity/accounts/register", body).await;
+        assert!(resp.status >= 400, "expected duplicate registration to fail, got {}: {}", resp.status, resp.body);
+    }
+}

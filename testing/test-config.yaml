@@ -1,18 +1,25 @@
 # Config installed into the global CONFIG when running the test suite.
 # Embedded into the test binary via include_str! (see src/test_harness.rs), so
-# it does not depend on the working directory. The `db` section here is only a
-# placeholder to satisfy deserialization — the harness connects using the
-# hardcoded constants in src/test_harness.rs and creates a fresh database per
-# test, never using db::init().
-api_bind: 127.0.0.1:10765
+# it does not depend on the working directory.
+#
+# `db.database` is the dedicated database the integration server runs against.
+# The harness drops and recreates it once per `cargo test` run. Per-test model
+# databases created by run_db_test use the hardcoded constants in
+# src/test_harness.rs and are independent of this section.
+api_bind: 127.0.0.1:10899
 db:
   host: 127.0.0.1
   port: 5433
   username: vaultwarden
   password: vaultwarden
-  database: postgres
+  database: vw_integration
 
 data: testing/data
-public: http://localhost:10765
+public: http://localhost:10899
+
+# Do not rate-limit logins during tests: the whole suite hammers 127.0.0.1.
+login_ratelimit_seconds: 1
+login_ratelimit_max_burst: 1000000
+
 # plaintext admin password is "test"
 admin_token: $argon2id$v=19$m=16,t=2,p=1$dGVzdHRlc3Q$aME57ODlq+maIRv0ouzcLA

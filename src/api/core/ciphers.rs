@@ -1325,3 +1325,94 @@ async fn _delete_cipher_attachment_by_id(uuid: Uuid, attachment_id: Uuid, header
     });
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::test_harness::TestClient;
+
+    #[tokio::test]
+    async fn create_get_update_delete_cipher() {
+        let client = TestClient::register_and_login().await;
+
+        // Create.
+        let created = client.create_login_cipher("2.name|mac").await;
+        assert_eq!(created["object"], "cipherDetails");
+        assert_eq!(created["type"], 1);
+        assert_eq!(created["name"], "2.name|mac");
+        let id = created["id"].as_str().expect("cipher id").to_string();
+
+        // Get by id.
+        let got = client.get(&format!("/api/ciphers/{id}")).await;
+        got.assert_ok();
+        assert_eq!(got.json()["id"], id);
+
+        // Update (rename).
+        let update = json!({
+            "type": 1,
+            "name": "2.renamed|mac",
+            "login": { "username": "2.user|mac", "password": "2.pass|mac" },
+            "lastKnownRevisionDate": null,
+        });
+        let updated = client.put(&format!("/api/ciphers/{id}"), update).await;
+        updated.assert_ok();
+        assert_eq!(updated.json()["name"], "2.renamed|mac");
+
+        // Hard delete.
+        client.delete(&format!("/api/ciphers/{id}")).await.assert_ok();
+        let after = client.get(&format!("/api/ciphers/{id}")).await;
+        assert!(after.status >= 400, "expected deleted cipher to be gone, got {}: {}", after.status, after.body);
+    }
+
+    #[tokio::test]
+    async fn sync_returns_profile_and_ciphers() {
+        let client = TestClient::register_and_login().await;
+        let created = client.create_login_cipher("2.synced|mac").await;
+        let id = created["id"].as_str().unwrap().to_string();
+
+        let resp = client.get("/api/sync").await;
+        resp.assert_ok();
+        let sync = resp.json();
+        assert_eq!(sync["object"], "sync");
+        assert_eq!(sync["profile"]["email"].as_str().unwrap().to_lowercase(), client.email.to_lowercase());
+        let cipher_ids: Vec<&str> = sync["ciphers"].as_array().unwrap().iter().filter_map(|c| c["id"].as_str()).collect();
+        assert!(cipher_ids.contains(&id.as_str()), "created cipher missing from sync: {}", resp.body);
+    }
+
+    #[tokio::test]
+    async fn soft_delete_then_restore() {
+        let client = TestClient::register_and_login().await;
+        let id = client.create_login_cipher("2.trash|mac").await["id"].as_str().unwrap().to_string();
+
+        // Soft delete → still present but with a deletedDate.
+        client.put(&format!("/api/ciphers/{id}/delete"), json!({})).await.assert_ok();
+        let trashed = client.get(&format!("/api/ciphers/{id}")).await;
+        trashed.assert_ok();
+        assert!(!trashed.json()["deletedDate"].is_null(), "soft-deleted cipher should have a deletedDate");
+
+        // Restore → deletedDate cleared.
+        let restored = client.put(&format!("/api/ciphers/{id}/restore"), json!({})).await;
+        restored.assert_ok();
+        assert!(restored.json()["deletedDate"].is_null(), "restored cipher should have no deletedDate");
+    }
+
+    #[tokio::test]
+    async fn ciphers_are_isolated_per_user() {
+        let alice = TestClient::register_and_login().await;
+        let bob = TestClient::register_and_login().await;
+
+        let id = alice.create_login_cipher("2.alice|mac").await["id"].as_str().unwrap().to_string();
+
+        // Bob cannot read Alice's cipher.
+        let cross = bob.get(&format!("/api/ciphers/{id}")).await;
+        assert!(cross.status >= 400, "user should not see another user's cipher, got {}: {}", cross.status, cross.body);
+    }
+
+    #[tokio::test]
+    async fn cipher_endpoints_require_auth() {
+        let client = TestClient::new().await;
+        client.get("/api/sync").await.assert_status(401);
+        client.get("/api/ciphers").await.assert_status(401);
+    }
+}

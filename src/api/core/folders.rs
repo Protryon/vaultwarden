@@ -80,3 +80,76 @@ pub async fn delete_folder(Path(uuid): Path<Uuid>, headers: Headers) -> Result<(
     ws_users().send_folder_update(UpdateType::SyncFolderDelete, &folder, headers.device.uuid, &conn).await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::test_harness::TestClient;
+
+    #[tokio::test]
+    async fn create_list_get_update_delete_folder() {
+        let client = TestClient::register_and_login().await;
+
+        // Create.
+        let resp = client.post("/api/folders", json!({ "name": "2.encryptedname|mac" })).await;
+        resp.assert_ok();
+        let created = resp.json();
+        assert_eq!(created["object"], "folder");
+        assert_eq!(created["name"], "2.encryptedname|mac");
+        let id = created["id"].as_str().expect("folder id").to_string();
+
+        // List — the new folder should be present.
+        let list = client.get("/api/folders").await;
+        list.assert_ok();
+        let data = list.json();
+        assert_eq!(data["object"], "list");
+        let ids: Vec<&str> = data["data"].as_array().unwrap().iter().filter_map(|f| f["id"].as_str()).collect();
+        assert!(ids.contains(&id.as_str()), "created folder not in list: {}", list.body);
+
+        // Get by id.
+        let got = client.get(&format!("/api/folders/{id}")).await;
+        got.assert_ok();
+        assert_eq!(got.json()["id"], id);
+
+        // Update (rename).
+        let updated = client.put(&format!("/api/folders/{id}"), json!({ "name": "2.renamed|mac" })).await;
+        updated.assert_ok();
+        assert_eq!(updated.json()["name"], "2.renamed|mac");
+
+        // Delete.
+        client.delete(&format!("/api/folders/{id}")).await.assert_ok();
+
+        // Getting it again should now fail.
+        let after = client.get(&format!("/api/folders/{id}")).await;
+        assert!(after.status >= 400, "expected deleted folder to be gone, got {}: {}", after.status, after.body);
+    }
+
+    #[tokio::test]
+    async fn folders_are_isolated_per_user() {
+        // A folder created by one user must not be visible to another.
+        let alice = TestClient::register_and_login().await;
+        let bob = TestClient::register_and_login().await;
+
+        let created = alice.post("/api/folders", json!({ "name": "2.alicefolder|mac" })).await;
+        created.assert_ok();
+        let id = created.json()["id"].as_str().unwrap().to_string();
+
+        // Bob cannot fetch Alice's folder.
+        let cross = bob.get(&format!("/api/folders/{id}")).await;
+        assert!(cross.status >= 400, "user should not see another user's folder, got {}: {}", cross.status, cross.body);
+
+        // Bob's list is empty of Alice's folder.
+        let bob_list = bob.get("/api/folders").await;
+        bob_list.assert_ok();
+        let bob_data = bob_list.json();
+        let ids: Vec<&str> = bob_data["data"].as_array().unwrap().iter().filter_map(|f| f["id"].as_str()).collect();
+        assert!(!ids.contains(&id.as_str()), "another user's folder leaked into list");
+    }
+
+    #[tokio::test]
+    async fn folder_endpoints_require_auth() {
+        let client = TestClient::new().await;
+        client.get("/api/folders").await.assert_status(401);
+    }
+}

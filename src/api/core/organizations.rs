@@ -2707,3 +2707,186 @@ async fn api_key(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Jso
 async fn rotate_api_key(Path(org_uuid): Path<Uuid>, headers: OrgAdminHeaders, data: Json<PasswordData>) -> Result<Json<Value>> {
     _api_key(org_uuid, true, headers, data.0).await
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::test_harness::TestClient;
+
+    #[tokio::test]
+    async fn create_org_makes_creator_owner() {
+        let client = TestClient::register_and_login().await;
+
+        let org = client.create_org("Acme").await;
+        assert_eq!(org["object"], "organization");
+        assert_eq!(org["name"], "Acme");
+        let org_id = org["id"].as_str().expect("org id").to_string();
+
+        // The creator (an Owner) can fetch the org details.
+        let got = client.get(&format!("/api/organizations/{org_id}")).await;
+        got.assert_ok();
+        assert_eq!(got.json()["id"], org_id);
+    }
+
+    #[tokio::test]
+    async fn new_org_has_its_seed_collection() {
+        let client = TestClient::register_and_login().await;
+        let org_id = client.create_org("Collected").await["id"].as_str().unwrap().to_string();
+
+        let resp = client.get(&format!("/api/organizations/{org_id}/collections")).await;
+        resp.assert_ok();
+        let data = resp.json();
+        assert_eq!(data["object"], "list");
+        assert!(!data["data"].as_array().unwrap().is_empty(), "org should have a seed collection: {}", resp.body);
+    }
+
+    #[tokio::test]
+    async fn non_member_cannot_read_org() {
+        let owner = TestClient::register_and_login().await;
+        let outsider = TestClient::register_and_login().await;
+        let org_id = owner.create_org("Private").await["id"].as_str().unwrap().to_string();
+
+        let resp = outsider.get(&format!("/api/organizations/{org_id}")).await;
+        assert!(resp.status >= 400, "non-member should not read org, got {}: {}", resp.status, resp.body);
+    }
+
+    #[tokio::test]
+    async fn invite_and_confirm_member() {
+        let owner = TestClient::register_and_login().await;
+        let member = TestClient::register_and_login().await;
+        let org_id = owner.create_org("Team").await["id"].as_str().unwrap().to_string();
+
+        let member_id = owner.add_org_member(&org_id, &member).await;
+
+        // The member now appears (Confirmed == status 2) in the org's user list.
+        let users = owner.get(&format!("/api/organizations/{org_id}/users")).await;
+        users.assert_ok();
+        let users_json = users.json();
+        let entry = users_json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["userId"].as_str() == Some(member_id.to_string().as_str()))
+            .expect("member should be in the org user list");
+        assert_eq!(entry["status"], 2, "member should be Confirmed: {}", users.body);
+
+        // The member sees the org in their own profile.
+        let profile = member.get("/api/accounts/profile").await;
+        profile.assert_ok();
+        let profile_json = profile.json();
+        let org_ids: Vec<&str> = profile_json["organizations"].as_array().unwrap().iter().filter_map(|o| o["id"].as_str()).collect();
+        assert!(org_ids.contains(&org_id.as_str()), "member's profile should list the org: {}", profile.body);
+    }
+
+    #[tokio::test]
+    async fn org_member_with_access_all_sees_org_cipher() {
+        let owner = TestClient::register_and_login().await;
+        let member = TestClient::register_and_login().await;
+        let org_id = owner.create_org("Shared").await["id"].as_str().unwrap().to_string();
+        owner.add_org_member(&org_id, &member).await;
+
+        // Owner creates an org-owned cipher in the seed collection.
+        let cols = owner.get(&format!("/api/organizations/{org_id}/collections")).await;
+        let cols_json = cols.json();
+        let col_id = cols_json["data"].as_array().unwrap()[0]["id"].as_str().unwrap().to_string();
+        let body = serde_json::json!({
+            "cipher": {
+                "type": 1,
+                "name": "2.shareditem|mac",
+                "organizationId": org_id,
+                "login": { "username": "2.u|mac", "password": "2.p|mac" },
+                "lastKnownRevisionDate": null,
+            },
+            "collectionIds": [col_id],
+        });
+        let cipher_id = owner.post("/api/ciphers/create", body).await.json()["id"].as_str().unwrap().to_string();
+
+        // The access-all member sees it in their sync.
+        let sync = member.get("/api/sync").await;
+        sync.assert_ok();
+        let sync_json = sync.json();
+        let ids: Vec<&str> = sync_json["ciphers"].as_array().unwrap().iter().filter_map(|c| c["id"].as_str()).collect();
+        assert!(ids.contains(&cipher_id.as_str()), "member should see the org cipher: {}", sync.body);
+    }
+
+    #[tokio::test]
+    async fn scoped_member_sees_only_assigned_collection() {
+        let owner = TestClient::register_and_login().await;
+        let member = TestClient::register_and_login().await;
+        let org_id = owner.create_org("Scoped").await["id"].as_str().unwrap().to_string();
+
+        // Two collections: the seed one and a new one.
+        let seed_col = owner.get(&format!("/api/organizations/{org_id}/collections")).await.json()["data"].as_array().unwrap()[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let other_col = owner.create_org_collection(&org_id, "2.other|mac").await;
+
+        let visible = owner.create_org_cipher(&org_id, &seed_col, "2.visible|mac").await["id"].as_str().unwrap().to_string();
+        let hidden = owner.create_org_cipher(&org_id, &other_col, "2.hidden|mac").await["id"].as_str().unwrap().to_string();
+
+        // Member is scoped to the seed collection only.
+        owner.add_org_member_scoped(&org_id, &member, &[(seed_col.as_str(), false, false)]).await;
+
+        let sync = member.get("/api/sync").await;
+        sync.assert_ok();
+        let sync_json = sync.json();
+        let ids: Vec<&str> = sync_json["ciphers"].as_array().unwrap().iter().filter_map(|c| c["id"].as_str()).collect();
+        assert!(ids.contains(&visible.as_str()), "member should see cipher in assigned collection: {}", sync.body);
+        assert!(!ids.contains(&hidden.as_str()), "member must not see cipher in unassigned collection: {}", sync.body);
+    }
+
+    #[tokio::test]
+    async fn read_only_member_cannot_edit_cipher() {
+        let owner = TestClient::register_and_login().await;
+        let member = TestClient::register_and_login().await;
+        let org_id = owner.create_org("ReadOnly").await["id"].as_str().unwrap().to_string();
+        let col = owner.get(&format!("/api/organizations/{org_id}/collections")).await.json()["data"].as_array().unwrap()[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let cipher_id = owner.create_org_cipher(&org_id, &col, "2.locked|mac").await["id"].as_str().unwrap().to_string();
+
+        // Member granted read-only access to the collection.
+        owner.add_org_member_scoped(&org_id, &member, &[(col.as_str(), true, false)]).await;
+
+        // Can read...
+        member.get(&format!("/api/ciphers/{cipher_id}")).await.assert_ok();
+
+        // ...but cannot edit.
+        let update = serde_json::json!({
+            "type": 1,
+            "name": "2.hacked|mac",
+            "organizationId": org_id,
+            "login": { "username": "2.u|mac", "password": "2.p|mac" },
+            "lastKnownRevisionDate": null,
+        });
+        let resp = member.put(&format!("/api/ciphers/{cipher_id}"), update).await;
+        assert!(resp.status >= 400, "read-only member should not edit cipher, got {}: {}", resp.status, resp.body);
+    }
+
+    #[tokio::test]
+    async fn create_org_owned_cipher() {
+        let client = TestClient::register_and_login().await;
+        let org_id = client.create_org("Vault").await["id"].as_str().unwrap().to_string();
+
+        // Collection the org was seeded with.
+        let cols = client.get(&format!("/api/organizations/{org_id}/collections")).await;
+        cols.assert_ok();
+        let cols_json = cols.json();
+        let col_id = cols_json["data"].as_array().unwrap()[0]["id"].as_str().unwrap().to_string();
+
+        let body = serde_json::json!({
+            "cipher": {
+                "type": 1,
+                "name": "2.orgitem|mac",
+                "organizationId": org_id,
+                "login": { "username": "2.u|mac", "password": "2.p|mac" },
+                "lastKnownRevisionDate": null,
+            },
+            "collectionIds": [col_id],
+        });
+        let resp = client.post("/api/ciphers/create", body).await;
+        resp.assert_ok();
+        assert_eq!(resp.json()["organizationId"], org_id);
+    }
+}

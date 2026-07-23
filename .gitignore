@@ -7,6 +7,9 @@ data
 # Test harness data folder (generated RSA keys, etc.)
 testing/data
 
+# Local, non-committed tracking docs
+TESTING.md
+
 # IDE files
 .vscode
 .idea
