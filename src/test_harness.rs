@@ -79,6 +79,11 @@ async fn global_init() {
 /// keypair the JWT layer loads lazily, so tests that mint/verify tokens work.
 async fn ensure_rsa_keys() -> anyhow::Result<()> {
     tokio::fs::create_dir_all(&crate::CONFIG.folders.data).await?;
+    // Same data subfolders main.rs creates at startup, so handlers that write
+    // files (attachments, sends) don't 500 on a missing directory.
+    tokio::fs::create_dir_all(crate::CONFIG.folders.attachments()).await?;
+    tokio::fs::create_dir_all(crate::CONFIG.folders.sends()).await?;
+    tokio::fs::create_dir_all(crate::CONFIG.folders.tmp()).await?;
 
     let priv_path = crate::CONFIG.private_rsa_key();
     let pub_path = crate::CONFIG.public_rsa_key();
@@ -430,6 +435,27 @@ impl TestClient {
     /// POST a URL-encoded form (e.g. the OAuth token endpoint).
     pub async fn post_form(&self, path: &str, form: &[(&str, &str)]) -> TestResponse {
         self.send(self.request(reqwest::Method::POST, path).form(form)).await
+    }
+
+    /// POST a `multipart/form-data` body assembled by hand (reqwest's multipart
+    /// feature is not enabled). Each field is `(name, optional_filename, bytes)`;
+    /// a filename makes it a file part. Used for attachment / file-send uploads.
+    pub async fn post_multipart(&self, path: &str, fields: &[(&str, Option<&str>, &[u8])]) -> TestResponse {
+        let boundary = format!("----vwtest{}", Uuid::new_v4().simple());
+        let mut body: Vec<u8> = Vec::new();
+        for (name, filename, data) in fields {
+            body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+            match filename {
+                Some(fname) => body.extend_from_slice(format!("Content-Disposition: form-data; name=\"{name}\"; filename=\"{fname}\"\r\n\r\n").as_bytes()),
+                None => body.extend_from_slice(format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes()),
+            }
+            body.extend_from_slice(data);
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+        let builder = self.request(reqwest::Method::POST, path).header("content-type", format!("multipart/form-data; boundary={boundary}")).body(body);
+        self.send(builder).await
     }
 
     pub async fn put(&self, path: &str, body: Value) -> TestResponse {

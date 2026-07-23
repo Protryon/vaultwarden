@@ -1213,4 +1213,261 @@ mod tests {
         let resp = client.post("/identity/accounts/register", body).await;
         assert!(resp.status >= 400, "expected duplicate registration to fail, got {}: {}", resp.status, resp.body);
     }
+
+    /// Log in via the password grant with an arbitrary password hash, returning the
+    /// raw token response. Used to assert credential changes take effect.
+    async fn login_with_password(client: &TestClient, password: &str) -> crate::test_harness::TestResponse {
+        let form = [
+            ("grant_type", "password"),
+            ("username", client.email.as_str()),
+            ("password", password),
+            ("scope", "api offline_access"),
+            ("client_id", "web"),
+            ("device_identifier", client.device_id.as_str()),
+            ("device_name", "test-harness"),
+            ("device_type", "14"),
+        ];
+        client.post_form("/identity/connect/token", &form).await
+    }
+
+    #[tokio::test]
+    async fn update_profile_name() {
+        let client = TestClient::register_and_login().await;
+
+        let resp = client.post("/api/accounts/profile", json!({ "name": "Renamed User" })).await;
+        resp.assert_ok();
+        assert_eq!(resp.json()["name"], "Renamed User");
+
+        // Persisted across a fresh read.
+        let profile = client.get("/api/accounts/profile").await;
+        assert_eq!(profile.json()["name"], "Renamed User");
+    }
+
+    #[tokio::test]
+    async fn update_profile_rejects_overlong_name() {
+        let client = TestClient::register_and_login().await;
+        let long = "x".repeat(51);
+        let resp = client.post("/api/accounts/profile", json!({ "name": long })).await;
+        assert!(resp.status >= 400, "51-char name should be rejected, got {}: {}", resp.status, resp.body);
+    }
+
+    #[tokio::test]
+    async fn set_avatar_color() {
+        let client = TestClient::register_and_login().await;
+
+        let resp = client.put("/api/accounts/avatar", json!({ "avatarColor": "#abcdef" })).await;
+        resp.assert_ok();
+        assert_eq!(resp.json()["avatarColor"], "#abcdef");
+
+        // Must be a 7-char hex code.
+        let bad = client.put("/api/accounts/avatar", json!({ "avatarColor": "#abc" })).await;
+        assert!(bad.status >= 400, "short color should be rejected, got {}: {}", bad.status, bad.body);
+    }
+
+    #[tokio::test]
+    async fn get_user_public_key() {
+        let client = TestClient::register_and_login().await;
+        let uid = client.user_id.unwrap();
+
+        let resp = client.get(&format!("/api/users/{uid}/public-key")).await;
+        resp.assert_ok();
+        let j = resp.json();
+        assert_eq!(j["userId"], uid.to_string());
+        assert_eq!(j["publicKey"], client.public_key);
+        assert_eq!(j["object"], "userKey");
+    }
+
+    #[tokio::test]
+    async fn update_encryption_keys() {
+        let client = TestClient::register_and_login().await;
+
+        let resp = client.post("/api/accounts/keys", json!({ "encryptedPrivateKey": "2.newpriv|mac", "publicKey": "newpublickey" })).await;
+        resp.assert_ok();
+        let j = resp.json();
+        assert_eq!(j["privateKey"], "2.newpriv|mac");
+        assert_eq!(j["publicKey"], "newpublickey");
+    }
+
+    #[tokio::test]
+    async fn revision_date_is_a_timestamp() {
+        let client = TestClient::register_and_login().await;
+        let resp = client.get("/api/accounts/revision-date").await;
+        resp.assert_ok();
+        assert!(resp.json().as_i64().is_some(), "revision date should be a number: {}", resp.body);
+    }
+
+    #[tokio::test]
+    async fn api_key_get_and_rotate() {
+        let client = TestClient::register_and_login().await;
+
+        // Wrong password is rejected.
+        let bad = client.post("/api/accounts/api-key", json!({ "masterPasswordHash": "wrong" })).await;
+        assert!(bad.status >= 400, "wrong password should be rejected, got {}: {}", bad.status, bad.body);
+
+        let first = client.post("/api/accounts/api-key", json!({ "masterPasswordHash": client.master_password_hash })).await;
+        first.assert_ok();
+        let key1 = first.json()["apiKey"].as_str().expect("apiKey").to_string();
+        assert!(!key1.is_empty());
+
+        // Fetching again returns the same key.
+        let again = client.post("/api/accounts/api-key", json!({ "masterPasswordHash": client.master_password_hash })).await;
+        assert_eq!(again.json()["apiKey"].as_str().unwrap(), key1);
+
+        // Rotating replaces it.
+        let rotated = client.post("/api/accounts/rotate-api-key", json!({ "masterPasswordHash": client.master_password_hash })).await;
+        rotated.assert_ok();
+        assert_ne!(rotated.json()["apiKey"].as_str().unwrap(), key1, "rotate should change the key");
+    }
+
+    #[tokio::test]
+    async fn change_password_updates_login() {
+        let client = TestClient::register_and_login().await;
+        let new_hash = "new-master-password-hash";
+
+        // Wrong current password is rejected.
+        let bad = client
+            .post(
+                "/api/accounts/password",
+                json!({ "masterPasswordHash": "wrong", "newMasterPasswordHash": new_hash, "key": client.akey, "masterPasswordHint": null }),
+            )
+            .await;
+        assert!(bad.status >= 400, "wrong current password should be rejected, got {}: {}", bad.status, bad.body);
+
+        let body = json!({
+            "masterPasswordHash": client.master_password_hash,
+            "newMasterPasswordHash": new_hash,
+            "key": client.akey,
+            "masterPasswordHint": null,
+        });
+        client.post("/api/accounts/password", body).await.assert_ok();
+
+        // Old password no longer logs in; new one does.
+        let old = login_with_password(&client, &client.master_password_hash).await;
+        assert!(old.status >= 400, "old password should fail after change, got {}: {}", old.status, old.body);
+        let new = login_with_password(&client, new_hash).await;
+        new.assert_ok();
+        assert!(new.json()["access_token"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn change_kdf_settings() {
+        let client = TestClient::register_and_login().await;
+        let new_hash = "kdf-changed-hash";
+
+        let body = json!({
+            "kdf": 0, // Pbkdf2
+            "kdfIterations": 200_000,
+            "masterPasswordHash": client.master_password_hash,
+            "newMasterPasswordHash": new_hash,
+            "key": client.akey,
+        });
+        client.post("/api/accounts/kdf", body).await.assert_ok();
+
+        // Prelogin reflects the new iteration count.
+        let pre = client.post("/identity/accounts/prelogin", json!({ "email": client.email })).await;
+        assert_eq!(pre.json()["kdfIterations"], 200_000);
+
+        // The new password (bound to the new KDF) logs in.
+        login_with_password(&client, new_hash).await.assert_ok();
+    }
+
+    #[tokio::test]
+    async fn security_stamp_invalidates_existing_token() {
+        let client = TestClient::register_and_login().await;
+        client.get("/api/accounts/profile").await.assert_ok();
+
+        client.post("/api/accounts/security-stamp", json!({ "masterPasswordHash": client.master_password_hash })).await.assert_ok();
+
+        // The old access token's embedded security stamp is now stale.
+        client.get("/api/accounts/profile").await.assert_status(401);
+    }
+
+    #[tokio::test]
+    async fn delete_account_removes_user() {
+        let client = TestClient::register_and_login().await;
+
+        // Wrong password is rejected.
+        let bad = client.post("/api/accounts/delete", json!({ "masterPasswordHash": "wrong" })).await;
+        assert!(bad.status >= 400, "wrong password should be rejected, got {}: {}", bad.status, bad.body);
+
+        client.post("/api/accounts/delete", json!({ "masterPasswordHash": client.master_password_hash })).await.assert_ok();
+
+        // The user can no longer log in.
+        let after = login_with_password(&client, &client.master_password_hash).await;
+        assert!(after.status >= 400, "deleted user should not log in, got {}: {}", after.status, after.body);
+    }
+
+    #[tokio::test]
+    async fn auth_request_approve_and_login() {
+        // Login-with-device (passwordless) flow, all against one already-registered
+        // device: create request → approve → poll response → log in via the request.
+        let client = TestClient::register_and_login().await;
+        let access_code = "test-access-code-123";
+
+        let create = client
+            .post(
+                "/api/auth-requests",
+                json!({ "accessCode": access_code, "deviceIdentifier": client.device_id, "email": client.email, "publicKey": "authreqpubkey" }),
+            )
+            .await;
+        create.assert_ok();
+        let req_id = create.json()["id"].as_str().expect("auth request id").to_string();
+
+        // Appears in the pending list before approval.
+        let pending = client.get("/api/auth-requests/pending").await;
+        pending.assert_ok();
+        let pending_ids: Vec<String> = pending.json()["data"].as_array().unwrap().iter().filter_map(|r| r["id"].as_str().map(String::from)).collect();
+        assert!(pending_ids.contains(&req_id), "new request should be pending: {}", pending.body);
+
+        // Approve from the authenticated device, handing back the wrapped key.
+        let approve = client
+            .put(
+                &format!("/api/auth-requests/{req_id}"),
+                json!({ "deviceIdentifier": client.device_id, "key": "2.userkey|mac", "masterPasswordHash": client.master_password_hash, "requestApproved": true }),
+            )
+            .await;
+        approve.assert_ok();
+        assert_eq!(approve.json()["requestApproved"], true);
+
+        // The requester polls the response using its access code.
+        let response = client.get(&format!("/api/auth-requests/{req_id}/response?code={access_code}")).await;
+        response.assert_ok();
+        assert_eq!(response.json()["key"], "2.userkey|mac");
+
+        // Log in using the approved request (password field carries the access code).
+        let form = [
+            ("grant_type", "password"),
+            ("username", client.email.as_str()),
+            ("password", access_code),
+            ("scope", "api offline_access"),
+            ("client_id", "web"),
+            ("device_identifier", client.device_id.as_str()),
+            ("device_name", "test-harness"),
+            ("device_type", "14"),
+            ("authRequest", req_id.as_str()),
+        ];
+        let login = client.post_form("/identity/connect/token", &form).await;
+        login.assert_ok();
+        assert!(login.json()["access_token"].as_str().is_some(), "auth-request login should yield a token: {}", login.body);
+    }
+
+    #[tokio::test]
+    async fn auth_request_denied_is_deleted() {
+        let client = TestClient::register_and_login().await;
+
+        let create = client
+            .post("/api/auth-requests", json!({ "accessCode": "code", "deviceIdentifier": client.device_id, "email": client.email, "publicKey": "pk" }))
+            .await;
+        create.assert_ok();
+        let req_id = create.json()["id"].as_str().unwrap().to_string();
+
+        let deny = client
+            .put(&format!("/api/auth-requests/{req_id}"), json!({ "deviceIdentifier": client.device_id, "key": "2.k|mac", "requestApproved": false }))
+            .await;
+        deny.assert_ok();
+
+        // A denied request is removed.
+        let after = client.get(&format!("/api/auth-requests/{req_id}")).await;
+        assert!(after.status >= 400, "denied auth request should be gone, got {}: {}", after.status, after.body);
+    }
 }

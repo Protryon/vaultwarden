@@ -1168,31 +1168,34 @@ pub async fn move_cipher_selected(conn: AutoTxn, headers: Headers, data: Json<Mo
 
 #[derive(Deserialize)]
 pub struct OrganizationId {
-    #[serde(rename = "organizationId")]
-    organization_id: Uuid,
+    // Optional: absent when purging the personal vault. Note this must be an
+    // Option on the field rather than `Query<Option<OrganizationId>>`, since
+    // serde_urlencoded can't deserialize an empty query string into an Option.
+    #[serde(rename = "organizationId", default)]
+    organization_id: Option<Uuid>,
 }
 
-pub async fn delete_all(conn: AutoTxn, Query(organization): Query<Option<OrganizationId>>, headers: Headers, data: Json<PasswordData>) -> Result<()> {
+pub async fn delete_all(conn: AutoTxn, Query(organization): Query<OrganizationId>, headers: Headers, data: Json<PasswordData>) -> Result<()> {
     let data: PasswordData = data.0;
 
     let user = headers.user;
 
     user.check_valid_password_data(&data)?;
 
-    match organization {
-        Some(org_data) => {
+    match organization.organization_id {
+        Some(org_id) => {
             // Organization ID in query params, purging organization vault
-            match UserOrganization::get(&conn, user.uuid, org_data.organization_id).await? {
+            match UserOrganization::get(&conn, user.uuid, org_id).await? {
                 None => err!("You don't have permission to purge the organization vault"),
                 Some(user_org) => {
                     if user_org.atype == UserOrgType::Owner {
-                        Cipher::delete_all_by_organization(&conn, org_data.organization_id).await?;
+                        Cipher::delete_all_by_organization(&conn, org_id).await?;
                         ws_users().send_user_update(UpdateType::SyncVault, &conn, &user).await?;
 
                         log_event(
                             EventType::OrganizationPurgedVault,
-                            org_data.organization_id,
-                            org_data.organization_id,
+                            org_id,
+                            org_id,
                             user.uuid,
                             headers.device.atype,
                             Utc::now(),
@@ -1501,5 +1504,235 @@ mod tests {
             let after = client.get(&format!("/api/ciphers/{id}")).await;
             assert!(after.status >= 400, "cipher {id} should be gone, got {}: {}", after.status, after.body);
         }
+    }
+
+    #[tokio::test]
+    async fn list_ciphers_and_details() {
+        let client = TestClient::register_and_login().await;
+        let id = client.create_login_cipher("2.listed|mac").await["id"].as_str().unwrap().to_string();
+
+        // List: GET /ciphers.
+        let list = client.get("/api/ciphers").await;
+        list.assert_ok();
+        let listed = list.json();
+        assert_eq!(listed["object"], "list");
+        let ids: Vec<&str> = listed["data"].as_array().unwrap().iter().filter_map(|c| c["id"].as_str()).collect();
+        assert!(ids.contains(&id.as_str()), "created cipher missing from list: {}", list.body);
+
+        // Details variant of the single-cipher GET.
+        let details = client.get(&format!("/api/ciphers/{id}/details")).await;
+        details.assert_ok();
+        assert_eq!(details.json()["id"], id);
+    }
+
+    #[tokio::test]
+    async fn create_secure_note_cipher() {
+        let client = TestClient::register_and_login().await;
+        let body = json!({
+            "type": 2, // SecureNote
+            "name": "2.note|mac",
+            "secureNote": { "type": 0 },
+            "notes": "2.notebody|mac",
+            "lastKnownRevisionDate": null,
+        });
+        let resp = client.post("/api/ciphers", body).await;
+        resp.assert_ok();
+        let created = resp.json();
+        assert_eq!(created["type"], 2);
+        assert_eq!(created["notes"], "2.notebody|mac");
+    }
+
+    #[tokio::test]
+    async fn partial_update_sets_folder_and_favorite() {
+        let client = TestClient::register_and_login().await;
+        let id = client.create_login_cipher("2.partial|mac").await["id"].as_str().unwrap().to_string();
+        let folder_id = client.create_folder("2.pfolder|mac").await;
+
+        let resp = client.put(&format!("/api/ciphers/{id}/partial"), json!({ "folderId": folder_id, "favorite": true })).await;
+        resp.assert_ok();
+        let updated = resp.json();
+        assert_eq!(updated["folderId"], folder_id, "partial update should move to folder: {}", resp.body);
+        assert_eq!(updated["favorite"], true, "partial update should set favorite: {}", resp.body);
+    }
+
+    #[tokio::test]
+    async fn stale_update_is_rejected() {
+        let client = TestClient::register_and_login().await;
+        let id = client.create_login_cipher("2.stale|mac").await["id"].as_str().unwrap().to_string();
+
+        // A lastKnownRevisionDate well in the past means the client copy is out of
+        // date; the server must refuse the update to avoid clobbering newer data.
+        let body = json!({
+            "type": 1,
+            "name": "2.stale-renamed|mac",
+            "login": { "username": "2.u|mac", "password": "2.p|mac" },
+            "lastKnownRevisionDate": "2000-01-01T00:00:00Z",
+        });
+        let resp = client.put(&format!("/api/ciphers/{id}"), body).await;
+        assert!(resp.status >= 400, "stale update should be rejected, got {}: {}", resp.status, resp.body);
+    }
+
+    #[tokio::test]
+    async fn bulk_archive_then_unarchive() {
+        let client = TestClient::register_and_login().await;
+        let a = client.create_login_cipher("2.ba|mac").await["id"].as_str().unwrap().to_string();
+        let b = client.create_login_cipher("2.bb|mac").await["id"].as_str().unwrap().to_string();
+
+        let archived = client.put("/api/ciphers/archive", json!({ "ids": [a, b] })).await;
+        archived.assert_ok();
+        let arch = archived.json();
+        for c in arch["data"].as_array().unwrap() {
+            assert!(!c["archivedDate"].is_null(), "bulk-archived cipher should have archivedDate: {}", archived.body);
+        }
+
+        client.put("/api/ciphers/unarchive", json!({ "ids": [a, b] })).await.assert_ok();
+        for id in [&a, &b] {
+            let got = client.get(&format!("/api/ciphers/{id}")).await;
+            got.assert_ok();
+            assert!(got.json()["archivedDate"].is_null(), "cipher {id} should be unarchived: {}", got.body);
+        }
+    }
+
+    #[tokio::test]
+    async fn import_creates_ciphers_and_folders() {
+        let client = TestClient::register_and_login().await;
+        let body = json!({
+            "ciphers": [
+                { "type": 1, "name": "2.imp-a|mac", "login": { "username": "2.u|mac", "password": "2.p|mac" }, "lastKnownRevisionDate": null },
+                { "type": 1, "name": "2.imp-b|mac", "login": { "username": "2.u|mac", "password": "2.p|mac" }, "lastKnownRevisionDate": null },
+            ],
+            "folders": [ { "name": "2.impfolder|mac" } ],
+            "folderRelationships": [ { "key": 0, "value": 0 } ],
+        });
+        client.post("/api/ciphers/import", body).await.assert_ok();
+
+        let resp = client.get("/api/sync").await;
+        resp.assert_ok();
+        let sync = resp.json();
+        let names: Vec<&str> = sync["ciphers"].as_array().unwrap().iter().filter_map(|c| c["name"].as_str()).collect();
+        assert!(names.contains(&"2.imp-a|mac") && names.contains(&"2.imp-b|mac"), "imported ciphers missing: {}", resp.body);
+        let folders: Vec<&str> = sync["folders"].as_array().unwrap().iter().filter_map(|f| f["name"].as_str()).collect();
+        assert!(folders.contains(&"2.impfolder|mac"), "imported folder missing: {}", resp.body);
+
+        // The relationship put cipher 0 into folder 0.
+        let a = sync["ciphers"].as_array().unwrap().iter().find(|c| c["name"] == "2.imp-a|mac").unwrap();
+        assert!(!a["folderId"].is_null(), "imported cipher should be in a folder: {}", resp.body);
+    }
+
+    #[tokio::test]
+    async fn purge_user_vault() {
+        let client = TestClient::register_and_login().await;
+        let id = client.create_login_cipher("2.purgeme|mac").await["id"].as_str().unwrap().to_string();
+
+        // Wrong password is rejected.
+        let bad = client.post("/api/ciphers/purge", json!({ "masterPasswordHash": "not-the-password" })).await;
+        assert!(bad.status >= 400, "purge with wrong password should fail, got {}: {}", bad.status, bad.body);
+
+        // Correct password purges the personal vault.
+        client.post("/api/ciphers/purge", json!({ "masterPasswordHash": client.master_password_hash })).await.assert_ok();
+        let after = client.get(&format!("/api/ciphers/{id}")).await;
+        assert!(after.status >= 400, "purged cipher should be gone, got {}: {}", after.status, after.body);
+    }
+
+    #[tokio::test]
+    async fn share_personal_cipher_to_org() {
+        let client = TestClient::register_and_login().await;
+        let org = client.create_org("2.shareorg|mac").await;
+        let org_id = org["id"].as_str().unwrap().to_string();
+        let col_id = client.create_org_collection(&org_id, "2.sharecol|mac").await;
+        let id = client.create_login_cipher("2.tomove|mac").await["id"].as_str().unwrap().to_string();
+
+        let body = json!({
+            "cipher": {
+                "type": 1,
+                "name": "2.tomove|mac",
+                "organizationId": org_id,
+                "login": { "username": "2.u|mac", "password": "2.p|mac" },
+                "lastKnownRevisionDate": null,
+            },
+            "collectionIds": [col_id],
+        });
+        let resp = client.put(&format!("/api/ciphers/{id}/share"), body).await;
+        resp.assert_ok();
+        let shared = resp.json();
+        assert_eq!(shared["organizationId"], org_id, "shared cipher should belong to the org: {}", resp.body);
+        let cids: Vec<&str> = shared["collectionIds"].as_array().unwrap().iter().filter_map(|c| c.as_str()).collect();
+        assert!(cids.contains(&col_id.as_str()), "shared cipher should be in the collection: {}", resp.body);
+    }
+
+    #[tokio::test]
+    async fn update_org_cipher_collections() {
+        let client = TestClient::register_and_login().await;
+        let org = client.create_org("2.colorg|mac").await;
+        let org_id = org["id"].as_str().unwrap().to_string();
+        let col1 = client.create_org_collection(&org_id, "2.c1|mac").await;
+        let col2 = client.create_org_collection(&org_id, "2.c2|mac").await;
+        let id = client.create_org_cipher(&org_id, &col1, "2.orgc|mac").await["id"].as_str().unwrap().to_string();
+
+        // Put the cipher into both collections.
+        client.put(&format!("/api/ciphers/{id}/collections"), json!({ "collectionIds": [col1, col2] })).await.assert_ok();
+
+        let got = client.get(&format!("/api/ciphers/{id}")).await;
+        got.assert_ok();
+        let j = got.json();
+        let cids: Vec<&str> = j["collectionIds"].as_array().unwrap().iter().filter_map(|c| c.as_str()).collect();
+        assert!(cids.contains(&col1.as_str()) && cids.contains(&col2.as_str()), "cipher should be in both collections: {}", got.body);
+    }
+
+    #[tokio::test]
+    async fn attachment_v2_upload_get_delete() {
+        let client = TestClient::register_and_login().await;
+        let id = client.create_login_cipher("2.withatt|mac").await["id"].as_str().unwrap().to_string();
+
+        let file = b"encrypted-attachment-bytes";
+
+        // 1. Reserve the attachment record (v2 handshake).
+        let reserve = client
+            .post(
+                &format!("/api/ciphers/{id}/attachment/v2"),
+                json!({ "key": "2.attkey|mac", "fileName": "2.secret.txt|mac", "fileSize": file.len() }),
+            )
+            .await;
+        reserve.assert_ok();
+        let attachment_id = reserve.json()["attachmentId"].as_str().expect("attachmentId").to_string();
+
+        // 2. Upload the bytes to the returned URL.
+        client
+            .post_multipart(&format!("/api/ciphers/{id}/attachment/{attachment_id}"), &[("data", Some("2.secret.txt|mac"), file)])
+            .await
+            .assert_ok();
+
+        // 3. The cipher now advertises the attachment.
+        let got = client.get(&format!("/api/ciphers/{id}")).await;
+        got.assert_ok();
+        let atts = got.json()["attachments"].as_array().cloned().unwrap_or_default();
+        assert_eq!(atts.len(), 1, "cipher should have exactly one attachment: {}", got.body);
+
+        // 4. Metadata is fetchable directly.
+        let meta = client.get(&format!("/api/ciphers/{id}/attachment/{attachment_id}")).await;
+        meta.assert_ok();
+        assert_eq!(meta.json()["id"], attachment_id);
+
+        // 5. Delete it; it's then gone.
+        client.delete(&format!("/api/ciphers/{id}/attachment/{attachment_id}")).await.assert_ok();
+        let after = client.get(&format!("/api/ciphers/{id}/attachment/{attachment_id}")).await;
+        assert!(after.status >= 400, "attachment should be gone, got {}: {}", after.status, after.body);
+    }
+
+    #[tokio::test]
+    async fn legacy_attachment_upload() {
+        let client = TestClient::register_and_login().await;
+        let id = client.create_login_cipher("2.legatt|mac").await["id"].as_str().unwrap().to_string();
+
+        // The legacy single-step API creates the record and stores the bytes at once.
+        let resp = client
+            .post_multipart(
+                &format!("/api/ciphers/{id}/attachment"),
+                &[("key", None, b"2.attkey|mac"), ("data", Some("2.legacy.txt|mac"), b"legacy-attachment-bytes")],
+            )
+            .await;
+        resp.assert_ok();
+        let atts = resp.json()["attachments"].as_array().cloned().unwrap_or_default();
+        assert_eq!(atts.len(), 1, "legacy upload should attach one file: {}", resp.body);
     }
 }

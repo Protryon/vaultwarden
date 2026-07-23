@@ -628,9 +628,9 @@ impl Cipher {
             .query(
                 r"
         SELECT cc.collection_uuid
-        FROM ciphers c
-        INNER JOIN user_cipher_auth uca ON uca.cipher_uuid = $1 AND uca.user_uuid = $2
-        INNER JOIN collection_ciphers cc ON cc.cipher_uuid = c.uuid
+        FROM collection_ciphers cc
+        INNER JOIN user_cipher_auth uca ON uca.cipher_uuid = cc.cipher_uuid AND uca.user_uuid = $2
+        WHERE cc.cipher_uuid = $1
         ",
                 &[&self.uuid, &user_uuid],
             )

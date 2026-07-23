@@ -1017,3 +1017,77 @@ async fn get_auth_code_access_token(code: &str) -> Result<(String, String, CoreU
         Err(_err) => Err("unable to find client"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::test_harness::TestClient;
+
+    #[tokio::test]
+    async fn refresh_token_grant_returns_new_access_token() {
+        let mut client = TestClient::new().await;
+        client.register().await;
+
+        // A password-grant login with offline_access yields a refresh token.
+        let form = [
+            ("grant_type", "password"),
+            ("username", client.email.as_str()),
+            ("password", client.master_password_hash.as_str()),
+            ("scope", "api offline_access"),
+            ("client_id", "web"),
+            ("device_identifier", client.device_id.as_str()),
+            ("device_name", "test-harness"),
+            ("device_type", "14"),
+        ];
+        let resp = client.post_form("/identity/connect/token", &form).await;
+        resp.assert_ok();
+        let refresh_token = resp.json()["refresh_token"].as_str().expect("refresh_token present").to_string();
+
+        // Exchanging the refresh token yields a fresh access token.
+        let refresh_form = [("grant_type", "refresh_token"), ("refresh_token", refresh_token.as_str())];
+        let refreshed = client.post_form("/identity/connect/token", &refresh_form).await;
+        refreshed.assert_ok();
+        assert!(refreshed.json()["access_token"].as_str().is_some(), "refresh should yield an access token: {}", refreshed.body);
+    }
+
+    #[tokio::test]
+    async fn client_credentials_api_key_login() {
+        let client = TestClient::register_and_login().await;
+
+        // Obtain the user's personal API key.
+        let key_resp = client.post("/api/accounts/api-key", json!({ "masterPasswordHash": client.master_password_hash })).await;
+        key_resp.assert_ok();
+        let api_key = key_resp.json()["apiKey"].as_str().expect("apiKey").to_string();
+
+        // Log in with the client_credentials grant (client_id = "user.<uuid>").
+        let client_id = format!("user.{}", client.user_id.unwrap());
+        let form = [
+            ("grant_type", "client_credentials"),
+            ("client_id", client_id.as_str()),
+            ("client_secret", api_key.as_str()),
+            ("scope", "api"),
+            ("device_identifier", client.device_id.as_str()),
+            ("device_name", "test-harness"),
+            ("device_type", "14"),
+        ];
+        let resp = client.post_form("/identity/connect/token", &form).await;
+        resp.assert_ok();
+        assert!(resp.json()["access_token"].as_str().is_some(), "api-key login should yield a token: {}", resp.body);
+    }
+
+    #[tokio::test]
+    async fn prevalidate_unknown_domain_returns_empty_token() {
+        let client = TestClient::new().await;
+        let resp = client.get("/identity/account/prevalidate?domainHint=no-such-org").await;
+        resp.assert_ok();
+        assert_eq!(resp.json()["token"], "");
+    }
+
+    #[tokio::test]
+    async fn invalid_grant_type_is_rejected() {
+        let client = TestClient::new().await;
+        let resp = client.post_form("/identity/connect/token", &[("grant_type", "made_up")]).await;
+        assert!(resp.status >= 400, "invalid grant type should fail, got {}: {}", resp.status, resp.body);
+    }
+}
