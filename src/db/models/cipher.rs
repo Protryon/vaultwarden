@@ -13,7 +13,7 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio_postgres::{Row, types::Json};
 use uuid::Uuid;
 
-use super::{Attachment, Favorite, FolderCipher, Organization, User};
+use super::{Archive, Attachment, Favorite, FolderCipher, Organization, User};
 
 #[derive(Clone, Debug)]
 pub struct Cipher {
@@ -44,6 +44,7 @@ pub struct FullCipher {
     pub collection_uuids: Vec<Uuid>,
     pub folder_uuid: Option<Uuid>,
     pub is_favorite: bool,
+    pub archived_at: Option<DateTime<Utc>>,
 }
 
 #[allow(dead_code)]
@@ -168,7 +169,7 @@ impl FullCipher {
         ciphers
             .into_iter()
             .map(|row| {
-                let cipher: Cipher = RowSlice::new(&row).slice_from(5..).into();
+                let cipher: Cipher = RowSlice::new(&row).slice_from(6..).into();
                 // double NULL for CDB support
                 let collection_uuids: Vec<Uuid> = row.get::<_, Option<Vec<Option<Uuid>>>>(4).unwrap_or_default().into_iter().flatten().collect();
                 Self {
@@ -181,6 +182,7 @@ impl FullCipher {
                     collection_uuids,
                     folder_uuid: row.get(2),
                     is_favorite: row.get(3),
+                    archived_at: row.get(5),
                 }
             })
             .collect::<Vec<_>>()
@@ -191,7 +193,7 @@ impl FullCipher {
         let ciphers = async {
             conn.query(
                 r"
-                SELECT false, false, f.uuid, fav.cipher_uuid IS NOT NULL, coalesce(array_agg(cc.collection_uuid), ARRAY[]::UUID[]), c.*
+                SELECT false, false, f.uuid, fav.cipher_uuid IS NOT NULL, coalesce(array_agg(cc.collection_uuid), ARRAY[]::UUID[]), NULL::TIMESTAMPTZ, c.*
                 FROM ciphers c
                 INNER JOIN user_cipher_auth uca ON uca.cipher_uuid = c.uuid AND uca.user_uuid = $1
                 LEFT JOIN folder_ciphers fc ON fc.cipher_uuid = c.uuid
@@ -215,14 +217,15 @@ impl FullCipher {
         let ciphers = async {
             conn.query(
                 r"
-                SELECT uca.read_only, uca.hide_passwords, f.uuid, fav.cipher_uuid IS NOT NULL, coalesce(array_agg(cc.collection_uuid), ARRAY[]::UUID[]), c.*
+                SELECT uca.read_only, uca.hide_passwords, f.uuid, fav.cipher_uuid IS NOT NULL, coalesce(array_agg(cc.collection_uuid), ARRAY[]::UUID[]), arch.archived_at, c.*
                 FROM ciphers c
                 INNER JOIN user_cipher_auth uca ON uca.cipher_uuid = c.uuid AND uca.user_uuid = $1
                 LEFT JOIN folder_ciphers fc ON fc.cipher_uuid = c.uuid
                 LEFT JOIN folders f ON f.uuid = fc.folder_uuid AND f.user_uuid = $1
                 LEFT JOIN favorites fav ON fav.cipher_uuid = c.uuid AND fav.user_uuid = $1
                 LEFT JOIN collection_ciphers cc ON cc.cipher_uuid = c.uuid
-                GROUP BY c.uuid, f.uuid, uca.read_only, uca.hide_passwords, fc.folder_uuid, fav.cipher_uuid
+                LEFT JOIN archives arch ON arch.cipher_uuid = c.uuid AND arch.user_uuid = $1
+                GROUP BY c.uuid, f.uuid, uca.read_only, uca.hide_passwords, fc.folder_uuid, fav.cipher_uuid, arch.archived_at
                 ORDER BY c.created_at ASC
                 ",
                 &[&user_uuid],
@@ -390,6 +393,7 @@ impl FullCipher {
         if for_user {
             json_object["folderId"] = json!(self.folder_uuid);
             json_object["favorite"] = json!(self.is_favorite);
+            json_object["archivedDate"] = self.archived_at.map_or(Value::Null, |d| Value::String(format_date(&d)));
             // These values are true by default, but can be false if the
             // cipher belongs to a collection or group where the org owner has enabled
             // the "Read Only" or "Hide Passwords" restrictions for the user.
@@ -427,6 +431,11 @@ impl Cipher {
 
         let folder_uuid = self.get_folder_uuid(conn, user_uuid).await.ise()?;
         let is_favorite = self.is_favorite(conn, user_uuid).await.ise()?;
+        let archived_at = if for_user {
+            Archive::get_archived_at(conn, user_uuid, self.uuid).await?
+        } else {
+            None
+        };
 
         Ok(FullCipher {
             cipher: self,
@@ -435,6 +444,7 @@ impl Cipher {
             collection_uuids,
             folder_uuid,
             is_favorite,
+            archived_at,
         }
         .to_json(for_user))
     }

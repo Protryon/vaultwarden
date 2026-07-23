@@ -8,7 +8,7 @@ use log::{debug, error, info};
 
 use crate::{
     CONFIG,
-    db::{Cipher, DB, Event, SsoNonce, TwoFactorIncomplete, User},
+    db::{AuthRequest, Cipher, DB, Event, SsoNonce, TwoFactorIncomplete, User},
 };
 
 pub fn schedule_jobs() {
@@ -31,6 +31,11 @@ pub fn schedule_jobs() {
             // every 15 min on the 3rd minute of the hour
             sched.add(Job::new("0 3,18,33,48 * * * *".parse().unwrap(), || {
                 runtime.spawn(purge_sso_nonce());
+            }));
+
+            // Purge expired auth requests (login with device), offset from the SSO nonce purge.
+            sched.add(Job::new("0 8,23,38,53 * * * *".parse().unwrap(), || {
+                runtime.spawn(purge_auth_requests());
             }));
 
             // Purge sends that are past their deletion date.
@@ -107,6 +112,17 @@ async fn purge_sso_nonce() {
     //TODO: make this configurable i guess
     if let Err(e) = SsoNonce::purge_expired(&conn, Utc::now() - chrono::Duration::minutes(15)).await {
         error!("failed to purge sso nonces: {e}");
+    }
+}
+
+async fn purge_auth_requests() {
+    debug!("Purging auth requests");
+    let Ok(conn) = DB.get().await else {
+        error!("Failed to get DB connection while purging auth requests");
+        return;
+    };
+    if let Err(e) = AuthRequest::purge_expired_auth_requests(&conn).await {
+        error!("failed to purge auth requests: {e}");
     }
 }
 

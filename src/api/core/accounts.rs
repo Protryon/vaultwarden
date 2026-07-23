@@ -9,10 +9,10 @@ use uuid::Uuid;
 
 use crate::{
     CONFIG,
-    api::{PasswordData, UpdateType, ws_users},
-    auth::{Headers, decode_delete, decode_invite, decode_verify_email},
+    api::{PasswordData, UpdateType, ws_anonymous_subscriptions, ws_users},
+    auth::{ClientHeaders, Headers, decode_delete, decode_invite, decode_verify_email},
     crypto,
-    db::{Cipher, DB, Device, EmergencyAccess, EventType, Folder, Invitation, User, UserKdfType, UserOrgStatus, UserOrganization},
+    db::{AuthRequest, Cipher, DB, Device, EmergencyAccess, EventType, Folder, Invitation, User, UserKdfType, UserOrgStatus, UserOrganization},
     events::log_user_event,
     mail,
     push::{register_push_device, unregister_push_device},
@@ -47,6 +47,12 @@ pub fn route(router: Router) -> Router {
         .post("/accounts/api-key", api_key)
         .post("/accounts/rotate-api-key", rotate_api_key)
         .get("/tasks", get_tasks)
+        .post("/auth-requests", post_auth_request)
+        .get("/auth-requests", get_auth_requests_pending)
+        .get("/auth-requests/pending", get_auth_requests_pending)
+        .get("/auth-requests/:uuid", get_auth_request)
+        .put("/auth-requests/:uuid", put_auth_request)
+        .get("/auth-requests/:uuid/response", get_auth_request_response)
 }
 
 /// Stub for the security-tasks endpoint so newer web-vault/clients don't error.
@@ -56,6 +62,139 @@ async fn get_tasks(_headers: Headers) -> Json<Value> {
         "data": [],
         "object": "list"
     }))
+}
+
+// Login-with-device / passwordless-login auth requests.
+// A device that wants to log in (but has no key) creates an auth request; another already
+// authenticated device of the same user approves it and hands back the encrypted user key.
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthRequestRequest {
+    access_code: String,
+    device_identifier: Uuid,
+    email: String,
+    public_key: String,
+    // Not used for now
+    // #[serde(alias = "type")]
+    // _type: i32,
+}
+
+async fn post_auth_request(client_headers: ClientHeaders, data: Json<AuthRequestRequest>) -> Result<Json<Value>> {
+    let data = data.0;
+    let conn = DB.get().await.ise()?;
+
+    let Some(user) = User::find_by_email(&conn, &data.email).await? else {
+        err!("AuthRequest doesn't exist", "User not found")
+    };
+
+    // Validate that the requesting device exists and its type matches the request headers.
+    let device = match Device::find_by_uuid_and_user(&conn, data.device_identifier, user.uuid).await? {
+        Some(device) if device.atype == client_headers.device_type => device,
+        _ => err!("AuthRequest doesn't exist", "Device verification failed"),
+    };
+
+    let mut auth_request =
+        AuthRequest::new(user.uuid, data.device_identifier, client_headers.device_type, client_headers.ip.ip.to_string(), data.access_code, data.public_key);
+    auth_request.save(&conn).await?;
+
+    ws_users().send_auth_request(user.uuid, auth_request.uuid, &device, &conn).await?;
+
+    Ok(Json(auth_request.to_json()))
+}
+
+async fn get_auth_request(Path(uuid): Path<Uuid>, headers: Headers) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
+    let Some(auth_request) = AuthRequest::find_by_uuid_and_user(&conn, uuid, headers.user.uuid).await? else {
+        err!("AuthRequest doesn't exist", "Record not found or user uuid does not match")
+    };
+
+    Ok(Json(auth_request.to_json()))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthResponseRequest {
+    device_identifier: Uuid,
+    key: String,
+    master_password_hash: Option<String>,
+    request_approved: bool,
+}
+
+async fn put_auth_request(Path(uuid): Path<Uuid>, headers: Headers, data: Json<AuthResponseRequest>) -> Result<Json<Value>> {
+    let data = data.0;
+    let conn = DB.get().await.ise()?;
+
+    let Some(mut auth_request) = AuthRequest::find_by_uuid_and_user(&conn, uuid, headers.user.uuid).await? else {
+        err!("AuthRequest doesn't exist", "Record not found or user uuid does not match")
+    };
+
+    if headers.device.uuid != data.device_identifier {
+        err!("AuthRequest doesn't exist", "Device verification failed")
+    }
+
+    if auth_request.approved.is_some() {
+        err!("An authentication request with the same device already exists")
+    }
+
+    if data.request_approved {
+        auth_request.approved = Some(true);
+        auth_request.enc_key = Some(data.key);
+        auth_request.master_password_hash = data.master_password_hash;
+        auth_request.response_device_id = Some(data.device_identifier);
+        auth_request.response_date = Some(Utc::now());
+        auth_request.save(&conn).await?;
+
+        // Notify both the anonymous hub (the still-unauthenticated requesting device) and the
+        // authenticated hub of the user so any other devices update their pending list.
+        ws_anonymous_subscriptions().send_auth_response(auth_request.user_uuid, auth_request.uuid).await;
+        ws_users().send_auth_response(auth_request.user_uuid, auth_request.uuid, &headers.device, &conn).await?;
+    } else {
+        // If denied, there's no reason to keep the request around.
+        auth_request.delete(&conn).await?;
+    }
+
+    Ok(Json(auth_request.to_json()))
+}
+
+#[derive(Deserialize)]
+struct AuthRequestResponseQuery {
+    code: String,
+}
+
+async fn get_auth_request_response(
+    Path(uuid): Path<Uuid>,
+    Query(query): Query<AuthRequestResponseQuery>,
+    client_headers: ClientHeaders,
+) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
+    let Some(auth_request) = AuthRequest::find_by_uuid(&conn, uuid).await? else {
+        err!("AuthRequest doesn't exist", "User not found")
+    };
+
+    if auth_request.device_type != client_headers.device_type
+        || auth_request.request_ip != client_headers.ip.ip.to_string()
+        || !auth_request.check_access_code(&query.code)
+    {
+        err!("AuthRequest doesn't exist", "Invalid device, IP or code")
+    }
+
+    Ok(Json(auth_request.to_json()))
+}
+
+async fn get_auth_requests_pending(headers: Headers) -> Result<Json<Value>> {
+    let conn = DB.get().await.ise()?;
+    let auth_requests = AuthRequest::find_by_user(&conn, headers.user.uuid).await?;
+
+    Ok(Json(json!({
+        "data": auth_requests
+            .iter()
+            .filter(|request| request.approved.is_none())
+            .map(AuthRequest::to_json)
+            .collect::<Vec<Value>>(),
+        "continuationToken": null,
+        "object": "list"
+    })))
 }
 
 #[derive(Deserialize, Debug)]

@@ -160,6 +160,44 @@ pub async fn push_cipher_update(ut: UpdateType, cipher: &Cipher, acting_device_u
     Ok(())
 }
 
+pub async fn push_auth_request(user_uuid: Uuid, auth_request_uuid: Uuid, device: &Device, conn: &Conn) -> Result<()> {
+    if Device::check_user_has_push_device(conn, user_uuid).await? {
+        tokio::task::spawn(send_to_push_relay(json!({
+            "userId": user_uuid,
+            "organizationId": (),
+            "deviceId": device.push_uuid, // Should be the records unique uuid of the acting device (unique uuid per user/device)
+            "identifier": device.uuid, // Should be the acting device id (aka uuid per device/app)
+            "type": UpdateType::AuthRequest as i32,
+            "payload": {
+                "userId": user_uuid,
+                "id": auth_request_uuid,
+            },
+            "clientType": (),
+            "installationId": (),
+        })));
+    }
+    Ok(())
+}
+
+pub async fn push_auth_response(user_uuid: Uuid, auth_request_uuid: Uuid, device: &Device, conn: &Conn) -> Result<()> {
+    if Device::check_user_has_push_device(conn, user_uuid).await? {
+        tokio::task::spawn(send_to_push_relay(json!({
+            "userId": user_uuid,
+            "organizationId": (),
+            "deviceId": device.push_uuid, // Should be the records unique uuid of the acting device (unique uuid per user/device)
+            "identifier": device.uuid, // Should be the acting device id (aka uuid per device/app)
+            "type": UpdateType::AuthRequestResponse as i32,
+            "payload": {
+                "userId": user_uuid,
+                "id": auth_request_uuid,
+            },
+            "clientType": (),
+            "installationId": (),
+        })));
+    }
+    Ok(())
+}
+
 pub fn push_logout(user: &User, acting_device_uuid: Option<Uuid>) {
     let acting_device_uuid: Value = acting_device_uuid.map(|v| Value::String(v.to_string())).unwrap_or_else(|| Value::Null);
 

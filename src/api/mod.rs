@@ -18,7 +18,7 @@ use crate::{
     util::{app_headers, build_cors},
 };
 
-pub use crate::api::notifications::{UpdateType, ws_users};
+pub use crate::api::notifications::{UpdateType, ws_anonymous_subscriptions, ws_users};
 
 fn route() -> Router {
     let mut api = web::route(Router::new())

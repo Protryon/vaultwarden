@@ -15,7 +15,7 @@ use crate::{
     api::{self, PasswordData, UpdateType, ws_users},
     auth::Headers,
     db::{
-        Attachment, Cipher, CipherType, Collection, CollectionCipher, CollectionWithAccess, Conn, DB, EventType, Folder, FullCipher, OrgPolicyType,
+        Archive, Attachment, Cipher, CipherType, Collection, CollectionCipher, CollectionWithAccess, Conn, DB, EventType, Folder, FullCipher, OrgPolicyType,
         OrganizationPolicy, RepromptType, UserOrgType, UserOrganization,
     },
     events::log_event,
@@ -73,6 +73,10 @@ pub fn route(router: Router) -> Router {
         .put("/ciphers/:uuid/restore", restore_cipher_put)
         .put("/ciphers/:uuid/restore-admin", restore_cipher_put)
         .put("/ciphers/restore", restore_cipher_selected)
+        .put("/ciphers/:uuid/archive", archive_cipher_put)
+        .put("/ciphers/archive", archive_cipher_selected)
+        .put("/ciphers/:uuid/unarchive", unarchive_cipher_put)
+        .put("/ciphers/unarchive", unarchive_cipher_selected)
         .post("/ciphers/move", move_cipher_selected)
         .put("/ciphers/move", move_cipher_selected)
         .post("/ciphers/purge", delete_all)
@@ -204,6 +208,11 @@ pub struct CipherData {
 
     favorite: Option<bool>,
     reprompt: Option<RepromptType>,
+
+    // Per-user archive timestamp. Sent by clients to preserve archive state on edit
+    // and during key rotation. Clearing archive state is done via the unarchive endpoint.
+    #[serde(default, deserialize_with = "deserialize_last_known_revision_date")]
+    archived_date: Option<DateTime<Utc>>,
 
     pub password_history: Option<Value>,
 
@@ -450,6 +459,9 @@ pub async fn update_cipher_from_data(
     cipher.move_to_folder(conn, data.folder_id, headers.user.uuid).await?;
     if let Some(favorite) = data.favorite {
         cipher.set_favorite(conn, favorite, headers.user.uuid).await?;
+    }
+    if let Some(archived_at) = data.archived_date {
+        Archive::save(conn, headers.user.uuid, cipher.uuid, archived_at).await?;
     }
 
     if ut != UpdateType::None {
@@ -1052,6 +1064,69 @@ pub async fn restore_cipher_selected(mut conn: AutoTxn, headers: Headers, data: 
       "object": "list",
       "continuationToken": null
     })))
+}
+
+pub async fn archive_cipher_put(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers) -> Result<Json<Value>> {
+    let out = _set_cipher_archived_by_uuid(uuid, &headers, &mut conn, true).await?;
+    conn.commit().await?;
+    Ok(out)
+}
+
+pub async fn unarchive_cipher_put(mut conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers) -> Result<Json<Value>> {
+    let out = _set_cipher_archived_by_uuid(uuid, &headers, &mut conn, false).await?;
+    conn.commit().await?;
+    Ok(out)
+}
+
+pub async fn archive_cipher_selected(conn: AutoTxn, headers: Headers, data: Json<IdData>) -> Result<Json<Value>> {
+    _set_multiple_ciphers_archived(conn, headers, data, true).await
+}
+
+pub async fn unarchive_cipher_selected(conn: AutoTxn, headers: Headers, data: Json<IdData>) -> Result<Json<Value>> {
+    _set_multiple_ciphers_archived(conn, headers, data, false).await
+}
+
+async fn _set_multiple_ciphers_archived(mut conn: AutoTxn, headers: Headers, data: Json<IdData>, archive: bool) -> Result<Json<Value>> {
+    let mut ciphers: Vec<Value> = Vec::new();
+    for uuid in data.0.ids {
+        ciphers.push(_set_cipher_archived_by_uuid(uuid, &headers, &mut conn, archive).await?.0);
+    }
+
+    conn.commit().await?;
+
+    Ok(Json(json!({
+      "data": ciphers,
+      "object": "list",
+      "continuationToken": null
+    })))
+}
+
+/// Archives (or unarchives) a cipher for the requesting user. Archive state is per-user, so
+/// a user may archive even a read-only org cipher — it only affects their own view.
+async fn _set_cipher_archived_by_uuid(uuid: Uuid, headers: &Headers, conn: &mut AutoTxn, archive: bool) -> Result<Json<Value>> {
+    let cipher = match Cipher::get_for_user(conn, headers.user.uuid, uuid).await? {
+        Some(cipher) => cipher,
+        None => err!("Cipher doesn't exist"),
+    };
+
+    if archive {
+        Archive::save(conn, headers.user.uuid, cipher.uuid, Utc::now()).await?;
+    } else {
+        Archive::delete_by_cipher(conn, headers.user.uuid, cipher.uuid).await?;
+    }
+
+    let cipher2 = cipher.clone();
+    let acting_device_uuid = headers.device.uuid;
+    conn.defer(move || {
+        tokio::spawn(async move {
+            let Ok(conn) = DB.get().await else {
+                return;
+            };
+            ws_users().send_cipher_update_all(UpdateType::SyncCipherUpdate, &cipher2, acting_device_uuid, None, &conn).await;
+        });
+    });
+
+    Ok(Json(cipher.to_json(conn, headers.user.uuid, true).await?))
 }
 
 #[derive(Deserialize)]

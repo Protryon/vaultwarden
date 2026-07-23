@@ -22,7 +22,7 @@ use uuid::Uuid;
 use crate::api::core::two_factor::email::{self, EmailTokenData};
 use crate::api::core::two_factor::{duo, yubikey};
 use crate::config::SSO_CALLBACK_URL;
-use crate::db::{Event, OrgPolicyType, OrganizationPolicy, SsoNonce};
+use crate::db::{AuthRequest, Event, OrgPolicyType, OrganizationPolicy, SsoNonce};
 use crate::{
     // util::{CookieManager, CustomRedirect},
     CONFIG,
@@ -308,15 +308,33 @@ async fn password_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &
     // Set the user_uuid here to be passed back used for event logging.
     *user_uuid = Some(user.uuid.clone());
 
-    // Check password
+    // Check password. With an auth request (login with device) we don't check the user's
+    // password, but the access code of the approved auth request instead.
     let password = data.password.as_ref().unwrap();
-    if !user.check_valid_password(password) {
+    if let Some(auth_request_uuid) = data.auth_request {
+        let Some(auth_request) = AuthRequest::find_by_uuid_and_user(conn, auth_request_uuid, user.uuid).await? else {
+            Event::new(EventType::UserFailedLogIn, None).with_user_uuid(user.uuid).save(conn).await?;
+            err!("Auth request not found. Try again.", format!("IP: {}. Username: {}.", ip.ip, username))
+        };
+
+        let request_expired = Utc::now() >= auth_request.creation_date + chrono::Duration::minutes(5);
+
+        if auth_request.user_uuid != user.uuid
+            || !auth_request.approved.unwrap_or(false)
+            || request_expired
+            || ip.ip.to_string() != auth_request.request_ip
+            || !auth_request.check_access_code(password)
+        {
+            Event::new(EventType::UserFailedLogIn, None).with_user_uuid(user.uuid).save(conn).await?;
+            err!("Username or access code is incorrect. Try again", format!("IP: {}. Username: {}.", ip.ip, username))
+        }
+    } else if !user.check_valid_password(password) {
         Event::new(EventType::UserFailedLogIn, None).with_user_uuid(user.uuid).save(conn).await?;
         err!("Username or password is incorrect. Try again", format!("IP: {}. Username: {}.", ip.ip, username))
     }
 
-    // Change the KDF Iterations
-    if user.password_iterations != CONFIG.settings.password_iterations {
+    // Change the KDF Iterations (only when not logging in with an auth request)
+    if data.auth_request.is_none() && user.password_iterations != CONFIG.settings.password_iterations {
         user.password_iterations = CONFIG.settings.password_iterations;
         user.set_password(password, None, false, None, conn).await?;
 
@@ -783,6 +801,11 @@ struct ConnectData {
     two_factor_remember: Option<i32>,
     // Needed for authorization code
     code: Option<String>,
+
+    // Needed for login with device / passwordless login. When present, the `password` field
+    // carries the auth-request access code instead of the master-password hash.
+    #[serde(alias = "authRequest")]
+    auth_request: Option<Uuid>,
 }
 
 fn check_is_some<T>(value: &Option<T>, msg: &str) -> Result<()> {

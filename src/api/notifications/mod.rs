@@ -17,7 +17,7 @@ use varint_rs::{VarintReader, VarintWriter};
 use crate::{
     CONFIG,
     auth::ClientIp,
-    db::{Cipher, Conn, Folder, Send as DbSend, User},
+    db::{Cipher, Conn, Device, Folder, Send as DbSend, User},
 };
 
 use once_cell::sync::Lazy;
@@ -32,11 +32,26 @@ pub fn ws_users() -> &'static Arc<WebSocketUsers> {
     &*WS_USERS
 }
 
-use crate::push::{push_cipher_update, push_folder_update, push_logout, push_send_update, push_user_update};
+static WS_ANONYMOUS_SUBSCRIPTIONS: Lazy<Arc<AnonymousWebSocketSubscriptions>> = Lazy::new(|| {
+    Arc::new(AnonymousWebSocketSubscriptions {
+        map: Arc::new(dashmap::DashMap::new()),
+    })
+});
+
+pub fn ws_anonymous_subscriptions() -> &'static Arc<AnonymousWebSocketSubscriptions> {
+    &*WS_ANONYMOUS_SUBSCRIPTIONS
+}
+
+use crate::push::{push_auth_request, push_auth_response, push_cipher_update, push_folder_update, push_logout, push_send_update, push_user_update};
 
 #[derive(Deserialize, Debug)]
 struct WsAccessToken {
     access_token: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct WsAnonymousToken {
+    token: Option<String>,
 }
 
 struct WSEntryMapGuard {
@@ -66,8 +81,31 @@ impl Drop for WSEntryMapGuard {
     }
 }
 
+struct WSAnonymousEntryMapGuard {
+    subscriptions: Arc<AnonymousWebSocketSubscriptions>,
+    token: Uuid,
+    addr: IpAddr,
+}
+
+impl WSAnonymousEntryMapGuard {
+    fn new(subscriptions: Arc<AnonymousWebSocketSubscriptions>, token: Uuid, addr: IpAddr) -> Self {
+        Self {
+            subscriptions,
+            token,
+            addr,
+        }
+    }
+}
+
+impl Drop for WSAnonymousEntryMapGuard {
+    fn drop(&mut self) {
+        info!("Closing anonymous WS connection from {}", self.addr);
+        self.subscriptions.map.remove(&self.token);
+    }
+}
+
 pub fn route() -> Router {
-    Router::new().get("/hub", start_websocket)
+    Router::new().get("/hub", start_websocket).get("/anonymous-hub", start_anonymous_websocket)
 }
 
 async fn start_websocket(Query(data): Query<WsAccessToken>, ip: ClientIp, ws: WebSocketUpgrade) -> Response {
@@ -108,7 +146,38 @@ async fn init_websocket(ws: WebSocket, data: WsAccessToken, ip: ClientIp) -> Res
     Ok(())
 }
 
-async fn run_websocket(mut ws: WebSocket, ip: IpAddr, mut rx: mpsc::Receiver<Message>, _guard: WSEntryMapGuard) -> anyhow::Result<()> {
+async fn start_anonymous_websocket(Query(data): Query<WsAnonymousToken>, ip: ClientIp, ws: WebSocketUpgrade) -> Response {
+    ws.on_upgrade(|socket| async move {
+        if let Err(e) = init_anonymous_websocket(socket, data, ip).await {
+            error!("anonymous ws error: {e}");
+        }
+    })
+}
+
+async fn init_anonymous_websocket(ws: WebSocket, data: WsAnonymousToken, ip: ClientIp) -> Result<(), Error> {
+    let addr = ip.ip;
+    info!("Accepting anonymous WS connection from {addr}");
+
+    // The token is the auth-request uuid the requesting (unauthenticated) device is waiting on.
+    let Some(token) = data.token.and_then(|t| Uuid::parse_str(&t).ok()) else {
+        err_code!("Invalid token", StatusCode::Unauthorized)
+    };
+
+    let (rx, guard) = {
+        let subscriptions = Arc::clone(&WS_ANONYMOUS_SUBSCRIPTIONS);
+        let (tx, rx) = mpsc::channel::<Message>(100);
+        subscriptions.map.insert(token, tx);
+        (rx, WSAnonymousEntryMapGuard::new(subscriptions, token, addr))
+    };
+
+    if let Err(e) = run_websocket(ws, ip.ip, rx, guard).await {
+        error!("[{}] anonymous websocket error: {e:#}", ip.ip);
+    }
+    debug!("[{}] closed", ip.ip);
+    Ok(())
+}
+
+async fn run_websocket(mut ws: WebSocket, ip: IpAddr, mut rx: mpsc::Receiver<Message>, _guard: impl Send) -> anyhow::Result<()> {
     let mut interval = tokio::time::interval(Duration::from_secs(15));
     loop {
         tokio::select! {
@@ -377,6 +446,60 @@ impl WebSocketUsers {
         }
         Ok(())
     }
+
+    pub async fn send_auth_request(&self, user_uuid: Uuid, auth_request_uuid: Uuid, device: &Device, conn: &Conn) -> Result<()> {
+        let data = create_update(
+            vec![("Id".into(), auth_request_uuid.to_string().into()), ("UserId".into(), user_uuid.to_string().into())],
+            UpdateType::AuthRequest,
+            Some(device.uuid),
+        );
+        self.send_update(user_uuid, &data).await;
+
+        if CONFIG.push.is_some() {
+            push_auth_request(user_uuid, auth_request_uuid, device, conn).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn send_auth_response(&self, user_uuid: Uuid, auth_request_uuid: Uuid, device: &Device, conn: &Conn) -> Result<()> {
+        let data = create_update(
+            vec![("Id".into(), auth_request_uuid.to_string().into()), ("UserId".into(), user_uuid.to_string().into())],
+            UpdateType::AuthRequestResponse,
+            Some(device.uuid),
+        );
+        self.send_update(user_uuid, &data).await;
+
+        if CONFIG.push.is_some() {
+            push_auth_response(user_uuid, auth_request_uuid, device, conn).await?;
+        }
+        Ok(())
+    }
+}
+
+// The requesting (unauthenticated) device subscribes here, keyed by the auth-request uuid,
+// so it can be notified the moment another of the user's devices approves or denies it.
+#[derive(Clone)]
+pub struct AnonymousWebSocketSubscriptions {
+    map: Arc<dashmap::DashMap<Uuid, Sender<Message>>>,
+}
+
+impl AnonymousWebSocketSubscriptions {
+    async fn send_update(&self, token: Uuid, data: &[u8]) {
+        if let Some(sender) = self.map.get(&token).map(|v| v.clone()) {
+            if let Err(e) = sender.send(Message::Binary(data.to_vec())).await {
+                error!("Error sending anonymous WS update {e}");
+            }
+        }
+    }
+
+    pub async fn send_auth_response(&self, user_uuid: Uuid, auth_request_uuid: Uuid) {
+        let data = create_anonymous_update(
+            vec![("Id".into(), auth_request_uuid.to_string().into()), ("UserId".into(), user_uuid.to_string().into())],
+            UpdateType::AuthRequestResponse,
+            user_uuid,
+        );
+        self.send_update(auth_request_uuid, &data).await;
+    }
 }
 
 /* Message Structure
@@ -407,6 +530,23 @@ fn create_update(payload: Vec<(Value, Value)>, ut: UpdateType, acting_device_uui
             ("Type".into(), (ut as i32).into()),
             ("Payload".into(), payload.into()),
         ])]),
+    ]);
+
+    serialize(value)
+}
+
+fn create_anonymous_update(payload: Vec<(Value, Value)>, ut: UpdateType, user_uuid: Uuid) -> Vec<u8> {
+    use rmpv::Value as V;
+
+    let value = V::Array(vec![
+        1.into(),
+        V::Map(vec![]),
+        V::Nil,
+        // This word is misspelled, but upstream (Bitwarden) has it this way too:
+        // https://github.com/bitwarden/server/blob/main/src/Notifications/HubHelpers.cs
+        // https://github.com/bitwarden/clients/blob/main/libs/common/src/auth/services/anonymous-hub.service.ts
+        "AuthRequestResponseRecieved".into(),
+        V::Array(vec![V::Map(vec![("Type".into(), (ut as i32).into()), ("Payload".into(), payload.into()), ("UserId".into(), user_uuid.to_string().into())])]),
     ]);
 
     serialize(value)
