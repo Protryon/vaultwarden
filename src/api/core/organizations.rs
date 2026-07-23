@@ -3267,4 +3267,84 @@ mod tests {
         let solo = owner.post(&format!("/api/organizations/{org_id}/leave"), json!({})).await;
         assert!(solo.status >= 400, "last owner should not be able to leave, got {}: {}", solo.status, solo.body);
     }
+
+    // --- bulk member operations -------------------------------------------
+
+    #[tokio::test]
+    async fn bulk_revoke_and_restore_members() {
+        let owner = TestClient::register_and_login().await;
+        let bob = TestClient::register_and_login().await;
+        let carol = TestClient::register_and_login().await;
+        let org_id = owner.create_org("BulkRevoke").await["id"].as_str().unwrap().to_string();
+        let bob_id = owner.add_org_member(&org_id, &bob).await;
+        let carol_id = owner.add_org_member(&org_id, &carol).await;
+
+        // Bulk revoke. Note: this endpoint reads a PascalCase `Ids` field.
+        owner.put(&format!("/api/organizations/{org_id}/users/revoke"), json!({ "Ids": [bob_id, carol_id] })).await.assert_ok();
+        for id in [bob_id, carol_id] {
+            let m = owner.get(&format!("/api/organizations/{org_id}/users/{id}")).await;
+            m.assert_ok();
+            assert_eq!(m.json()["status"], -1, "member {id} should be revoked: {}", m.body);
+        }
+
+        // Bulk restore.
+        owner.put(&format!("/api/organizations/{org_id}/users/restore"), json!({ "Ids": [bob_id, carol_id] })).await.assert_ok();
+        for id in [bob_id, carol_id] {
+            let m = owner.get(&format!("/api/organizations/{org_id}/users/{id}")).await;
+            m.assert_ok();
+            assert_eq!(m.json()["status"], 2, "member {id} should be confirmed again: {}", m.body);
+        }
+    }
+
+    #[tokio::test]
+    async fn bulk_delete_members() {
+        let owner = TestClient::register_and_login().await;
+        let bob = TestClient::register_and_login().await;
+        let carol = TestClient::register_and_login().await;
+        let org_id = owner.create_org("BulkDelete").await["id"].as_str().unwrap().to_string();
+        let bob_id = owner.add_org_member(&org_id, &bob).await;
+        let carol_id = owner.add_org_member(&org_id, &carol).await;
+
+        // This endpoint uses the lowercase `ids` field (OrgBulkIds).
+        owner.delete_json(&format!("/api/organizations/{org_id}/users"), json!({ "ids": [bob_id, carol_id] })).await.assert_ok();
+
+        for id in [bob_id, carol_id] {
+            let after = owner.get(&format!("/api/organizations/{org_id}/users/{id}")).await;
+            assert!(after.status >= 400, "member {id} should be removed, got {}: {}", after.status, after.body);
+        }
+    }
+
+    #[tokio::test]
+    async fn bulk_member_public_keys() {
+        let owner = TestClient::register_and_login().await;
+        let bob = TestClient::register_and_login().await;
+        let org_id = owner.create_org("BulkKeys").await["id"].as_str().unwrap().to_string();
+        let bob_id = owner.add_org_member(&org_id, &bob).await;
+
+        let resp = owner.post(&format!("/api/organizations/{org_id}/users/public-keys"), json!({ "ids": [bob_id] })).await;
+        resp.assert_ok();
+        let j = resp.json();
+        let entry = j["data"].as_array().unwrap().iter().find(|e| e["id"].as_str() == Some(&bob_id.to_string())).cloned();
+        let entry = entry.unwrap_or_else(|| panic!("bob's public key should be returned: {}", resp.body));
+        assert_eq!(entry["key"], bob.public_key);
+    }
+
+    #[tokio::test]
+    async fn reinvite_confirmed_member_is_reported() {
+        let owner = TestClient::register_and_login().await;
+        let bob = TestClient::register_and_login().await;
+        let org_id = owner.create_org("Reinvite").await["id"].as_str().unwrap().to_string();
+        let bob_id = owner.add_org_member(&org_id, &bob).await;
+
+        // The single endpoint errors outright (SMTP disabled in tests).
+        let single = owner.post(&format!("/api/organizations/{org_id}/users/{bob_id}/reinvite"), json!({})).await;
+        assert!(single.status >= 400, "reinvite should fail with SMTP disabled, got {}: {}", single.status, single.body);
+
+        // The bulk endpoint returns 200 but reports the per-user error.
+        let bulk = owner.post(&format!("/api/organizations/{org_id}/users/reinvite"), json!({ "ids": [bob_id] })).await;
+        bulk.assert_ok();
+        assert_eq!(bulk.json()["object"], "list");
+        let err = bulk.json()["data"].as_array().unwrap()[0]["error"].as_str().unwrap_or("").to_string();
+        assert!(!err.is_empty(), "bulk reinvite should carry a per-user error: {}", bulk.body);
+    }
 }
