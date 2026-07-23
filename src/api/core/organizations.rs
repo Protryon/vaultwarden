@@ -3003,4 +3003,268 @@ mod tests {
         resp.assert_ok();
         assert_eq!(resp.json()["organizationId"], org_id);
     }
+
+    // --- collection CRUD ---------------------------------------------------
+
+    #[tokio::test]
+    async fn update_collection_name() {
+        let client = TestClient::register_and_login().await;
+        let org_id = client.create_org("ColUpd").await["id"].as_str().unwrap().to_string();
+        let col_id = client.create_org_collection(&org_id, "2.old|mac").await;
+
+        let upd = client
+            .put(&format!("/api/organizations/{org_id}/collections/{col_id}"), json!({ "name": "2.new|mac", "groups": [], "users": [] }))
+            .await;
+        upd.assert_ok();
+        assert_eq!(upd.json()["name"], "2.new|mac");
+
+        // Detail endpoint reflects the rename.
+        let detail = client.get(&format!("/api/organizations/{org_id}/collections/{col_id}/details")).await;
+        detail.assert_ok();
+        assert_eq!(detail.json()["id"], col_id);
+        assert_eq!(detail.json()["name"], "2.new|mac");
+    }
+
+    #[tokio::test]
+    async fn delete_collection() {
+        let client = TestClient::register_and_login().await;
+        let org_id = client.create_org("ColDel").await["id"].as_str().unwrap().to_string();
+        let col_id = client.create_org_collection(&org_id, "2.doomed|mac").await;
+
+        client.delete(&format!("/api/organizations/{org_id}/collections/{col_id}")).await.assert_ok();
+
+        let cols = client.get(&format!("/api/organizations/{org_id}/collections")).await;
+        let ids: Vec<String> = cols.json()["data"].as_array().unwrap().iter().filter_map(|c| c["id"].as_str().map(String::from)).collect();
+        assert!(!ids.contains(&col_id), "deleted collection should be gone: {}", cols.body);
+    }
+
+    #[tokio::test]
+    async fn bulk_delete_collections() {
+        let client = TestClient::register_and_login().await;
+        let org_id = client.create_org("ColBulk").await["id"].as_str().unwrap().to_string();
+        let c1 = client.create_org_collection(&org_id, "2.b1|mac").await;
+        let c2 = client.create_org_collection(&org_id, "2.b2|mac").await;
+
+        client
+            .delete_json(&format!("/api/organizations/{org_id}/collections"), json!({ "ids": [c1, c2], "organizationId": org_id }))
+            .await
+            .assert_ok();
+
+        let cols = client.get(&format!("/api/organizations/{org_id}/collections")).await;
+        let ids: Vec<String> = cols.json()["data"].as_array().unwrap().iter().filter_map(|c| c["id"].as_str().map(String::from)).collect();
+        assert!(!ids.contains(&c1) && !ids.contains(&c2), "bulk-deleted collections should be gone: {}", cols.body);
+    }
+
+    #[tokio::test]
+    async fn get_user_collections_lists_membership() {
+        let client = TestClient::register_and_login().await;
+        client.create_org("MyCols").await;
+
+        let resp = client.get("/api/collections").await;
+        resp.assert_ok();
+        assert_eq!(resp.json()["object"], "list");
+        assert!(!resp.json()["data"].as_array().unwrap().is_empty(), "owner should see the seed collection: {}", resp.body);
+    }
+
+    #[tokio::test]
+    async fn collection_user_assignment() {
+        let owner = TestClient::register_and_login().await;
+        let bob = TestClient::register_and_login().await;
+        let org_id = owner.create_org("ColUsers").await["id"].as_str().unwrap().to_string();
+        let col_id = owner.create_org_collection(&org_id, "2.shared|mac").await;
+
+        // Bob joins scoped to the collection, read-only.
+        let bob_id = owner.add_org_member_scoped(&org_id, &bob, &[(col_id.as_str(), true, false)]).await;
+
+        // He shows up in the collection's user list with readOnly = true.
+        let users = owner.get(&format!("/api/organizations/{org_id}/collections/{col_id}/users")).await;
+        users.assert_ok();
+        let entry = users.json().as_array().unwrap().iter().find(|u| u["id"].as_str() == Some(&bob_id.to_string())).cloned();
+        let entry = entry.unwrap_or_else(|| panic!("bob should be listed on the collection: {}", users.body));
+        assert_eq!(entry["readOnly"], true);
+
+        // Reassign him as read-write.
+        owner
+            .put(
+                &format!("/api/organizations/{org_id}/collections/{col_id}/users"),
+                json!([{ "id": bob_id, "readOnly": false, "hidePasswords": false }]),
+            )
+            .await
+            .assert_ok();
+        let users = owner.get(&format!("/api/organizations/{org_id}/collections/{col_id}/users")).await;
+        let entry = users.json().as_array().unwrap().iter().find(|u| u["id"].as_str() == Some(&bob_id.to_string())).cloned().unwrap();
+        assert_eq!(entry["readOnly"], false, "reassignment should clear read-only: {}", users.body);
+
+        // Remove him from the collection.
+        owner.delete(&format!("/api/organizations/{org_id}/collections/{col_id}/user/{bob_id}")).await.assert_ok();
+        let users = owner.get(&format!("/api/organizations/{org_id}/collections/{col_id}/users")).await;
+        let present = users.json().as_array().unwrap().iter().any(|u| u["id"].as_str() == Some(&bob_id.to_string()));
+        assert!(!present, "bob should be removed from the collection: {}", users.body);
+    }
+
+    // --- group CRUD --------------------------------------------------------
+
+    /// Create a group in `org_id`, returning its id.
+    async fn create_group(client: &TestClient, org_id: &str, name: &str) -> String {
+        let resp = client
+            .post(
+                &format!("/api/organizations/{org_id}/groups"),
+                json!({ "name": name, "accessAll": false, "externalId": null, "collections": [], "users": [] }),
+            )
+            .await;
+        resp.assert_ok();
+        resp.json()["id"].as_str().expect("group id").to_string()
+    }
+
+    #[tokio::test]
+    async fn update_group() {
+        let client = TestClient::register_and_login().await;
+        let org_id = client.create_org("GrpUpd").await["id"].as_str().unwrap().to_string();
+        let gid = create_group(&client, &org_id, "2.g|mac").await;
+
+        let upd = client
+            .put(
+                &format!("/api/organizations/{org_id}/groups/{gid}"),
+                json!({ "name": "2.g-renamed|mac", "accessAll": true, "externalId": null, "collections": [], "users": [] }),
+            )
+            .await;
+        upd.assert_ok();
+        assert_eq!(upd.json()["name"], "2.g-renamed|mac");
+        assert_eq!(upd.json()["accessAll"], true);
+    }
+
+    #[tokio::test]
+    async fn group_details_and_users() {
+        let owner = TestClient::register_and_login().await;
+        let bob = TestClient::register_and_login().await;
+        let org_id = owner.create_org("GrpDetail").await["id"].as_str().unwrap().to_string();
+        let col_id = owner.create_org_collection(&org_id, "2.gcol|mac").await;
+        let bob_id = owner.add_org_member(&org_id, &bob).await;
+
+        // Group with the collection and bob assigned.
+        let create = owner
+            .post(
+                &format!("/api/organizations/{org_id}/groups"),
+                json!({
+                    "name": "2.grp|mac",
+                    "accessAll": false,
+                    "externalId": null,
+                    "collections": [{ "id": col_id, "readOnly": false, "hidePasswords": false }],
+                    "users": [bob_id],
+                }),
+            )
+            .await;
+        create.assert_ok();
+        let gid = create.json()["id"].as_str().unwrap().to_string();
+
+        // Group user list contains bob.
+        let gu = owner.get(&format!("/api/organizations/{org_id}/groups/{gid}/users")).await;
+        gu.assert_ok();
+        let ids: Vec<String> = gu.json().as_array().unwrap().iter().filter_map(|v| v.as_str().map(String::from)).collect();
+        assert!(ids.contains(&bob_id.to_string()), "group should include bob: {}", gu.body);
+
+        // Group details expose the assigned collection.
+        let det = owner.get(&format!("/api/organizations/{org_id}/groups/{gid}/details")).await;
+        det.assert_ok();
+        let cols: Vec<String> = det.json()["collections"].as_array().unwrap().iter().filter_map(|c| c["id"].as_str().map(String::from)).collect();
+        assert!(cols.contains(&col_id), "group details should list the collection: {}", det.body);
+    }
+
+    #[tokio::test]
+    async fn user_group_assignment() {
+        let owner = TestClient::register_and_login().await;
+        let bob = TestClient::register_and_login().await;
+        let org_id = owner.create_org("UserGrps").await["id"].as_str().unwrap().to_string();
+        let g1 = create_group(&owner, &org_id, "2.g1|mac").await;
+        let g2 = create_group(&owner, &org_id, "2.g2|mac").await;
+        let bob_id = owner.add_org_member(&org_id, &bob).await;
+
+        owner.put(&format!("/api/organizations/{org_id}/users/{bob_id}/groups"), json!({ "groupIds": [g1, g2] })).await.assert_ok();
+
+        let ug = owner.get(&format!("/api/organizations/{org_id}/users/{bob_id}/groups")).await;
+        ug.assert_ok();
+        let ids: Vec<String> = ug.json().as_array().unwrap().iter().filter_map(|v| v.as_str().map(String::from)).collect();
+        assert!(ids.contains(&g1) && ids.contains(&g2), "user should belong to both groups: {}", ug.body);
+    }
+
+    #[tokio::test]
+    async fn remove_user_from_group() {
+        let owner = TestClient::register_and_login().await;
+        let bob = TestClient::register_and_login().await;
+        let org_id = owner.create_org("GrpRemove").await["id"].as_str().unwrap().to_string();
+        let bob_id = owner.add_org_member(&org_id, &bob).await;
+
+        let create = owner
+            .post(
+                &format!("/api/organizations/{org_id}/groups"),
+                json!({ "name": "2.g|mac", "accessAll": false, "externalId": null, "collections": [], "users": [bob_id] }),
+            )
+            .await;
+        create.assert_ok();
+        let gid = create.json()["id"].as_str().unwrap().to_string();
+
+        owner.delete(&format!("/api/organizations/{org_id}/groups/{gid}/users/{bob_id}")).await.assert_ok();
+
+        let gu = owner.get(&format!("/api/organizations/{org_id}/groups/{gid}/users")).await;
+        let present = gu.json().as_array().unwrap().iter().any(|v| v.as_str() == Some(&bob_id.to_string()));
+        assert!(!present, "bob should be removed from the group: {}", gu.body);
+    }
+
+    #[tokio::test]
+    async fn bulk_delete_groups() {
+        let client = TestClient::register_and_login().await;
+        let org_id = client.create_org("GrpBulk").await["id"].as_str().unwrap().to_string();
+        let g1 = create_group(&client, &org_id, "2.bg1|mac").await;
+        let g2 = create_group(&client, &org_id, "2.bg2|mac").await;
+
+        client.delete_json(&format!("/api/organizations/{org_id}/groups"), json!({ "ids": [g1, g2] })).await.assert_ok();
+
+        let groups = client.get(&format!("/api/organizations/{org_id}/groups")).await;
+        let ids: Vec<String> = groups.json()["data"].as_array().unwrap().iter().filter_map(|g| g["id"].as_str().map(String::from)).collect();
+        assert!(!ids.contains(&g1) && !ids.contains(&g2), "bulk-deleted groups should be gone: {}", groups.body);
+    }
+
+    // --- organization lifecycle -------------------------------------------
+
+    #[tokio::test]
+    async fn update_organization() {
+        let client = TestClient::register_and_login().await;
+        let org_id = client.create_org("Before").await["id"].as_str().unwrap().to_string();
+
+        let upd = client.put(&format!("/api/organizations/{org_id}"), json!({ "name": "After", "billingEmail": client.email })).await;
+        upd.assert_ok();
+        assert_eq!(upd.json()["name"], "After");
+    }
+
+    #[tokio::test]
+    async fn delete_organization() {
+        let client = TestClient::register_and_login().await;
+        let org_id = client.create_org("Temporary").await["id"].as_str().unwrap().to_string();
+
+        // Wrong password is rejected.
+        let bad = client.delete_json(&format!("/api/organizations/{org_id}"), json!({ "masterPasswordHash": "wrong" })).await;
+        assert!(bad.status >= 400, "wrong password should be rejected, got {}: {}", bad.status, bad.body);
+
+        client.delete_json(&format!("/api/organizations/{org_id}"), json!({ "masterPasswordHash": client.master_password_hash })).await.assert_ok();
+
+        let got = client.get(&format!("/api/organizations/{org_id}")).await;
+        assert!(got.status >= 400, "deleted org should be gone, got {}: {}", got.status, got.body);
+    }
+
+    #[tokio::test]
+    async fn member_can_leave_but_last_owner_cannot() {
+        let owner = TestClient::register_and_login().await;
+        let bob = TestClient::register_and_login().await;
+        let org_id = owner.create_org("Leavable").await["id"].as_str().unwrap().to_string();
+        owner.add_org_member(&org_id, &bob).await;
+
+        // Bob leaves and loses access.
+        bob.post(&format!("/api/organizations/{org_id}/leave"), json!({})).await.assert_ok();
+        let got = bob.get(&format!("/api/organizations/{org_id}")).await;
+        assert!(got.status >= 400, "bob should lose access after leaving, got {}: {}", got.status, got.body);
+
+        // The sole remaining owner may not leave.
+        let solo = owner.post(&format!("/api/organizations/{org_id}/leave"), json!({})).await;
+        assert!(solo.status >= 400, "last owner should not be able to leave, got {}: {}", solo.status, solo.body);
+    }
 }

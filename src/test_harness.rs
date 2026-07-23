@@ -466,6 +466,11 @@ impl TestClient {
         self.send(self.request(reqwest::Method::DELETE, path)).await
     }
 
+    /// DELETE with a JSON body (several bulk-delete endpoints require one).
+    pub async fn delete_json(&self, path: &str, body: Value) -> TestResponse {
+        self.send(self.request(reqwest::Method::DELETE, path).json(&body)).await
+    }
+
     // --- fixtures -----------------------------------------------------------
     // Convenience builders returning the created object's JSON. All values are
     // opaque "encrypted" strings — the server never decrypts them.
