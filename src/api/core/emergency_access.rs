@@ -620,3 +620,80 @@ fn check_emergency_access_allowed() -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::test_harness::TestClient;
+
+    #[tokio::test]
+    async fn invite_and_confirm_emergency_contact() {
+        let grantor = TestClient::register_and_login().await;
+        let grantee = TestClient::register_and_login().await;
+
+        let id = grantor.add_emergency_contact(&grantee, 1).await; // Takeover
+
+        // Grantor's trusted list shows the contact as Confirmed (status 2).
+        let trusted = grantor.get("/api/emergency-access/trusted").await;
+        trusted.assert_ok();
+        let entry = trusted.json()["data"].as_array().unwrap()[0].clone();
+        assert_eq!(entry["id"].as_str().unwrap(), id.to_string());
+        assert_eq!(entry["status"], 2, "contact should be Confirmed: {}", trusted.body);
+
+        // Grantee sees the grantor in their granted list.
+        let granted = grantee.get("/api/emergency-access/granted").await;
+        granted.assert_ok();
+        assert!(!granted.json()["data"].as_array().unwrap().is_empty(), "grantee should see a grantor: {}", granted.body);
+    }
+
+    #[tokio::test]
+    async fn recovery_initiate_and_approve() {
+        let grantor = TestClient::register_and_login().await;
+        let grantee = TestClient::register_and_login().await;
+        let id = grantor.add_emergency_contact(&grantee, 1).await;
+
+        // Grantee initiates recovery → RecoveryInitiated (status 3).
+        let initiated = grantee.post(&format!("/api/emergency-access/{id}/initiate"), json!({})).await;
+        initiated.assert_ok();
+        assert_eq!(initiated.json()["status"], 3, "should be RecoveryInitiated: {}", initiated.body);
+
+        // Grantor approves → RecoveryApproved (status 4).
+        let approved = grantor.post(&format!("/api/emergency-access/{id}/approve"), json!({})).await;
+        approved.assert_ok();
+        assert_eq!(approved.json()["status"], 4, "should be RecoveryApproved: {}", approved.body);
+    }
+
+    #[tokio::test]
+    async fn grantor_can_reject_recovery() {
+        let grantor = TestClient::register_and_login().await;
+        let grantee = TestClient::register_and_login().await;
+        let id = grantor.add_emergency_contact(&grantee, 1).await;
+
+        grantee.post(&format!("/api/emergency-access/{id}/initiate"), json!({})).await.assert_ok();
+
+        // Grantor rejects → back to Confirmed (status 2).
+        let rejected = grantor.post(&format!("/api/emergency-access/{id}/reject"), json!({})).await;
+        rejected.assert_ok();
+        assert_eq!(rejected.json()["status"], 2, "reject should return to Confirmed: {}", rejected.body);
+    }
+
+    #[tokio::test]
+    async fn delete_emergency_contact() {
+        let grantor = TestClient::register_and_login().await;
+        let grantee = TestClient::register_and_login().await;
+        let id = grantor.add_emergency_contact(&grantee, 0).await; // View
+
+        grantor.delete(&format!("/api/emergency-access/{id}")).await.assert_ok();
+
+        let trusted = grantor.get("/api/emergency-access/trusted").await;
+        trusted.assert_ok();
+        assert!(trusted.json()["data"].as_array().unwrap().is_empty(), "contact should be removed: {}", trusted.body);
+    }
+
+    #[tokio::test]
+    async fn emergency_access_requires_auth() {
+        let client = TestClient::new().await;
+        client.get("/api/emergency-access/trusted").await.assert_status(401);
+    }
+}

@@ -198,3 +198,58 @@ async fn config() -> Json<Value> {
         "object": "config",
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::test_harness::TestClient;
+
+    #[tokio::test]
+    async fn alive_and_now_return_timestamps() {
+        let client = TestClient::new().await;
+        for path in ["/api/alive", "/api/now"] {
+            let resp = client.get(path).await;
+            resp.assert_ok();
+            assert!(resp.json().is_string(), "{path} should return a date string: {}", resp.body);
+        }
+    }
+
+    #[tokio::test]
+    async fn version_and_config_are_public() {
+        let client = TestClient::new().await;
+
+        client.get("/api/version").await.assert_ok();
+
+        let config = client.get("/api/config").await;
+        config.assert_ok();
+        let json = config.json();
+        assert_eq!(json["object"], "config");
+        assert!(json["environment"]["api"].as_str().unwrap().ends_with("/api"), "config: {}", config.body);
+    }
+
+    #[tokio::test]
+    async fn eq_domains_requires_auth_then_returns_domains() {
+        let anon = TestClient::new().await;
+        anon.get("/api/settings/domains").await.assert_status(401);
+
+        let client = TestClient::register_and_login().await;
+        let resp = client.get("/api/settings/domains").await;
+        resp.assert_ok();
+        assert_eq!(resp.json()["object"], "domains");
+    }
+
+    #[tokio::test]
+    async fn known_device_reports_membership() {
+        let client = TestClient::register_and_login().await;
+
+        // The device created during login is known...
+        let known = client.get(&format!("/api/devices/knowndevice/{}/{}", client.email, client.device_id)).await;
+        known.assert_ok();
+        assert_eq!(known.json(), true, "own device should be known: {}", known.body);
+
+        // ...a random device id is not.
+        let random = uuid::Uuid::new_v4();
+        let unknown = client.get(&format!("/api/devices/knowndevice/{}/{random}", client.email)).await;
+        unknown.assert_ok();
+        assert_eq!(unknown.json(), false, "random device should be unknown: {}", unknown.body);
+    }
+}

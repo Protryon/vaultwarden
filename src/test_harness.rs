@@ -522,6 +522,24 @@ impl TestClient {
         member_id
     }
 
+    /// Invite `grantee` as an emergency-access contact of this user (the
+    /// grantor) and confirm them, yielding a Confirmed emergency access.
+    /// `atype` is 0 (View) or 1 (Takeover). Returns the emergency access id.
+    ///
+    /// Mail is disabled, so the invite auto-accepts; only confirmation remains.
+    pub async fn add_emergency_contact(&self, grantee: &TestClient, atype: i32) -> Uuid {
+        let invite = json!({ "email": grantee.email, "type": atype, "waitTimeDays": 1 });
+        self.post("/api/emergency-access/invite", invite).await.assert_ok();
+
+        // Each fresh grantor has exactly one contact; grab its id.
+        let trusted = self.get("/api/emergency-access/trusted").await;
+        trusted.assert_ok();
+        let id = trusted.json()["data"].as_array().expect("trusted list")[0]["id"].as_str().expect("emergency access id").to_string();
+
+        self.post(&format!("/api/emergency-access/{id}/confirm"), json!({ "Key": "2.eakey|mac" })).await.assert_ok();
+        id.parse().expect("emergency access uuid")
+    }
+
     /// Confirm an already-invited (auto-accepted) member. The wrapped org key is
     /// opaque to the server, so any stable string works.
     async fn confirm_org_member(&self, org_id: &str, member_id: Uuid) {
