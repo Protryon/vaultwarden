@@ -1415,4 +1415,91 @@ mod tests {
         client.get("/api/sync").await.assert_status(401);
         client.get("/api/ciphers").await.assert_status(401);
     }
+
+    #[tokio::test]
+    async fn archive_then_unarchive_cipher() {
+        let client = TestClient::register_and_login().await;
+        let id = client.create_login_cipher("2.arch|mac").await["id"].as_str().unwrap().to_string();
+
+        let archived = client.put(&format!("/api/ciphers/{id}/archive"), json!({})).await;
+        archived.assert_ok();
+        assert!(!archived.json()["archivedDate"].is_null(), "archived cipher should have archivedDate: {}", archived.body);
+
+        let unarchived = client.put(&format!("/api/ciphers/{id}/unarchive"), json!({})).await;
+        unarchived.assert_ok();
+        assert!(unarchived.json()["archivedDate"].is_null(), "unarchived cipher should have no archivedDate: {}", unarchived.body);
+    }
+
+    #[tokio::test]
+    async fn move_cipher_to_folder() {
+        let client = TestClient::register_and_login().await;
+        let id = client.create_login_cipher("2.movable|mac").await["id"].as_str().unwrap().to_string();
+        let folder_id = client.create_folder("2.dest|mac").await;
+
+        client.post("/api/ciphers/move", json!({ "folderId": folder_id, "ids": [id] })).await.assert_ok();
+
+        let got = client.get(&format!("/api/ciphers/{id}")).await;
+        got.assert_ok();
+        assert_eq!(got.json()["folderId"], folder_id, "cipher should be in the folder: {}", got.body);
+    }
+
+    #[tokio::test]
+    async fn toggle_favorite_via_update() {
+        let client = TestClient::register_and_login().await;
+        let id = client.create_login_cipher("2.fav|mac").await["id"].as_str().unwrap().to_string();
+
+        let make_body = |favorite: bool| {
+            json!({
+                "type": 1,
+                "name": "2.fav|mac",
+                "login": { "username": "2.u|mac", "password": "2.p|mac" },
+                "favorite": favorite,
+                "lastKnownRevisionDate": null,
+            })
+        };
+
+        let faved = client.put(&format!("/api/ciphers/{id}"), make_body(true)).await;
+        faved.assert_ok();
+        assert_eq!(faved.json()["favorite"], true, "cipher should be favorited: {}", faved.body);
+
+        let unfaved = client.put(&format!("/api/ciphers/{id}"), make_body(false)).await;
+        unfaved.assert_ok();
+        assert_eq!(unfaved.json()["favorite"], false, "cipher should be unfavorited: {}", unfaved.body);
+    }
+
+    #[tokio::test]
+    async fn bulk_soft_delete_then_restore() {
+        let client = TestClient::register_and_login().await;
+        let a = client.create_login_cipher("2.a|mac").await["id"].as_str().unwrap().to_string();
+        let b = client.create_login_cipher("2.b|mac").await["id"].as_str().unwrap().to_string();
+
+        // Bulk soft delete.
+        client.put("/api/ciphers/delete", json!({ "ids": [a, b] })).await.assert_ok();
+        for id in [&a, &b] {
+            let got = client.get(&format!("/api/ciphers/{id}")).await;
+            got.assert_ok();
+            assert!(!got.json()["deletedDate"].is_null(), "cipher {id} should be soft-deleted: {}", got.body);
+        }
+
+        // Bulk restore.
+        client.put("/api/ciphers/restore", json!({ "ids": [a, b] })).await.assert_ok();
+        for id in [&a, &b] {
+            let got = client.get(&format!("/api/ciphers/{id}")).await;
+            got.assert_ok();
+            assert!(got.json()["deletedDate"].is_null(), "cipher {id} should be restored: {}", got.body);
+        }
+    }
+
+    #[tokio::test]
+    async fn bulk_hard_delete() {
+        let client = TestClient::register_and_login().await;
+        let a = client.create_login_cipher("2.x|mac").await["id"].as_str().unwrap().to_string();
+        let b = client.create_login_cipher("2.y|mac").await["id"].as_str().unwrap().to_string();
+
+        client.post("/api/ciphers/delete", json!({ "ids": [a, b] })).await.assert_ok();
+        for id in [&a, &b] {
+            let after = client.get(&format!("/api/ciphers/{id}")).await;
+            assert!(after.status >= 400, "cipher {id} should be gone, got {}: {}", after.status, after.body);
+        }
+    }
 }

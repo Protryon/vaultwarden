@@ -532,6 +532,22 @@ impl TestClient {
         resp.json()["id"].as_str().expect("collection id").to_string()
     }
 
+    /// Create a personal text Send (deletion date 7 days out), returning its JSON.
+    pub async fn create_text_send(&self, name: &str) -> Value {
+        let deletion = (chrono::Utc::now() + chrono::Duration::days(7)).to_rfc3339();
+        let body = json!({
+            "type": 0, // Text
+            "key": "2.sendkey|mac",
+            "name": name,
+            "text": { "text": "2.secret|mac", "hidden": false },
+            "deletionDate": deletion,
+            "disabled": false,
+        });
+        let resp = self.post("/api/sends", body).await;
+        resp.assert_ok();
+        resp.json()
+    }
+
     /// Create an org-owned login cipher in `col_id`, returning the cipher JSON.
     pub async fn create_org_cipher(&self, org_id: &str, col_id: &str, name: &str) -> Value {
         let body = json!({

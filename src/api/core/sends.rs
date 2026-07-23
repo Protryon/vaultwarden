@@ -609,3 +609,90 @@ async fn put_remove_password(Path(uuid): Path<Uuid>, headers: Headers) -> Result
 
     Ok(Json(send.to_json()))
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::test_harness::TestClient;
+
+    #[tokio::test]
+    async fn create_list_get_update_delete_text_send() {
+        let client = TestClient::register_and_login().await;
+
+        let created = client.create_text_send("2.mysend|mac").await;
+        assert_eq!(created["object"], "send");
+        assert_eq!(created["name"], "2.mysend|mac");
+        let id = created["id"].as_str().expect("send id").to_string();
+
+        // List.
+        let list = client.get("/api/sends").await;
+        list.assert_ok();
+        let data = list.json();
+        assert_eq!(data["object"], "list");
+        let ids: Vec<&str> = data["data"].as_array().unwrap().iter().filter_map(|s| s["id"].as_str()).collect();
+        assert!(ids.contains(&id.as_str()), "created send not in list: {}", list.body);
+
+        // Get.
+        let got = client.get(&format!("/api/sends/{id}")).await;
+        got.assert_ok();
+        assert_eq!(got.json()["id"], id);
+
+        // Update (rename).
+        let deletion = (chrono::Utc::now() + chrono::Duration::days(5)).to_rfc3339();
+        let update = json!({
+            "type": 0,
+            "key": "2.sendkey|mac",
+            "name": "2.renamed|mac",
+            "text": { "text": "2.secret|mac", "hidden": false },
+            "deletionDate": deletion,
+            "disabled": false,
+        });
+        let updated = client.put(&format!("/api/sends/{id}"), update).await;
+        updated.assert_ok();
+        assert_eq!(updated.json()["name"], "2.renamed|mac");
+
+        // Delete.
+        client.delete(&format!("/api/sends/{id}")).await.assert_ok();
+        let after = client.get(&format!("/api/sends/{id}")).await;
+        assert!(after.status >= 400, "expected deleted send to be gone, got {}: {}", after.status, after.body);
+    }
+
+    #[tokio::test]
+    async fn send_can_be_accessed_anonymously() {
+        let owner = TestClient::register_and_login().await;
+        let created = owner.create_text_send("2.public|mac").await;
+        let access_id = created["accessId"].as_str().expect("accessId").to_string();
+
+        // An unauthenticated client can access it by accessId.
+        let anon = TestClient::new().await;
+        let resp = anon.post(&format!("/api/sends/access/{access_id}"), json!({ "password": null })).await;
+        resp.assert_ok();
+        assert_eq!(resp.json()["object"], "send-access");
+    }
+
+    #[tokio::test]
+    async fn remove_password_from_send() {
+        let client = TestClient::register_and_login().await;
+        let id = client.create_text_send("2.pw|mac").await["id"].as_str().unwrap().to_string();
+
+        let resp = client.put(&format!("/api/sends/{id}/remove-password"), json!({})).await;
+        resp.assert_ok();
+    }
+
+    #[tokio::test]
+    async fn sends_are_isolated_per_user() {
+        let alice = TestClient::register_and_login().await;
+        let bob = TestClient::register_and_login().await;
+        let id = alice.create_text_send("2.alice|mac").await["id"].as_str().unwrap().to_string();
+
+        let cross = bob.get(&format!("/api/sends/{id}")).await;
+        assert!(cross.status >= 400, "user should not see another user's send, got {}: {}", cross.status, cross.body);
+    }
+
+    #[tokio::test]
+    async fn sends_require_auth() {
+        let client = TestClient::new().await;
+        client.get("/api/sends").await.assert_status(401);
+    }
+}
