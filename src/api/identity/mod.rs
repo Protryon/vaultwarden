@@ -126,12 +126,26 @@ async fn login(client_header: ClientHeaders, data: Form<ConnectData>) -> Result<
     login_result
 }
 
+/// Build an OAuth-style error body. Clients key on `error == "invalid_grant"` (e.g. an
+/// expired/invalid refresh token) to trigger a silent re-login instead of surfacing an error.
+fn oauth_error(error: &str, description: &str) -> Error {
+    Error::bad_request(Json(json!({
+        "error": error,
+        "error_description": description,
+        "message": description,
+        "object": "error",
+    })))
+}
+
 async fn refresh_login(data: ConnectData, conn: &Conn) -> Result<Json<Value>> {
     // Extract token
     let token = data.refresh_token.unwrap();
 
     // Get device by refresh token
-    let mut device = Device::find_by_refresh_token(conn, &token).await?.map_res("Invalid refresh token")?;
+    let mut device = match Device::find_by_refresh_token(conn, &token).await? {
+        Some(device) => device,
+        None => return Err(oauth_error("invalid_grant", "The refresh token is invalid or has expired")),
+    };
 
     let scope = "api offline_access";
     let scope_vec = vec!["api".into(), "offline_access".into()];
@@ -142,21 +156,15 @@ async fn refresh_login(data: ConnectData, conn: &Conn) -> Result<Json<Value>> {
     let (access_token, expires_in) = device.refresh_tokens(&user, orgs, scope_vec);
     device.save(conn).await?;
 
-    let result = json!({
+    let mut result = json!({
         "access_token": access_token,
         "expires_in": expires_in,
         "token_type": "Bearer",
         "refresh_token": device.refresh_token,
-        "Key": user.akey,
-        "PrivateKey": user.private_key,
-        "Kdf": user.client_kdf_type,
-        "KdfIterations": user.client_kdf_iter,
-        "KdfMemory": user.client_kdf_memory,
-        "KdfParallelism": user.client_kdf_parallelism,
-        "ResetMasterPassword": false, // TODO: according to official server seems something like: user.password_hash.is_empty(), but would need testing
         "scope": scope,
         "unofficialServer": true,
     });
+    extend_object(&mut result, user_auth_response_fields(&user, conn).await?);
 
     Ok(Json(result))
 }
@@ -283,6 +291,91 @@ struct MasterPasswordPolicy {
     enforce_on_login: bool,
 }
 
+/// Insert every key of `extra` (a JSON object) into `base` (also a JSON object).
+fn extend_object(base: &mut Value, extra: Value) {
+    if let (Value::Object(b), Value::Object(e)) = (base, extra) {
+        b.extend(e);
+    }
+}
+
+/// The user-derived half of a successful `/connect/token` response: key material, KDF
+/// params, master-password policy, account keys and `UserDecryptionOptions`. Shared by the
+/// password, SSO, and API-key grants so their responses can't drift (Bitwarden emits the
+/// same custom response for every grant).
+async fn user_auth_response_fields(user: &User, conn: &Conn) -> Result<Value> {
+    // Fetch all valid Master Password Policies and merge them into one with all true's and largest numbers as one policy
+    let master_password_policies: Vec<MasterPasswordPolicy> =
+        OrganizationPolicy::find_accepted_and_confirmed_by_user_and_active_policy(conn, user.uuid, OrgPolicyType::MasterPassword)
+            .await?
+            .into_iter()
+            .filter_map(|p| serde_json::from_value(p.data).ok())
+            .collect();
+
+    let master_password_policy = if !master_password_policies.is_empty() {
+        let mut mpp_json = json!(master_password_policies.into_iter().reduce(|acc, policy| {
+            MasterPasswordPolicy {
+                min_complexity: acc.min_complexity.max(policy.min_complexity),
+                min_length: acc.min_length.max(policy.min_length),
+                require_lower: acc.require_lower || policy.require_lower,
+                require_upper: acc.require_upper || policy.require_upper,
+                require_numbers: acc.require_numbers || policy.require_numbers,
+                require_special: acc.require_special || policy.require_special,
+                enforce_on_login: acc.enforce_on_login || policy.enforce_on_login,
+            }
+        }));
+        mpp_json["object"] = json!("masterPasswordPolicy");
+        mpp_json
+    } else {
+        json!({"object": "masterPasswordPolicy"})
+    };
+
+    let has_master_password = !user.password_hash.is_empty();
+    let master_password_unlock = if has_master_password {
+        json!({
+            "Kdf": {
+                "KdfType": user.client_kdf_type,
+                "Iterations": user.client_kdf_iter,
+                "Memory": user.client_kdf_memory,
+                "Parallelism": user.client_kdf_parallelism
+            },
+            // This field is named inconsistently and will be removed and replaced by the "wrapped" variant in the apps.
+            // https://github.com/bitwarden/android/blob/release/2025.12-rc41/network/src/main/kotlin/com/bitwarden/network/model/MasterPasswordUnlockDataJson.kt#L22-L26
+            "MasterKeyEncryptedUserKey": user.akey,
+            "MasterKeyWrappedUserKey": user.akey,
+            "Salt": user.email
+        })
+    } else {
+        Value::Null
+    };
+
+    let account_keys = json!({
+        "publicKeyEncryptionKeyPair": {
+            "wrappedPrivateKey": user.private_key,
+            "publicKey": user.public_key,
+            "Object": "publicKeyEncryptionKeyPair"
+        },
+        "Object": "privateKeys"
+    });
+
+    Ok(json!({
+        "Key": user.akey,
+        "PrivateKey": user.private_key,
+        "Kdf": user.client_kdf_type,
+        "KdfIterations": user.client_kdf_iter,
+        "KdfMemory": user.client_kdf_memory,
+        "KdfParallelism": user.client_kdf_parallelism,
+        "ResetMasterPassword": !has_master_password,
+        "ForcePasswordReset": false,
+        "MasterPasswordPolicy": master_password_policy,
+        "AccountKeys": account_keys,
+        "UserDecryptionOptions": {
+            "HasMasterPassword": has_master_password,
+            "MasterPasswordUnlock": master_password_unlock,
+            "Object": "userDecryptionOptions"
+        },
+    }))
+}
+
 async fn password_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &Conn, ip: &ClientIp) -> Result<Json<Value>> {
     // Validate scope
     let scope = data.scope.as_ref().unwrap();
@@ -397,86 +490,15 @@ async fn password_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &
     let (access_token, expires_in) = device.refresh_tokens(&user, orgs, scope_vec);
     device.save(conn).await?;
 
-    // Fetch all valid Master Password Policies and merge them into one with all true's and larges numbers as one policy
-    let master_password_policies: Vec<MasterPasswordPolicy> =
-        OrganizationPolicy::find_accepted_and_confirmed_by_user_and_active_policy(conn, user.uuid, OrgPolicyType::MasterPassword)
-            .await?
-            .into_iter()
-            .filter_map(|p| serde_json::from_value(p.data).ok())
-            .collect();
-
-    let master_password_policy = if !master_password_policies.is_empty() {
-        let mut mpp_json = json!(master_password_policies.into_iter().reduce(|acc, policy| {
-            MasterPasswordPolicy {
-                min_complexity: acc.min_complexity.max(policy.min_complexity),
-                min_length: acc.min_length.max(policy.min_length),
-                require_lower: acc.require_lower || policy.require_lower,
-                require_upper: acc.require_upper || policy.require_upper,
-                require_numbers: acc.require_numbers || policy.require_numbers,
-                require_special: acc.require_special || policy.require_special,
-                enforce_on_login: acc.enforce_on_login || policy.enforce_on_login,
-            }
-        }));
-        mpp_json["object"] = json!("masterPasswordPolicy");
-        mpp_json
-    } else {
-        json!({"object": "masterPasswordPolicy"})
-    };
-
-    let has_master_password = !user.password_hash.is_empty();
-    let master_password_unlock = if has_master_password {
-        json!({
-            "Kdf": {
-                "KdfType": user.client_kdf_type,
-                "Iterations": user.client_kdf_iter,
-                "Memory": user.client_kdf_memory,
-                "Parallelism": user.client_kdf_parallelism
-            },
-            // This field is named inconsistently and will be removed and replaced by the "wrapped" variant in the apps.
-            // https://github.com/bitwarden/android/blob/release/2025.12-rc41/network/src/main/kotlin/com/bitwarden/network/model/MasterPasswordUnlockDataJson.kt#L22-L26
-            "MasterKeyEncryptedUserKey": user.akey,
-            "MasterKeyWrappedUserKey": user.akey,
-            "Salt": user.email
-        })
-    } else {
-        Value::Null
-    };
-
-    let account_keys = json!({
-        "publicKeyEncryptionKeyPair": {
-            "wrappedPrivateKey": user.private_key,
-            "publicKey": user.public_key,
-            "Object": "publicKeyEncryptionKeyPair"
-        },
-        "Object": "privateKeys"
-    });
-
     let mut result = json!({
         "access_token": access_token,
         "expires_in": expires_in,
         "token_type": "Bearer",
         "refresh_token": device.refresh_token,
-        "Key": user.akey,
-        "PrivateKey": user.private_key,
-        //"TwoFactorToken": "11122233333444555666777888999"
-
-        "Kdf": user.client_kdf_type,
-        "KdfIterations": user.client_kdf_iter,
-        "KdfMemory": user.client_kdf_memory,
-        "KdfParallelism": user.client_kdf_parallelism,
-        "ResetMasterPassword": false,// TODO: Same as above
-        "ForcePasswordReset": false,
-        "MasterPasswordPolicy": master_password_policy,
-
         "scope": scope,
-        "AccountKeys": account_keys,
         "unofficialServer": true,
-        "UserDecryptionOptions": {
-            "HasMasterPassword": !user.password_hash.is_empty(),
-            "MasterPasswordUnlock": master_password_unlock,
-            "Object": "userDecryptionOptions"
-        },
     });
+    extend_object(&mut result, user_auth_response_fields(&user, conn).await?);
 
     if let Some(token) = twofactor_token {
         result["TwoFactorToken"] = Value::String(token);
@@ -550,21 +572,14 @@ async fn user_api_key_login(data: ConnectData, user_uuid: &mut Option<Uuid>, con
 
     // Note: No refresh_token is returned. The CLI just repeats the
     // client_credentials login flow when the existing token expires.
-    let result = json!({
+    let mut result = json!({
         "access_token": access_token,
         "expires_in": expires_in,
         "token_type": "Bearer",
-        "Key": user.akey,
-        "PrivateKey": user.private_key,
-
-        "Kdf": user.client_kdf_type,
-        "KdfIterations": user.client_kdf_iter,
-        "KdfMemory": user.client_kdf_memory,
-        "KdfParallelism": user.client_kdf_parallelism,
-        "ResetMasterPassword": false, // TODO: Same as above
         "scope": "api",
         "unofficialServer": true,
     });
+    extend_object(&mut result, user_auth_response_fields(&user, conn).await?);
 
     Ok(Json(result))
 }
@@ -1073,7 +1088,21 @@ mod tests {
         ];
         let resp = client.post_form("/identity/connect/token", &form).await;
         resp.assert_ok();
-        assert!(resp.json()["access_token"].as_str().is_some(), "api-key login should yield a token: {}", resp.body);
+        let j = resp.json();
+        assert!(j["access_token"].as_str().is_some(), "api-key login should yield a token: {}", resp.body);
+        // The API-key grant now emits the same modern decryption metadata as password login.
+        assert_eq!(j["UserDecryptionOptions"]["Object"], "userDecryptionOptions", "api-key response should include UserDecryptionOptions: {}", resp.body);
+        assert_eq!(j["UserDecryptionOptions"]["HasMasterPassword"], true, "{}", resp.body);
+        assert!(j["AccountKeys"].is_object(), "api-key response should include AccountKeys: {}", resp.body);
+    }
+
+    #[tokio::test]
+    async fn refresh_with_bad_token_returns_invalid_grant() {
+        let client = TestClient::new().await;
+        let form = [("grant_type", "refresh_token"), ("refresh_token", "definitely-not-a-real-refresh-token")];
+        let resp = client.post_form("/identity/connect/token", &form).await;
+        resp.assert_status(400);
+        assert_eq!(resp.json()["error"], "invalid_grant", "bad refresh token should yield invalid_grant so clients re-login: {}", resp.body);
     }
 
     #[tokio::test]

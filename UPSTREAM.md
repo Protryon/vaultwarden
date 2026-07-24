@@ -125,7 +125,7 @@ These are self-contained defects — typos or wrong literals — independent of 
   `register/send-verification-email`; only the legacy single-shot `/accounts/register`. Email-
   verified signup (and invite-token variants) can't complete. Ours:
   [accounts.rs:200](src/api/core/accounts.rs#L200). **dani: yes**.
-- **[MED] A3 — `client_credentials` (CLI/API-key) token response is legacy-only.**
+- **[MED] ✅ A3 — `client_credentials` (CLI/API-key) token response is legacy-only.** *(fixed 2026-07-24: extracted a shared `user_auth_response_fields` helper — key material, KDF, MasterPasswordPolicy, AccountKeys, UserDecryptionOptions — now used by the password, API-key and refresh grants so they can't drift. Test extends `client_credentials_api_key_login`.)*
   `password_login` was modernized (`UserDecryptionOptions`, `AccountKeys`,
   `MasterPasswordPolicy`, `ForcePasswordReset`) but `user_api_key_login` still returns only
   `Key`/`PrivateKey`/`Kdf*`/`ResetMasterPassword`. Ours:
@@ -141,7 +141,7 @@ These are self-contained defects — typos or wrong literals — independent of 
   extra `masterPasswordHint`/`_status`, harmless.) Ours: [user.rs:306](src/db/models/user.rs#L306). **dani: no**.
 - **[LOW] A7 — `POST /accounts/keys` omits `key` + `accountKeys`.** Ours:
   [accounts.rs:491](src/api/core/accounts.rs#L491). **dani: no**.
-- **[LOW] A8 — `refresh_token` grant returns legacy body; failure not `invalid_grant` JSON.**
+- **[LOW] ✅ A8 — `refresh_token` grant returns legacy body; failure not `invalid_grant` JSON.** *(fixed 2026-07-24: a bad/missing refresh token now returns HTTP 400 `{"error":"invalid_grant"}` via a new `oauth_error` helper so clients silently re-login; the success body was also routed through the shared helper for consistency with the other grants. Test: `refresh_with_bad_token_returns_invalid_grant`.)*
   dani slimmed refresh to tokens-only and returns `{"error":"invalid_grant"}` (400) that
   clients key on for silent re-login. Ours: [identity/mod.rs:145](src/api/identity/mod.rs#L145).
   **dani: yes**.
@@ -151,7 +151,7 @@ These are self-contained defects — typos or wrong literals — independent of 
 - **[LOW] A10 — 2FA challenge never emits OrganizationDuo (type 6).** Enum defines it
   ([two_factor.rs:44](src/db/models/two_factor.rs#L44)) but `json_err_twofactor` skips it.
   Ours: [identity/mod.rs:688](src/api/identity/mod.rs#L688). **dani: partial**.
-- **[LOW] A11 — `forcePasswordReset`/`ResetMasterPassword` hardcoded.** BW drives
+- **[LOW] ◐ A11 — `forcePasswordReset`/`ResetMasterPassword` hardcoded.** *(partial 2026-07-24: `ResetMasterPassword` is now derived from `password_hash.is_empty()` in the shared `user_auth_response_fields` helper across the password/API-key/refresh grants; `ForcePasswordReset` is still constant `false` pending a stored user flag.)* BW drives
   `ForcePasswordReset` from a stored flag and `ResetMasterPassword` from has-no-password; we
   return constant `false` almost everywhere (admin-forced reset / JIT-provisioned prompts
   won't fire). Ours: [user.rs:323](src/db/models/user.rs#L323),
