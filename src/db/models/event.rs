@@ -71,6 +71,7 @@ pub enum EventType {
     UserClientExportedVault = 1007,
     // UserUpdatedTempPassword = 1008, // Not supported
     // UserMigratedKeyToKeyConnector = 1009, // Not supported
+    UserRequestedDeviceApproval = 1010,
 
     // Cipher
     CipherCreated = 1100,
@@ -91,6 +92,21 @@ pub enum EventType {
     CipherSoftDeleted = 1115,
     CipherRestored = 1116,
     CipherClientToggledCardNumberVisible = 1117,
+    CipherClientToggledTotpSeedVisible = 1118,
+    CipherClientCopiedBankAccountNumber = 1119,
+    CipherClientCopiedBankAccountPin = 1120,
+    CipherClientToggledBankAccountNumberVisible = 1121,
+    CipherClientToggledBankAccountPinVisible = 1122,
+    CipherClientCopiedLicenseNumber = 1123,
+    CipherClientToggledLicenseNumberVisible = 1124,
+    CipherClientCopiedPassportNumber = 1125,
+    CipherClientToggledPassportNumberVisible = 1126,
+    CipherClientCopiedSwiftCode = 1127,
+    CipherClientToggledSwiftCodeVisible = 1128,
+    CipherClientCopiedIban = 1129,
+    CipherClientToggledIbanVisible = 1130,
+    CipherClientCopiedNationalIdentificationNumber = 1131,
+    CipherClientToggledNationalIdentificationNumberVisible = 1132,
 
     // Collection
     CollectionCreated = 1300,
@@ -108,7 +124,7 @@ pub enum EventType {
     OrganizationUserUpdated = 1502,
     OrganizationUserRemoved = 1503,
     OrganizationUserUpdatedGroups = 1504,
-    // OrganizationUserUnlinkedSso = 1505, // Not supported
+    OrganizationUserUnlinkedSso = 1505,
     OrganizationUserResetPasswordEnroll = 1506,
     OrganizationUserResetPasswordWithdraw = 1507,
     OrganizationUserAdminResetPassword = 1508,
@@ -116,6 +132,10 @@ pub enum EventType {
     // OrganizationUserFirstSsoLogin = 1510, // Not supported
     OrganizationUserRevoked = 1511,
     OrganizationUserRestored = 1512,
+    OrganizationUserApprovedAuthRequest = 1513,
+    OrganizationUserRejectedAuthRequest = 1514,
+    OrganizationUserDeleted = 1515,
+    OrganizationUserLeft = 1516,
 
     // Organization
     OrganizationUpdated = 1600,

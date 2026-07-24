@@ -68,6 +68,9 @@ pub enum CipherType {
     Card = 3,
     Identity = 4,
     SshKey = 5,
+    BankAccount = 6,
+    DriversLicense = 7,
+    Passport = 8,
     Unknown = i32::MAX,
 }
 
@@ -392,6 +395,9 @@ impl FullCipher {
             "card": null,
             "identity": null,
             "sshKey": null,
+            "bankAccount": null,
+            "driversLicense": null,
+            "passport": null,
         });
 
         // These values are only needed for user/default syncs
@@ -414,7 +420,15 @@ impl FullCipher {
             CipherType::Card => "card",
             CipherType::Identity => "identity",
             CipherType::SshKey => "sshKey",
-            CipherType::Unknown => panic!("Wrong type"),
+            // BankAccount/DriversLicense/Passport carry their body in `data`; the typed
+            // sub-object is obsolete in Bitwarden but still emitted for older clients.
+            CipherType::BankAccount => "bankAccount",
+            CipherType::DriversLicense => "driversLicense",
+            CipherType::Passport => "passport",
+            // A cipher stored with an out-of-range type shouldn't happen (writes reject
+            // unknown types), but never panic while rendering one: the authoritative body
+            // is already emitted under `data`, so just skip the typed sub-object.
+            CipherType::Unknown => return json_object,
         };
 
         json_object[key] = data;

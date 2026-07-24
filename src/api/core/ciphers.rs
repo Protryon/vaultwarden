@@ -442,6 +442,9 @@ pub async fn update_cipher_from_data(
         CipherType::Card => data.card,
         CipherType::Identity => data.identity,
         CipherType::SshKey => data.ssh_key,
+        // Bitwarden obsoleted the structured request field for these types in favor of
+        // the serialized `data` string, so there is no per-type field to read here.
+        CipherType::BankAccount | CipherType::DriversLicense | CipherType::Passport => None,
         CipherType::Unknown => err!("Invalid type"),
     };
 
@@ -1432,6 +1435,42 @@ mod tests {
         let sync = sync.json();
         let cipher = sync["ciphers"].as_array().unwrap().iter().find(|c| c["id"] == id).expect("cipher in sync");
         assert_eq!(cipher["key"], "2.rotatedkey|mac", "key must appear in sync");
+    }
+
+    // Bank account (6), driver's license (7) and passport (8) are newer Bitwarden cipher
+    // types whose body is sent in the serialized `data` string rather than a typed
+    // sub-object. They must be accepted (not 400'd) and round-trip through `data`.
+    #[tokio::test]
+    async fn newer_cipher_types_round_trip_via_data() {
+        let client = TestClient::register_and_login().await;
+
+        for (atype, key) in [(6, "bankAccount"), (7, "driversLicense"), (8, "passport")] {
+            let data = json!({ "value": format!("2.secret-{atype}|mac") }).to_string();
+            let created = client
+                .post(
+                    "/api/ciphers",
+                    json!({
+                        "type": atype,
+                        "name": format!("2.item-{atype}|mac"),
+                        "data": data,
+                        "lastKnownRevisionDate": null,
+                    }),
+                )
+                .await;
+            created.assert_ok();
+            let created = created.json();
+            assert_eq!(created["type"], atype, "type must be preserved: {}", created);
+            assert_eq!(created[key]["value"], format!("2.secret-{atype}|mac"), "typed sub-object must carry the data: {}", created);
+            assert_eq!(created["data"]["value"], format!("2.secret-{atype}|mac"), "data must carry the body: {}", created);
+
+            // And it survives a sync (exercises the response builder for a stored cipher).
+            let id = created["id"].as_str().expect("cipher id").to_string();
+            let sync = client.get("/api/sync").await;
+            sync.assert_ok();
+            let cipher = sync.json()["ciphers"].as_array().unwrap().iter().find(|c| c["id"] == id).cloned().expect("cipher in sync");
+            assert_eq!(cipher["type"], atype);
+            assert_eq!(cipher[key]["value"], format!("2.secret-{atype}|mac"));
+        }
     }
 
     #[tokio::test]

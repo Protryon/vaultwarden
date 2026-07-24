@@ -107,11 +107,32 @@ impl FromStr for UserOrgType {
             "1" | "Admin" => Ok(UserOrgType::Admin),
             "2" | "User" => Ok(UserOrgType::User),
             "3" | "Manager" => Ok(UserOrgType::Manager),
+            // Bitwarden removed the `Manager` role from clients in favor of `Custom` (4)
+            // with a granular permissions object. We don't implement custom permissions, so —
+            // like upstream Vaultwarden — fold `Custom` into `Manager` on input and emit it
+            // back as `Custom` on output (see `UserOrganization::type_manager_as_custom`).
+            "4" | "Custom" => Ok(UserOrgType::Manager),
             _ => Err("invalid org type"),
         }
     }
 
     type Err = &'static str;
+}
+
+/// Deserialize an organization user role sent as either a JSON number or string,
+/// folding the client-only `Custom` (4) role into our internal `Manager` (see `FromStr`).
+pub fn deserialize_membership_type<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<UserOrgType, D::Error> {
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum NumOrStr {
+        Num(i64),
+        Str(String),
+    }
+    let s = match <NumOrStr as serde::Deserialize>::deserialize(deserializer)? {
+        NumOrStr::Num(n) => n.to_string(),
+        NumOrStr::Str(s) => s,
+    };
+    UserOrgType::from_str(&s).map_err(serde::de::Error::custom)
 }
 
 impl Ord for UserOrgType {
@@ -184,6 +205,15 @@ impl Organization {
 }
 
 impl UserOrganization {
+    /// Emit the internal `Manager` role as Bitwarden's `Custom` (4), which current
+    /// clients understand (they dropped `Manager`). See `deserialize_membership_type`.
+    pub fn type_manager_as_custom(&self) -> i32 {
+        match self.atype {
+            UserOrgType::Manager => 4,
+            other => other as i32,
+        }
+    }
+
     pub fn new(user_uuid: Uuid, organization_uuid: Uuid) -> Self {
         Self {
             user_uuid,
@@ -365,7 +395,7 @@ impl UserOrganization {
             "userId": self.user_uuid,
             "key": self.akey,
             "status": self.status as i32,
-            "type": self.atype as i32,
+            "type": self.type_manager_as_custom(),
             "enabled": true,
 
             "object": "profileOrganization",
@@ -415,7 +445,7 @@ impl UserOrganization {
             "collections": collections,
 
             "status": status,
-            "type": self.atype as i32,
+            "type": self.type_manager_as_custom(),
             "accessAll": self.access_all,
             "twoFactorEnabled": twofactor_enabled,
             "resetPasswordEnrolled":self.reset_password_key.is_some(),
@@ -459,7 +489,7 @@ impl UserOrganization {
             "userId": self.user_uuid,
 
             "status": status,
-            "type": self.atype as i32,
+            "type": self.type_manager_as_custom(),
             "accessAll": self.access_all,
             "collections": coll_uuids,
 

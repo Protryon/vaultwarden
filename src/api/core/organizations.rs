@@ -804,7 +804,7 @@ struct CollectionData {
 struct InviteData {
     emails: Vec<String>,
     groups: Vec<Uuid>,
-    #[serde_as(as = "serde_with::PickFirst<(_, serde_with::DisplayFromStr)>")]
+    #[serde(deserialize_with = "crate::db::deserialize_membership_type")]
     r#type: UserOrgType,
     collections: Option<Vec<CollectionData>>,
     access_all: Option<bool>,
@@ -1201,7 +1201,7 @@ async fn get_user(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct EditUserData {
-    #[serde_as(as = "serde_with::PickFirst<(_, serde_with::DisplayFromStr)>")]
+    #[serde(deserialize_with = "crate::db::deserialize_membership_type")]
     r#type: UserOrgType,
     collections: Option<Vec<CollectionData>>,
     groups: Option<Vec<Uuid>>,
@@ -2895,6 +2895,32 @@ mod tests {
         let restored = owner.get(&format!("/api/organizations/{org_id}/users/{member_id}")).await;
         restored.assert_ok();
         assert_eq!(restored.json()["status"], 2, "member should be Confirmed again: {}", restored.body);
+    }
+
+    // Bitwarden dropped the Manager role from clients in favor of Custom (4). We fold
+    // Custom into our internal Manager on input and report it back as Custom, so an
+    // invite/edit with type 4 must be accepted (it previously 400'd) and round-trip as 4.
+    #[tokio::test]
+    async fn custom_role_round_trips_as_type_4() {
+        let owner = TestClient::register_and_login().await;
+        let member = TestClient::register_and_login().await;
+        let org_id = owner.create_org("CustomRole").await["id"].as_str().unwrap().to_string();
+        let member_id = member.user_id.unwrap();
+
+        let invite = json!({ "emails": [member.email], "type": 4, "accessAll": false, "groups": [], "collections": [] });
+        owner.post(&format!("/api/organizations/{org_id}/users/invite"), invite).await.assert_ok();
+        let confirm = json!({ "key": "2.memberorgkey|mac", "Key": "2.memberorgkey|mac" });
+        owner.post(&format!("/api/organizations/{org_id}/users/{member_id}/confirm"), confirm).await.assert_ok();
+
+        let got = owner.get(&format!("/api/organizations/{org_id}/users/{member_id}")).await;
+        got.assert_ok();
+        assert_eq!(got.json()["type"], 4, "custom member should be reported as type 4, not the internal Manager 3: {}", got.body);
+
+        // Editing back down to a plain User (2) still works and reports 2.
+        let edit = json!({ "type": 2, "accessAll": false, "groups": [], "collections": [] });
+        owner.put(&format!("/api/organizations/{org_id}/users/{member_id}"), edit).await.assert_ok();
+        let edited = owner.get(&format!("/api/organizations/{org_id}/users/{member_id}")).await;
+        assert_eq!(edited.json()["type"], 2, "member should now be a plain User: {}", edited.body);
     }
 
     #[tokio::test]

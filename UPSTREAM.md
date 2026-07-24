@@ -35,7 +35,12 @@ snapshot (2026-07-24) and drift as files change — re-anchor before acting.
    modern client is a 400/422 for the *whole request*, not a graceful "unknown". This bites
    `CipherType` (6/7/8), `EventType` (`/events/collect` batch), `PolicyType` (17–21),
    `TwoFactorType` (RecoveryCode=8), `OrganizationUserType` (Custom=4), and `UpdateType`.
-   The systemic fix is a lenient `#[serde(other)]`/fallback path on inbound enums.
+   **Status: addressed (2026-07-24) for CipherType, EventType, PolicyType, TwoFactorType, and
+   OrganizationUserType** — missing variants added, and the two genuinely open-ended inbound
+   paths (`/events/collect`, org-user role) got lenient number-or-string deserializers that
+   fold unknowns to a safe value instead of 400ing. `UpdateType` (push) is outbound-only and
+   left as-is. There is still no single generic `#[serde(other)]` helper; each enum was handled
+   on its merits.
 
 2. **"v2 modernization" gaps.** Bitwarden reworked several flows into new routes + bodies;
    the fork still carries the pre-v2 shape. Biggest ones: **key rotation**
@@ -62,7 +67,7 @@ These are self-contained defects — typos or wrong literals — independent of 
 | # | Bug | Location | Fix | Status |
 |---|-----|----------|-----|--------|
 | B1 | Legacy file-send writes file id under key `"od"` instead of `"id"` — recipient can't resolve the file for download. v2 path is correct. | [sends.rs:290](src/api/core/sends.rs#L290) | `"od"` → `"id"` | ✅ fixed |
-| B2 | Unknown/unsupported `CipherType` **panics** the response builder (`panic!("Wrong type")`) instead of erroring. | [cipher.rs:417](src/db/models/cipher.rs#L417) | handle gracefully (see C1) | ⏭ deferred → C1 |
+| B2 | Unknown/unsupported `CipherType` **panics** the response builder (`panic!("Wrong type")`) instead of erroring. | [cipher.rs:417](src/db/models/cipher.rs#L417) | handle gracefully (see C1) | ✅ fixed (with C1) |
 | B3 | `GET /organizations/:id/keys` emits discriminator `"pbject"` instead of `"object"`. Sibling `post_org_keys` spells it right. | [organizations.rs:2451](src/api/core/organizations.rs#L2451) | `"pbject"` → `"object"` | ✅ fixed |
 | B4 | Public import group data field `member_external_ds` (→ `memberExternalDs`) misspells `memberExternalIds`; group memberships silently dropped on import. | [public.rs:21](src/api/core/public.rs#L21) | rename to `member_external_ids` + serde | ✅ fixed |
 | B5 | `PUT /two-factor/email` returns `"enabled": "true"` (string), while `get_email` returns a real bool — the two disagree. (Shared with dani.) | [email.rs:172](src/api/core/two_factor/email.rs#L172) | emit boolean | ✅ fixed |
@@ -73,7 +78,10 @@ These are self-contained defects — typos or wrong literals — independent of 
 
 ## Ciphers + Folders
 
-- **[HIGH] C1 — Cipher types 6/7/8 rejected.** `CipherType` stops at `SshKey=5` (+`Unknown`);
+- **[HIGH] ✅ C1 — Cipher types 6/7/8 rejected.** *(fixed 2026-07-24: added `BankAccount=6`/
+  `DriversLicense=7`/`Passport=8`; write path routes them through the `data` fallback, response
+  emits their obsolete-but-present sub-object keys, and the `Unknown` panic (B2) is now a safe
+  skip. Test: `ciphers::tests::newer_cipher_types_round_trip_via_data`.)* `CipherType` stops at `SshKey=5` (+`Unknown`);
   Bitwarden has `BankAccount=6, DriversLicense=7, Passport=8`. `Deserialize_repr` makes
   `"type":6/7/8` a hard 400, and even if parsed the response builder panics (B2). Users can't
   create/import those items. Ours: [cipher.rs:63](src/db/models/cipher.rs#L63),
@@ -164,7 +172,13 @@ These are self-contained defects — typos or wrong literals — independent of 
   [collection.rs:24](src/db/models/collection.rs#L24), [group.rs:35](src/db/models/group.rs#L35).
   BW: `SelectionReadOnly{Request,Response}Model.cs`. **dani: yes** (full end-to-end incl. DB
   column) — this needs a migration + query changes, largest single item.
-- **[HIGH] O2 — `Custom` org role (type 4) unsupported; `Manager` (3) still emitted.** BW
+- **[HIGH] ✅ O2 — `Custom` org role (type 4) unsupported; `Manager` (3) still emitted.**
+  *(fixed 2026-07-24: ported dani's shim — `FromStr` + a new number-or-string
+  `deserialize_membership_type` fold `4|"Custom" → Manager` on invite/edit/admin input, and
+  `UserOrganization::type_manager_as_custom()` emits `Manager` back as `4` in all three member
+  response builders. Custom permissions themselves are still not implemented — a Custom member
+  renders with an empty permissions set, same partial as dani. Test:
+  `organizations::tests::custom_role_round_trips_as_type_4`.)* BW
   permanently removed `Manager=3` and uses `Custom=4`. Sending `type:4`/`"Custom"` → 400; we
   still hand out `type:3`. Ours: [organization.rs:54](src/db/models/organization.rs#L54).
   **dani: no** but dani maps `4|Custom → Manager` on input and back out via
@@ -186,7 +200,10 @@ These are self-contained defects — typos or wrong literals — independent of 
   exists; no public members/groups/collections/policies CRUD, and the import group-members
   field is misspelled (B4). Ours: [public.rs](src/api/core/public.rs). **dani: partial**
   (dani implements the full public API; the typo is fork-specific).
-- **[LOW] O8 — `PolicyType` stops at 16.** BW adds 17–21 (`AutotypeDefaultSetting`,
+- **[LOW] ✅ O8 — `PolicyType` stops at 16.** *(fixed 2026-07-24: added variants 17–21 so
+  `GET/PUT .../policies/17..21` no longer 400. The `PersonalOwnership`→`OrganizationDataOwnership`
+  rename is wire-invisible (int 5 unchanged) and left as-is; enforcement of the new policies is
+  separate/out of scope.)* BW adds 17–21 (`AutotypeDefaultSetting`,
   `AutomaticUserConfirmation`, `BlockClaimedDomainAccountCreation`,
   `OrganizationUserNotification`, `SendControls`) and renames `PersonalOwnership`→
   `OrganizationDataOwnership` (same int 5). `GET/PUT .../policies/17..21` → 400. Ours:
@@ -252,7 +269,8 @@ These are self-contained defects — typos or wrong literals — independent of 
   under a `Duo` object + `UserVerificationToken`; ours is flat. Web-vault Duo setup posts
   `clientId`/`clientSecret` → rejected. Ours: [duo.rs:122](src/api/core/two_factor/duo.rs#L122).
   **dani: yes**.
-- **[MED] T3 — `TwoFactorType` missing `RecoveryCode = 8`.** `from_repr(8)` → `Unknown`. Ours:
+- **[MED] ✅ T3 — `TwoFactorType` missing `RecoveryCode = 8`.** *(fixed 2026-07-24: added the
+  variant.)* `from_repr(8)` → `Unknown`. Ours:
   [two_factor.rs:37](src/db/models/two_factor.rs#L37). **dani: yes** — stale vs dani.
 - **[MED] T4 — Email activation returns `"enabled":"true"` (string).** See B5. `get_email`
   disagrees (bool). **dani: yes** (same string bug upstream).
@@ -280,15 +298,21 @@ These are self-contained defects — typos or wrong literals — independent of 
 
 ## Events + Notifications / Push + Sync
 
-- **[HIGH] E1 — `/events/collect` 400s the whole batch on any unknown EventType.** Enum stops
+- **[HIGH] ✅ E1 — `/events/collect` 400s the whole batch on any unknown EventType.**
+  *(fixed 2026-07-24: added the missing cipher client events 1118–1132, and gave the collect
+  endpoint a lenient `lenient_event_type` deserializer that maps unrecognized values to
+  `Unknown` and skips them per-event so the rest of the batch still records. Test:
+  `events::tests::collect_tolerates_unknown_event_type`.)* Enum stops
   at `1117`; BW defines client cipher events `1118–1132` (toggled TOTP seed, copied bank
   account / license / passport / SWIFT / IBAN / national-id, and toggle-visible pairs). A
   single unknown discriminant fails the entire array via `serde_repr`; modern clients silently
   lose org event-log entries. Ours: [event.rs:59](src/db/models/event.rs#L59),
   [events.rs:120](src/api/core/events.rs#L120). **dani: no** (both stop at 1117).
-- **[MED] E2 — EventType stale vs dani.** Missing `1010` (device-approval requested), `1505`,
+- **[MED] ◐ E2 — EventType stale vs dani.** Missing `1010` (device-approval requested), `1505`,
   `1513–1516` (org-user auth-request approved/rejected, deleted, left). Unknown DB values
   render as `type:0` (blank rows). Ours: [event.rs:64](src/db/models/event.rs#L64). **dani: yes**.
+  *(enum part fixed 2026-07-24: all these variants added. The related `organizationUserId`
+  issue (E4) is separate and still open — it needs a membership-id column.)*
 - **[MED] E3 — `UpdateType`/PushType truncated at 16.** Missing 17–27, notably `Notification=20`
   / `NotificationStatus=21` (notification center), `RefreshSecurityTasks=22`, `PolicyChanged=25`,
   `SyncOrganizations=17`. Clients get no live pushes for these; only picked up on next full

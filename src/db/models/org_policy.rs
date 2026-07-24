@@ -40,6 +40,11 @@ pub enum OrgPolicyType {
     RemoveUnlockWithPin = 14,
     RestrictedItemTypes = 15,
     UriMatchDefaults = 16,
+    AutotypeDefaultSetting = 17,
+    AutomaticUserConfirmation = 18,
+    BlockClaimedDomainAccountCreation = 19,
+    OrganizationUserNotification = 20,
+    SendControls = 21,
     Unknown = i32::MAX,
 }
 

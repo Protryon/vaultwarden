@@ -117,12 +117,21 @@ fn get_continuation_token(events_json: &Vec<Value>) -> Option<&str> {
 #[serde(rename_all = "camelCase")]
 pub struct EventCollection {
     // Mandatory
+    #[serde(deserialize_with = "lenient_event_type")]
     r#type: EventType,
     date: DateTime<Utc>,
 
     // Optional
     cipher_id: Option<Uuid>,
     organization_id: Option<Uuid>,
+}
+
+// Clients push whatever event types their version knows about. A type this server
+// doesn't have a variant for must not fail the whole batch (`serde_repr` has no
+// catch-all), so map unrecognized values to `Unknown` and skip them individually.
+fn lenient_event_type<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<EventType, D::Error> {
+    let raw = i32::deserialize(deserializer)?;
+    Ok(EventType::from_repr(raw).unwrap_or(EventType::Unknown))
 }
 
 // Upstream:
@@ -135,6 +144,10 @@ pub async fn post_events_collect(headers: Headers, data: Json<Vec<EventCollectio
     let mut conn = DB.get().await.ise()?;
 
     for event in data.iter() {
+        // Skip events whose type this server doesn't recognize (see lenient_event_type).
+        if matches!(event.r#type, EventType::Unknown) {
+            continue;
+        }
         match event.r#type as i32 {
             1000..=1099 => {
                 log_user_event(event.r#type, headers.user.uuid, headers.device.atype, event.date, headers.ip, &mut conn).await?;
@@ -227,6 +240,27 @@ mod tests {
         resp.assert_ok();
         let types: Vec<i64> = resp.json()["data"].as_array().unwrap().iter().filter_map(|e| e["type"].as_i64()).collect();
         assert!(types.contains(&1107), "collected client-viewed event (1107) should be recorded: {}", resp.body);
+    }
+
+    // A batch containing an event type this server doesn't know must not 400 the whole
+    // batch; the recognized events are still recorded and the unknown one is skipped.
+    #[tokio::test]
+    async fn collect_tolerates_unknown_event_type() {
+        let (owner, _org_id, cipher_id) = org_with_cipher().await;
+        let date = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+
+        // 1119 (Cipher_ClientCopiedBankAccountNumber) is a newer known type; 99999 is unknown.
+        let batch = json!([
+            { "type": 1119, "date": date, "cipherId": cipher_id },
+            { "type": 99999, "date": date, "cipherId": cipher_id },
+        ]);
+        owner.post("/events/collect", batch).await.assert_ok();
+
+        let resp = owner.get(&format!("/api/ciphers/{cipher_id}/events{}", range_query())).await;
+        resp.assert_ok();
+        let types: Vec<i64> = resp.json()["data"].as_array().unwrap().iter().filter_map(|e| e["type"].as_i64()).collect();
+        assert!(types.contains(&1119), "newer known event (1119) should be recorded alongside an unknown one: {}", resp.body);
+        assert!(!types.contains(&99999), "unknown event type should be skipped, not stored: {}", resp.body);
     }
 
     #[tokio::test]
