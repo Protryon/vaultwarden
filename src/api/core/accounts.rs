@@ -12,7 +12,7 @@ use crate::{
     api::{PasswordData, UpdateType, ws_anonymous_subscriptions, ws_users},
     auth::{ClientHeaders, Headers, decode_delete, decode_invite, decode_verify_email},
     crypto,
-    db::{AuthRequest, Cipher, DB, Device, EmergencyAccess, EventType, Folder, Invitation, User, UserKdfType, UserOrgStatus, UserOrganization},
+    db::{AuthRequest, Cipher, DB, Device, EmergencyAccess, EventType, Folder, Invitation, Send, User, UserKdfType, UserOrgStatus, UserOrganization},
     events::log_user_event,
     mail,
     push::{register_push_device, unregister_push_device},
@@ -32,6 +32,7 @@ pub fn route(router: Router) -> Router {
         .post("/accounts/password", post_password)
         .post("/accounts/kdf", post_kdf)
         .post("/accounts/key", post_rotatekey)
+        .post("/accounts/key-management/rotate-user-account-keys", post_rotate_account_keys)
         .post("/accounts/security-stamp", post_sstamp)
         .post("/accounts/email-token", post_email_token)
         .post("/accounts/email", post_email)
@@ -670,6 +671,173 @@ pub async fn post_rotatekey(mut conn: AutoTxn, headers: Headers, data: Json<KeyD
     // Prevent loging out the client where the user requested this endpoint from.
     // If you do logout the user it will causes issues at the client side.
     // Adding the device uuid will prevent this.
+    ws_users().send_logout(&user, &conn, Some(headers.device.uuid)).await?;
+
+    conn.commit().await?;
+    Ok(())
+}
+
+// The current (v2) key-rotation request shape. Bitwarden moved rotation to
+// POST /accounts/key-management/rotate-user-account-keys with this body; the legacy
+// POST /accounts/key (KeyData / post_rotatekey above) is kept for older clients.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RotateKeyData {
+    account_unlock_data: RotateAccountUnlockData,
+    account_keys: RotateAccountKeys,
+    account_data: RotateAccountData,
+    old_master_key_authentication_hash: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RotateAccountUnlockData {
+    emergency_access_unlock_data: Vec<RotateEmergencyAccessData>,
+    master_password_unlock_data: RotateMasterPasswordUnlockData,
+    organization_account_recovery_unlock_data: Vec<RotateResetPasswordData>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RotateMasterPasswordUnlockData {
+    kdf_type: i32,
+    kdf_iterations: i32,
+    kdf_parallelism: Option<i32>,
+    kdf_memory: Option<i32>,
+    email: String,
+    master_key_authentication_hash: String,
+    master_key_encrypted_user_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RotateAccountKeys {
+    user_key_encrypted_account_private_key: String,
+    account_public_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RotateAccountData {
+    ciphers: Vec<CipherData>,
+    folders: Vec<UpdateFolderData>,
+    sends: Vec<super::sends::SendData>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RotateEmergencyAccessData {
+    id: Uuid,
+    key_encrypted: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RotateResetPasswordData {
+    organization_id: Uuid,
+    reset_password_key: String,
+}
+
+pub async fn post_rotate_account_keys(mut conn: AutoTxn, headers: Headers, data: Json<RotateKeyData>) -> Result<()> {
+    let RotateKeyData {
+        account_unlock_data,
+        account_keys,
+        account_data,
+        old_master_key_authentication_hash,
+    } = data.0;
+    let RotateAccountUnlockData {
+        emergency_access_unlock_data,
+        master_password_unlock_data: mpu,
+        organization_account_recovery_unlock_data,
+    } = account_unlock_data;
+
+    if !headers.user.check_valid_password(&old_master_key_authentication_hash) {
+        err!("Invalid password")
+    }
+
+    // The KDF settings, email, and asymmetric keypair are not rotated; refuse if the client
+    // tries to change them, which would leave the account in an inconsistent state.
+    if headers.user.client_kdf_type != mpu.kdf_type
+        || headers.user.client_kdf_iter != mpu.kdf_iterations
+        || headers.user.client_kdf_memory != mpu.kdf_memory
+        || headers.user.client_kdf_parallelism != mpu.kdf_parallelism
+        || headers.user.email != mpu.email
+    {
+        err!("Changing the kdf variant or email is not supported during key rotation")
+    }
+    if headers.user.public_key.as_ref() != Some(&account_keys.account_public_key) {
+        err!("Changing the asymmetric keypair is not possible during key rotation")
+    }
+
+    // Validate the ciphers before mutating anything (mirrors the import path).
+    Cipher::validate_cipher_data(&account_data.ciphers)?;
+
+    let user_uuid = headers.user.uuid;
+
+    // Re-key folders.
+    for folder_data in account_data.folders {
+        let mut saved_folder = match Folder::get_with_user(&conn, folder_data.id, user_uuid).await? {
+            Some(folder) => folder,
+            None => err!("Folder doesn't exist"),
+        };
+        saved_folder.name = folder_data.name;
+        saved_folder.save(&conn).await?;
+    }
+
+    // Re-key emergency access grants.
+    for ea_data in emergency_access_unlock_data {
+        let mut ea = match EmergencyAccess::get_with_grantor(&conn, ea_data.id, user_uuid).await? {
+            Some(ea) => ea,
+            None => err!("Emergency access doesn't exist or is not owned by the user"),
+        };
+        ea.key_encrypted = Some(ea_data.key_encrypted);
+        ea.save(&conn).await?;
+    }
+
+    // Re-key organization account-recovery (reset password) keys.
+    for rp_data in organization_account_recovery_unlock_data {
+        let mut membership = match UserOrganization::get(&conn, user_uuid, rp_data.organization_id).await? {
+            Some(m) => m,
+            None => err!("Reset password key doesn't exist"),
+        };
+        membership.reset_password_key = Some(rp_data.reset_password_key);
+        membership.save(&conn).await?;
+    }
+
+    // Re-key sends.
+    for send_data in account_data.sends {
+        let send_id = send_data.id.ok_or(Error::NotFound)?;
+        let mut send = match Send::get_for_user(&conn, send_id, user_uuid).await? {
+            Some(send) => send,
+            None => err!("Send doesn't exist"),
+        };
+        super::sends::apply_send_rotation(&mut send, send_data)?;
+        send.save(&conn).await?;
+    }
+
+    // Re-key personal ciphers.
+    use super::ciphers::update_cipher_from_data;
+    for cipher_data in account_data.ciphers {
+        // Only the user's own ciphers are re-keyed; org ciphers use the org key.
+        if cipher_data.organization_id.is_some() {
+            continue;
+        }
+        let mut saved_cipher = match Cipher::get_for_user_writable(&conn, user_uuid, cipher_data.id.ok_or(Error::NotFound)?).await? {
+            Some(cipher) => cipher,
+            None => err!("Cipher doesn't exist"),
+        };
+        // UpdateType::None: the security stamp is reset below, forcing every other session to
+        // re-sync, so per-cipher websocket updates would be redundant and racy.
+        update_cipher_from_data(&mut saved_cipher, cipher_data, &headers, false, &mut conn, UpdateType::None).await?;
+    }
+
+    // Finally, swap the user's key material and master-password hash.
+    let mut user = headers.user;
+    user.private_key = Some(account_keys.user_key_encrypted_account_private_key);
+    user.set_password(&mpu.master_key_authentication_hash, Some(mpu.master_key_encrypted_user_key), true, None, &conn).await?;
+    user.save(&conn).await?;
+
+    // Log every other session out (the session that issued the rotation is spared).
     ws_users().send_logout(&user, &conn, Some(headers.device.uuid)).await?;
 
     conn.commit().await?;
@@ -1469,5 +1637,73 @@ mod tests {
         // A denied request is removed.
         let after = client.get(&format!("/api/auth-requests/{req_id}")).await;
         assert!(after.status >= 400, "denied auth request should be gone, got {}: {}", after.status, after.body);
+    }
+
+    // The v2 key-rotation endpoint re-keys the user's key material and vault items, then the
+    // new master-password hash must authenticate and return the rotated user key.
+    #[tokio::test]
+    async fn rotate_account_keys_v2_relogs_in_with_new_key() {
+        let client = TestClient::register_and_login().await;
+        let folder_id = client.create_folder("2.myfolder|mac").await;
+        let cipher_id = client.create_login_cipher("2.mylogin|mac").await["id"].as_str().unwrap().to_string();
+
+        let body = json!({
+            "oldMasterKeyAuthenticationHash": client.master_password_hash,
+            "accountUnlockData": {
+                "emergencyAccessUnlockData": [],
+                "organizationAccountRecoveryUnlockData": [],
+                // KDF/email must match the account's current values (rotation doesn't change them).
+                "masterPasswordUnlockData": {
+                    "kdfType": 0,
+                    "kdfIterations": 600_000,
+                    "kdfMemory": null,
+                    "kdfParallelism": null,
+                    "email": client.email,
+                    "masterKeyAuthenticationHash": "2.new-master-hash|mac",
+                    "masterKeyEncryptedUserKey": "2.newuserkey|mac"
+                }
+            },
+            "accountKeys": {
+                "userKeyEncryptedAccountPrivateKey": "2.newprivkey|mac",
+                // The asymmetric public key is unchanged.
+                "accountPublicKey": client.public_key
+            },
+            "accountData": {
+                "ciphers": [ { "id": cipher_id, "type": 1, "name": "2.mylogin|mac", "key": "2.newcipherkey|mac", "login": { "username": "2.u|mac", "password": "2.p|mac" }, "lastKnownRevisionDate": null } ],
+                "folders": [ { "id": folder_id, "name": "2.myfolder|mac" } ],
+                "sends": []
+            }
+        });
+        client.post("/api/accounts/key-management/rotate-user-account-keys", body).await.assert_ok();
+
+        // Rotation resets the security stamp, so the old session is gone. Log in with the new
+        // master-password hash; the response should carry the rotated user key.
+        let form = [
+            ("grant_type", "password"),
+            ("username", client.email.as_str()),
+            ("password", "2.new-master-hash|mac"),
+            ("scope", "api offline_access"),
+            ("client_id", "web"),
+            ("device_identifier", client.device_id.as_str()),
+            ("device_name", "test-harness"),
+            ("device_type", "14"),
+        ];
+        let login = client.post_form("/identity/connect/token", &form).await;
+        login.assert_ok();
+        assert_eq!(login.json()["Key"], "2.newuserkey|mac", "login after rotation should return the rotated user key: {}", login.body);
+
+        // The old master-password hash no longer authenticates.
+        let stale = [
+            ("grant_type", "password"),
+            ("username", client.email.as_str()),
+            ("password", client.master_password_hash.as_str()),
+            ("scope", "api offline_access"),
+            ("client_id", "web"),
+            ("device_identifier", client.device_id.as_str()),
+            ("device_name", "test-harness"),
+            ("device_type", "14"),
+        ];
+        let rejected = client.post_form("/identity/connect/token", &stale).await;
+        assert!(rejected.status >= 400, "old master password must not authenticate after rotation, got {}: {}", rejected.status, rejected.body);
     }
 }

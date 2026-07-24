@@ -187,7 +187,7 @@ pub struct CipherData {
     // Folder id is not included in import
     folder_id: Option<Uuid>,
     // TODO: Some of these might appear all the time, no need for Option
-    organization_id: Option<Uuid>,
+    pub organization_id: Option<Uuid>,
 
     /*
     Login = 1,

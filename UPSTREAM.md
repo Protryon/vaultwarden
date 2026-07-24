@@ -43,8 +43,8 @@ snapshot (2026-07-24) and drift as files change — re-anchor before acting.
    on its merits.
 
 2. **"v2 modernization" gaps.** Bitwarden reworked several flows into new routes + bodies;
-   the fork still carries the pre-v2 shape. Biggest ones: **key rotation**
-   (`key-management/rotate-user-account-keys`), **two-step registration** (`register/finish`),
+   the fork still carries the pre-v2 shape. Biggest ones: **key rotation** (`key-management/rotate-user-account-keys`, ✅ done),
+   **two-step registration** (`register/finish`),
    **Duo Universal Prompt** (OIDC `AuthUrl`), and the **2FA `userVerificationToken`** setup
    flow. dani has already ported the first three.
 
@@ -115,7 +115,7 @@ These are self-contained defects — typos or wrong literals — independent of 
 
 ## Accounts + Identity / Token
 
-- **[HIGH] A1 — Key-rotation is the pre-v2 route + body.** We expose `POST /accounts/key` with
+- **[HIGH] ✅ A1 — Key-rotation is the pre-v2 route + body.** *(fixed 2026-07-24: added `POST /accounts/key-management/rotate-user-account-keys` with the v2 body (accountUnlockData / accountKeys / accountData / oldMasterKeyAuthenticationHash), re-keying folders, emergency access, org reset-password keys, sends and personal ciphers, then swapping the user key/private key/master-password hash and resetting the security stamp. Refuses KDF/email/public-key changes. Legacy `POST /accounts/key` kept for older clients. Test: `rotate_account_keys_v2_relogs_in_with_new_key`. Note: unlike dani we don't enforce the all-items-included superset check.)* We expose `POST /accounts/key` with
   `{ciphers,folders,key,privateKey,masterPasswordHash}`. Bitwarden moved to
   `POST /accounts/key-management/rotate-user-account-keys` with `accountUnlockData` /
   `accountKeys` / `accountData` / `oldMasterKeyAuthenticationHash` (and rotates Sends, which we

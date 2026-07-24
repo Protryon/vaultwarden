@@ -41,7 +41,10 @@ pub fn route(router: Router) -> Router {
 #[serde_as]
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SendData {
+pub struct SendData {
+    // Only sent by the account key-rotation flow, to match the send being re-keyed.
+    #[serde(default)]
+    pub id: Option<Uuid>,
     r#type: SendType,
     key: String,
     password: Option<String>,
@@ -577,6 +580,26 @@ async fn put_send(Path(uuid): Path<Uuid>, headers: Headers, data: Json<SendData>
     ws_users().send_send_update(UpdateType::SyncSendUpdate, &send, &[send.user_uuid.unwrap()], headers.device.uuid, &conn).await?;
 
     Ok(Json(send.to_json()))
+}
+
+/// Re-key an existing send during account key rotation: the send's wrapped key (`akey`) is
+/// re-encrypted under the new user key, and the (re-encrypted) encrypted fields are refreshed.
+/// Unlike a normal update this leaves dates, access counts, and the disabled flag untouched.
+pub fn apply_send_rotation(send: &mut Send, data: SendData) -> Result<()> {
+    if send.atype != data.r#type {
+        err!("Sends can't change type")
+    }
+    // The file blob is immutable, so only Text sends carry updated data.
+    if data.r#type == SendType::Text {
+        if let Some(mut d) = data.text {
+            d.as_object_mut().and_then(|d| d.remove("Response"));
+            send.data = d;
+        }
+    }
+    send.name = data.name;
+    send.akey = data.key;
+    send.notes = data.notes;
+    Ok(())
 }
 
 async fn delete_send(Path(uuid): Path<Uuid>, headers: Headers) -> Result<()> {
