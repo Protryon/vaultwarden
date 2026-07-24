@@ -37,6 +37,7 @@ use std::{panic, path::Path, process::exit, str::FromStr, thread, time::Duration
 
 use axol::Result;
 use log::{error, info};
+use once_cell::sync::Lazy;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::{Protocol, SpanExporter, WithExportConfig};
 use opentelemetry_sdk::Resource;
@@ -316,6 +317,9 @@ async fn check_data_folder() {
 /// If we detect this string, we will alert about not having a persistent self defined volume.
 /// This probably means that someone forgot to add `-v /path/to/vaultwarden_data/:/data`
 async fn docker_data_folder_is_persistent(data_folder: &Path) -> bool {
+    // Compiled once; the regex is constant, so there's no need to rebuild it per line.
+    static VOLUME_RE: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"/volumes/[a-z0-9]{64}/_data /").unwrap());
+
     if let Ok(mountinfo) = File::open("/proc/self/mountinfo").await {
         // Since there can only be one mountpoint to the DATA_FOLDER
         // We do a basic check for this mountpoint surrounded by a space.
@@ -328,8 +332,7 @@ async fn docker_data_folder_is_persistent(data_folder: &Path) -> bool {
         while let Some(line) = lines.next_line().await.unwrap_or_default() {
             // Only execute a regex check if we find the base match
             if line.contains(&data_folder_match) {
-                let re = regex::Regex::new(r"/volumes/[a-z0-9]{64}/_data /").unwrap();
-                if re.is_match(&line) {
+                if VOLUME_RE.is_match(&line) {
                     return false;
                 }
                 // If we did found a match for the mountpoint, but not the regex, then still stop searching.
