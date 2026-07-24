@@ -820,8 +820,8 @@ pub async fn post_attachment_v2(Path(uuid): Path<Uuid>, headers: Headers, data: 
 
     let url = format!("/ciphers/{}/attachment/{}", cipher.uuid, attachment_id);
     let response_key = match data.admin_request {
-        Some(b) if b => "CipherMiniResponse",
-        _ => "CipherResponse",
+        Some(b) if b => "cipherMiniResponse",
+        _ => "cipherResponse",
     };
 
     Ok(Json(json!({ // AttachmentUploadDataResponseModel
@@ -1217,17 +1217,7 @@ pub async fn delete_all(conn: AutoTxn, Query(organization): Query<OrganizationId
                         Cipher::delete_all_by_organization(&conn, org_id).await?;
                         ws_users().send_user_update(UpdateType::SyncVault, &conn, &user).await?;
 
-                        log_event(
-                            EventType::OrganizationPurgedVault,
-                            org_id,
-                            org_id,
-                            user.uuid,
-                            headers.device.atype,
-                            Utc::now(),
-                            headers.ip,
-                            &conn,
-                        )
-                        .await?;
+                        log_event(EventType::OrganizationPurgedVault, org_id, org_id, user.uuid, headers.device.atype, Utc::now(), headers.ip, &conn).await?;
                     } else {
                         err!("You don't have permission to purge the organization vault");
                     }
@@ -1793,19 +1783,13 @@ mod tests {
 
         // 1. Reserve the attachment record (v2 handshake).
         let reserve = client
-            .post(
-                &format!("/api/ciphers/{id}/attachment/v2"),
-                json!({ "key": "2.attkey|mac", "fileName": "2.secret.txt|mac", "fileSize": file.len() }),
-            )
+            .post(&format!("/api/ciphers/{id}/attachment/v2"), json!({ "key": "2.attkey|mac", "fileName": "2.secret.txt|mac", "fileSize": file.len() }))
             .await;
         reserve.assert_ok();
         let attachment_id = reserve.json()["attachmentId"].as_str().expect("attachmentId").to_string();
 
         // 2. Upload the bytes to the returned URL.
-        client
-            .post_multipart(&format!("/api/ciphers/{id}/attachment/{attachment_id}"), &[("data", Some("2.secret.txt|mac"), file)])
-            .await
-            .assert_ok();
+        client.post_multipart(&format!("/api/ciphers/{id}/attachment/{attachment_id}"), &[("data", Some("2.secret.txt|mac"), file)]).await.assert_ok();
 
         // 3. The cipher now advertises the attachment.
         let got = client.get(&format!("/api/ciphers/{id}")).await;

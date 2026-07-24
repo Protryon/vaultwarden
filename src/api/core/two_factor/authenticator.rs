@@ -196,9 +196,8 @@ mod tests {
         gen_resp.assert_ok();
         let secret = gen_resp.json()["key"].as_str().unwrap().to_string();
 
-        let bad = client
-            .post("/api/two-factor/authenticator", json!({ "masterPasswordHash": client.master_password_hash, "key": secret, "token": "000000" }))
-            .await;
+        let bad =
+            client.post("/api/two-factor/authenticator", json!({ "masterPasswordHash": client.master_password_hash, "key": secret, "token": "000000" })).await;
         assert!(bad.status >= 400, "wrong TOTP code should be rejected, got {}: {}", bad.status, bad.body);
     }
 

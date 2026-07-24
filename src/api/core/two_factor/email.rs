@@ -171,7 +171,7 @@ pub async fn email(headers: Headers, data: Json<EmailData>) -> Result<Json<Value
 
     Ok(Json(json!({
         "email": email_data.email,
-        "enabled": "true",
+        "enabled": true,
         "object": "twoFactorEmail"
     })))
 }

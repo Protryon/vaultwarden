@@ -396,9 +396,9 @@ impl UserOrganization {
                 .iter()
                 .map(|cu| {
                     json!({
-                        "Id": cu.collection_uuid,
-                        "ReadOnly": cu.read_only,
-                        "HidePasswords": cu.hide_passwords,
+                        "id": cu.collection_uuid,
+                        "readOnly": cu.read_only,
+                        "hidePasswords": cu.hide_passwords,
                     })
                 })
                 .collect()

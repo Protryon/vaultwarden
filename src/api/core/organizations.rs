@@ -2449,7 +2449,7 @@ async fn get_organization_keys(Path(org_uuid): Path<Uuid>) -> Result<Json<Value>
     };
 
     Ok(Json(json!({
-        "pbject": "organizationKeys",
+        "object": "organizationKeys",
         "publicKey": org.public_key,
         "privateKey": org.private_key,
     })))
@@ -2817,10 +2817,8 @@ mod tests {
         let org_id = owner.create_org("Scoped").await["id"].as_str().unwrap().to_string();
 
         // Two collections: the seed one and a new one.
-        let seed_col = owner.get(&format!("/api/organizations/{org_id}/collections")).await.json()["data"].as_array().unwrap()[0]["id"]
-            .as_str()
-            .unwrap()
-            .to_string();
+        let seed_col =
+            owner.get(&format!("/api/organizations/{org_id}/collections")).await.json()["data"].as_array().unwrap()[0]["id"].as_str().unwrap().to_string();
         let other_col = owner.create_org_collection(&org_id, "2.other|mac").await;
 
         let visible = owner.create_org_cipher(&org_id, &seed_col, "2.visible|mac").await["id"].as_str().unwrap().to_string();
@@ -2842,10 +2840,8 @@ mod tests {
         let owner = TestClient::register_and_login().await;
         let member = TestClient::register_and_login().await;
         let org_id = owner.create_org("ReadOnly").await["id"].as_str().unwrap().to_string();
-        let col = owner.get(&format!("/api/organizations/{org_id}/collections")).await.json()["data"].as_array().unwrap()[0]["id"]
-            .as_str()
-            .unwrap()
-            .to_string();
+        let col =
+            owner.get(&format!("/api/organizations/{org_id}/collections")).await.json()["data"].as_array().unwrap()[0]["id"].as_str().unwrap().to_string();
         let cipher_id = owner.create_org_cipher(&org_id, &col, "2.locked|mac").await["id"].as_str().unwrap().to_string();
 
         // Member granted read-only access to the collection.
@@ -3012,9 +3008,7 @@ mod tests {
         let org_id = client.create_org("ColUpd").await["id"].as_str().unwrap().to_string();
         let col_id = client.create_org_collection(&org_id, "2.old|mac").await;
 
-        let upd = client
-            .put(&format!("/api/organizations/{org_id}/collections/{col_id}"), json!({ "name": "2.new|mac", "groups": [], "users": [] }))
-            .await;
+        let upd = client.put(&format!("/api/organizations/{org_id}/collections/{col_id}"), json!({ "name": "2.new|mac", "groups": [], "users": [] })).await;
         upd.assert_ok();
         assert_eq!(upd.json()["name"], "2.new|mac");
 
@@ -3045,10 +3039,7 @@ mod tests {
         let c1 = client.create_org_collection(&org_id, "2.b1|mac").await;
         let c2 = client.create_org_collection(&org_id, "2.b2|mac").await;
 
-        client
-            .delete_json(&format!("/api/organizations/{org_id}/collections"), json!({ "ids": [c1, c2], "organizationId": org_id }))
-            .await
-            .assert_ok();
+        client.delete_json(&format!("/api/organizations/{org_id}/collections"), json!({ "ids": [c1, c2], "organizationId": org_id })).await.assert_ok();
 
         let cols = client.get(&format!("/api/organizations/{org_id}/collections")).await;
         let ids: Vec<String> = cols.json()["data"].as_array().unwrap().iter().filter_map(|c| c["id"].as_str().map(String::from)).collect();
@@ -3085,10 +3076,7 @@ mod tests {
 
         // Reassign him as read-write.
         owner
-            .put(
-                &format!("/api/organizations/{org_id}/collections/{col_id}/users"),
-                json!([{ "id": bob_id, "readOnly": false, "hidePasswords": false }]),
-            )
+            .put(&format!("/api/organizations/{org_id}/collections/{col_id}/users"), json!([{ "id": bob_id, "readOnly": false, "hidePasswords": false }]))
             .await
             .assert_ok();
         let users = owner.get(&format!("/api/organizations/{org_id}/collections/{col_id}/users")).await;

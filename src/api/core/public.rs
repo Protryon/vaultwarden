@@ -18,7 +18,7 @@ use crate::{
 struct OrgImportGroupData {
     name: String,
     external_id: String,
-    member_external_ds: Vec<String>,
+    member_external_ids: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -113,7 +113,7 @@ pub async fn ldap_import(conn: AutoTxn, token: PublicToken, data: Json<OrgImport
 
             GroupUser::delete_all_by_group(&conn, group_uuid).await?;
 
-            for ext_id in &group_data.member_external_ds {
+            for ext_id in &group_data.member_external_ids {
                 if let Some(user) = User::find_by_external_id(&conn, ext_id).await? {
                     if let Some(user_org) = UserOrganization::get(&conn, user.uuid, org_id).await? {
                         let group_user = GroupUser::new(group_uuid.clone(), user_org.user_uuid);

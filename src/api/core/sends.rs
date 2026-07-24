@@ -287,7 +287,7 @@ async fn post_send_file(conn: AutoTxn, headers: Headers, data: Multipart) -> Res
     tokio::fs::write(file_path, &data).await?;
 
     if let Some(o) = send.data.as_object_mut() {
-        o.insert(String::from("od"), Value::String(file_id.to_string()));
+        o.insert(String::from("id"), Value::String(file_id.to_string()));
         o.insert(String::from("size"), Value::Number(size.into()));
         o.insert(String::from("sizeName"), Value::String(crate::util::get_display_size(size as i32)));
     }
@@ -714,9 +714,7 @@ mod tests {
         })
         .to_string();
 
-        let resp = owner
-            .post_multipart("/api/sends/file", &[("model", None, model.as_bytes()), ("data", Some("2.secret.txt|mac"), contents.as_bytes())])
-            .await;
+        let resp = owner.post_multipart("/api/sends/file", &[("model", None, model.as_bytes()), ("data", Some("2.secret.txt|mac"), contents.as_bytes())]).await;
         resp.assert_ok();
         let created = resp.json();
         assert_eq!(created["type"], 1);
@@ -726,6 +724,18 @@ mod tests {
         let list = owner.get("/api/sends").await;
         let ids: Vec<String> = list.json()["data"].as_array().unwrap().iter().filter_map(|s| s["id"].as_str().map(String::from)).collect();
         assert!(ids.contains(&id), "legacy file send not listed: {}", list.body);
+
+        // The stored file carries its id under "id" (regression guard: it was once "od"),
+        // so a recipient can resolve and download it anonymously.
+        let file_id = created["file"]["id"].as_str().expect("file id under \"id\"").to_string();
+        let anon = TestClient::new().await;
+        let file_access = anon.post(&format!("/api/sends/{id}/access/file/{file_id}"), json!({ "password": null })).await;
+        file_access.assert_ok();
+        let dl_url = file_access.json()["url"].as_str().expect("download url").to_string();
+        let rel = &dl_url[dl_url.find("/api/").expect("api path in download url")..];
+        let download = anon.get(rel).await;
+        download.assert_ok();
+        assert_eq!(download.body, contents, "downloaded bytes should match what was uploaded");
     }
 
     #[tokio::test]

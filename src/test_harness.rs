@@ -539,7 +539,8 @@ impl TestClient {
     pub async fn add_org_member_scoped(&self, org_id: &str, member: &TestClient, collections: &[(&str, bool, bool)]) -> Uuid {
         let member_id = member.user_id.expect("member must be registered and logged in first");
 
-        let cols: Vec<Value> = collections.iter().map(|(id, read_only, hide_passwords)| json!({ "id": id, "readOnly": read_only, "hidePasswords": hide_passwords })).collect();
+        let cols: Vec<Value> =
+            collections.iter().map(|(id, read_only, hide_passwords)| json!({ "id": id, "readOnly": read_only, "hidePasswords": hide_passwords })).collect();
         let invite = json!({
             "emails": [member.email],
             "type": 2, // User
@@ -611,10 +612,7 @@ impl TestClient {
         let secret = gen_resp.json()["key"].as_str().expect("totp key").to_string();
 
         let activate = self
-            .post(
-                "/api/two-factor/authenticator",
-                json!({ "masterPasswordHash": self.master_password_hash, "key": secret, "token": totp_code(&secret, 0) }),
-            )
+            .post("/api/two-factor/authenticator", json!({ "masterPasswordHash": self.master_password_hash, "key": secret, "token": totp_code(&secret, 0) }))
             .await;
         activate.assert_ok();
         secret
