@@ -43,6 +43,8 @@ pub fn route(router: Router) -> Router {
         .post("/ciphers/:uuid/partial", put_cipher_partial)
         .put("/ciphers/:uuid/collections", post_collections)
         .post("/ciphers/:uuid/collections", post_collections)
+        .put("/ciphers/:uuid/collections_v2", post_collections_v2)
+        .post("/ciphers/:uuid/collections_v2", post_collections_v2)
         .put("/ciphers/:uuid/collections-admin", post_collections)
         .post("/ciphers/:uuid/collections-admin", post_collections)
         .put("/ciphers/:uuid/share", put_cipher_share)
@@ -628,9 +630,7 @@ pub struct CollectionsAdminData {
     collection_ids: Vec<Uuid>,
 }
 
-pub async fn post_collections(conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<CollectionsAdminData>) -> Result<()> {
-    let data: CollectionsAdminData = data.0;
-
+async fn post_collections_inner(conn: AutoTxn, uuid: Uuid, headers: Headers, data: CollectionsAdminData) -> Result<Value> {
     let cipher = match Cipher::get_for_user_writable(&conn, headers.user.uuid, uuid).await? {
         Some(cipher) => cipher,
         None => err!("Cipher doesn't exist"),
@@ -677,7 +677,22 @@ pub async fn post_collections(conn: AutoTxn, Path(uuid): Path<Uuid>, headers: He
 
     ws_users().send_cipher_update(UpdateType::SyncCipherUpdate, &cipher, &users, headers.device.uuid, Some(Vec::from_iter(posted_collections)), &conn).await?;
 
-    Ok(())
+    cipher.to_json(&conn, headers.user.uuid, true).await
+}
+
+pub async fn post_collections(conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<CollectionsAdminData>) -> Result<Json<Value>> {
+    Ok(Json(post_collections_inner(conn, uuid, headers, data.0).await?))
+}
+
+// The v2 variant wraps the updated cipher in an `optionalCipherDetails` envelope so
+// newer clients can refresh their local cipher state after editing its collections.
+pub async fn post_collections_v2(conn: AutoTxn, Path(uuid): Path<Uuid>, headers: Headers, data: Json<CollectionsAdminData>) -> Result<Json<Value>> {
+    let cipher = post_collections_inner(conn, uuid, headers, data.0).await?;
+    Ok(Json(json!({
+        "object": "optionalCipherDetails",
+        "unavailable": false,
+        "cipher": cipher,
+    })))
 }
 
 #[derive(Deserialize)]
@@ -1803,14 +1818,39 @@ mod tests {
         let col2 = client.create_org_collection(&org_id, "2.c2|mac").await;
         let id = client.create_org_cipher(&org_id, &col1, "2.orgc|mac").await["id"].as_str().unwrap().to_string();
 
-        // Put the cipher into both collections.
-        client.put(&format!("/api/ciphers/{id}/collections"), json!({ "collectionIds": [col1, col2] })).await.assert_ok();
+        // Put the cipher into both collections; the response now echoes the updated cipher.
+        let put = client.put(&format!("/api/ciphers/{id}/collections"), json!({ "collectionIds": [col1, col2] })).await;
+        put.assert_ok();
+        assert_eq!(put.json()["object"], "cipherDetails", "non-v2 collections should return the cipher: {}", put.body);
 
         let got = client.get(&format!("/api/ciphers/{id}")).await;
         got.assert_ok();
         let j = got.json();
         let cids: Vec<&str> = j["collectionIds"].as_array().unwrap().iter().filter_map(|c| c.as_str()).collect();
         assert!(cids.contains(&col1.as_str()) && cids.contains(&col2.as_str()), "cipher should be in both collections: {}", got.body);
+
+        // The v2 endpoint wraps the cipher in an optionalCipherDetails envelope.
+        let v2 = client.put(&format!("/api/ciphers/{id}/collections_v2"), json!({ "collectionIds": [col1] })).await;
+        v2.assert_ok();
+        let vj = v2.json();
+        assert_eq!(vj["object"], "optionalCipherDetails", "v2 should return an envelope: {}", v2.body);
+        assert_eq!(vj["unavailable"], false);
+        assert_eq!(vj["cipher"]["id"], id, "envelope should carry the cipher: {}", v2.body);
+    }
+
+    // Personal ciphers expose a permissions object clients use to gate delete/restore.
+    #[tokio::test]
+    async fn cipher_response_includes_permissions() {
+        let client = TestClient::register_and_login().await;
+        let created = client.create_login_cipher("2.perm|mac").await;
+        assert_eq!(created["permissions"]["delete"], true, "owner can delete: {}", created);
+        assert_eq!(created["permissions"]["restore"], true, "owner can restore: {}", created);
+
+        // And it persists through sync.
+        let id = created["id"].as_str().unwrap().to_string();
+        let sync = client.get("/api/sync").await;
+        let cipher = sync.json()["ciphers"].as_array().unwrap().iter().find(|c| c["id"] == id).cloned().expect("cipher in sync");
+        assert_eq!(cipher["permissions"]["delete"], true, "permissions must appear in sync: {}", sync.body);
     }
 
     #[tokio::test]

@@ -623,6 +623,7 @@ mod tests {
         let created = client.create_text_send("2.mysend|mac").await;
         assert_eq!(created["object"], "send");
         assert_eq!(created["name"], "2.mysend|mac");
+        assert_eq!(created["authType"], 2, "a passwordless send reports authType None (2): {}", created);
         let id = created["id"].as_str().expect("send id").to_string();
 
         // List.

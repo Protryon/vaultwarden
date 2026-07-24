@@ -412,6 +412,11 @@ impl FullCipher {
             // the "Read Only" or "Hide Passwords" restrictions for the user.
             json_object["edit"] = json!(!access.read_only);
             json_object["viewPassword"] = json!(!access.hide_passwords);
+            // Clients since ~v2025.6 gate the delete/restore actions on this object.
+            json_object["permissions"] = json!({
+                "delete": !access.read_only,
+                "restore": !access.read_only,
+            });
         }
 
         let key = match self.cipher.atype {

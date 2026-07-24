@@ -87,11 +87,11 @@ These are self-contained defects — typos or wrong literals — independent of 
   create/import those items. Ours: [cipher.rs:63](src/db/models/cipher.rs#L63),
   [ciphers.rs:445](src/api/core/ciphers.rs#L445). BW: `Core/Vault/Enums/CipherType.cs`.
   **dani: no** (dani also stops at 5).
-- **[HIGH] C2 — Cipher `permissions` object missing.** Response emits `edit`/`viewPassword`
+- **[HIGH] ✅ C2 — Cipher `permissions` object missing.** *(fixed 2026-07-24: emit `permissions: {delete: !read_only, restore: !read_only}` in the for_user block, per dani. Test: `ciphers::tests::cipher_response_includes_permissions`.)* Response emits `edit`/`viewPassword`
   but not `permissions: { delete, restore }`; clients since ~v2025.6 gate delete/restore on
   it. Ours: [cipher.rs:400](src/db/models/cipher.rs#L400). BW:
   `CipherPermissionsResponseModel.cs`. **dani: yes** (`cipher.rs:383`) — portable.
-- **[MED] C3 — `/ciphers/:uuid/collections_v2` route missing.** Only `/collections` (returns
+- **[MED] ✅ C3 — `/ciphers/:uuid/collections_v2` route missing.** *(fixed 2026-07-24: added the v2 route returning the `optionalCipherDetails` envelope; the non-v2 `/collections` now also returns the updated cipher. Test extends `ciphers::tests::update_org_cipher_collections`.)* Only `/collections` (returns
   `204`, empty) and `/collections-admin` exist; clients POSTing `collections_v2` expect
   `{ object:"optionalCipherDetails", unavailable, cipher }` and get 404. Ours:
   [ciphers.rs:44](src/api/core/ciphers.rs#L44). **dani: yes** (`ciphers.rs:757`).
@@ -227,7 +227,7 @@ These are self-contained defects — typos or wrong literals — independent of 
   restriction (security-relevant — user thinks access is limited but it's public). dani at
   least hard-rejects with "not supported". Ours: [sends.rs:44](src/api/core/sends.rs#L44).
   **dani: partial** (rejects). Minimum bar: reject like dani.
-- **[MED] S3 — `authType` missing from Send response.** BW/dani emit `authType`
+- **[MED] ✅ S3 — `authType` missing from Send response.** *(fixed 2026-07-24: emit `authType` (Password=1 / None=2) in `Send::to_json`. Test asserts the None case in the text-send test.)* BW/dani emit `authType`
   (Email=0/Password=1/None=2). Ours: [send.rs:157](src/db/models/send.rs#L157). **dani: no**
   (dani emits it; we're stale vs dani).
 - **[MED] S4 — `authType` missing from Send-access response.** Anonymous access payload can't
@@ -237,7 +237,7 @@ These are self-contained defects — typos or wrong literals — independent of 
   `salt` alongside kdf/`keyEncrypted` for the master-password-unlock flow. (Careful: our
   `User.salt` is a server hashing salt, not BW's email-derived MP salt.) Ours:
   [emergency_access.rs:525](src/api/core/emergency_access.rs#L525). **dani: no**.
-- **[LOW] S6 — Grantee/grantor details omit `avatarColor`.** We already store `avatar_color`.
+- **[LOW] ✅ S6 — Grantee/grantor details omit `avatarColor`.** *(fixed 2026-07-24: emit `avatarColor` from the resolved user in both details builders.)* We already store `avatar_color`.
   Ours: [emergency_access.rs:90](src/db/models/emergency_access.rs#L90). **dani: no** (emits it).
 - **[LOW] S7 — Grantee details emit zero-UUID/empty strings instead of null when absent.**
   Ours: [emergency_access.rs:116](src/db/models/emergency_access.rs#L116). **dani: no** (omits row).

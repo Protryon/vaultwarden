@@ -95,6 +95,7 @@ impl EmergencyAccess {
             "grantorId": grantor_user.uuid,
             "email": grantor_user.email,
             "name": grantor_user.name,
+            "avatarColor": grantor_user.avatar_color,
             "object": "emergencyAccessGrantorDetails",
         }))
     }
@@ -116,6 +117,7 @@ impl EmergencyAccess {
             "granteeId": grantee_user.as_ref().map_or(Uuid::default(), |u| u.uuid),
             "email": grantee_user.as_ref().map_or("", |u| &u.email),
             "name": grantee_user.as_ref().map_or("", |u| &u.name),
+            "avatarColor": grantee_user.as_ref().and_then(|u| u.avatar_color.clone()),
             "object": "emergencyAccessGranteeDetails",
         }))
     }
