@@ -55,9 +55,45 @@ cargo clippy                # lints — main.rs has a strict deny() list, keep i
 automatically on startup via `refinery` (embedded from `migrations/`); there is no separate
 migrate step. RSA JWT keys and data subfolders are created on first launch if missing.
 
-There is **no meaningful test suite** — only a couple of scattered `#[test]` functions. Run
-a single one with `cargo test <name>`. Verification is done by exercising the API against
-real Bitwarden clients, not by tests.
+### Tests
+
+There is an integration test suite, but it needs a running Postgres. Bring up the throwaway
+DB (Postgres on `127.0.0.1:5433`, user/pass `vaultwarden`, hardcoded to match the harness)
+before running anything:
+
+```bash
+docker-compose -f testing/docker-compose.yml up -d   # v1 CLI on this box; v2 plugin is `docker compose ...`
+cargo test                                            # whole suite (needs the DB above)
+cargo test <name>                                     # a single test
+VW_TEST_LOG=1 cargo test <name> -- --nocapture        # surface server-side 500s (bodies are otherwise empty)
+```
+
+Tests live in `#[cfg(test)] mod tests` blocks **colocated at the bottom of the relevant
+`src/api/**` file**, driven by the harness in [`src/test_harness.rs`](src/test_harness.rs).
+Two layers:
+
+- **Model/query tests** — `run_db_test(async |db| { ... })` gives each test its own throwaway
+  database and a direct connection (`db.conn()` / `db.conn_mut()`), and **awaits** the DB drop
+  even on panic. Use for exercising `db/models/*` SQL directly.
+- **Endpoint tests** — `TestClient` drives the real axol server (booted once per `cargo test`
+  run against a `vw_integration` DB recreated each run). `TestClient::register_and_login()`
+  yields a fresh authenticated user; the API scopes data per user, so tests self-isolate and
+  run in parallel.
+
+`TestClient` request helpers: `get`/`post`/`put`/`delete`/`post_form`/`post_multipart`
+(attachments, file sends)/`delete_json` (bulk-delete bodies). Responses expose `assert_ok()`,
+`assert_status(u16)`, and `json()`. Fixtures build the boilerplate and return ids/JSON:
+`create_folder`, `create_login_cipher`, `create_org`, `create_org_collection`,
+`create_org_cipher`, `add_org_member`(`_scoped`), `add_emergency_contact`, `enable_totp`, plus
+the `totp_code(secret, step)` free fn. The master-password hash is an **opaque credential**
+(the server re-hashes it) and all encrypted fields are opaque strings, so no client-side
+Bitwarden crypto is needed. Mail is disabled in the test config, so org/emergency invites to
+existing users auto-accept and only need confirming.
+
+Gotchas: this crate is **edition 2024** — `gen` is a reserved word, don't use it as an
+identifier. Some wire-format behavior is still only verifiable against real Bitwarden clients,
+but new work should add harness tests where it can. Full walkthrough and examples:
+[`testing/README.md`](testing/README.md).
 
 ### Docker / release
 

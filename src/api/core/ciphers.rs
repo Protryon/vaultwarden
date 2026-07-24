@@ -199,12 +199,22 @@ pub struct CipherData {
     pub notes: Option<String>,
     fields: Option<Vec<Value>>,
 
+    // Per-cipher encryption key ("cipher key encryption"), wrapped under the
+    // user/org key. Must be persisted and echoed back or clients (notably the
+    // native mobile apps) cannot decrypt the item and will crash.
+    key: Option<String>,
+
     // Only one of these should exist, depending on type
     login: Option<Value>,
     secure_note: Option<Value>,
     card: Option<Value>,
     identity: Option<Value>,
     ssh_key: Option<Value>,
+
+    // Newer Bitwarden clients may send the whole cipher body as a single
+    // serialized-JSON string here instead of the per-type structured objects
+    // above. Consulted only as a fallback when the structured field is absent.
+    data: Option<Value>,
 
     favorite: Option<bool>,
     reprompt: Option<RepromptType>,
@@ -435,19 +445,34 @@ pub async fn update_cipher_from_data(
         CipherType::Unknown => err!("Invalid type"),
     };
 
-    let type_data = match type_data_opt {
-        Some(mut data) => {
-            // Remove the 'Response' key from the base object.
-            data.as_object_mut().unwrap().remove("response");
-            // Remove the 'Response' key from every Uri.
-            if data["uris"].is_array() {
-                data["uris"] = Value::Array(_clean_cipher_data(data["uris"].as_array().unwrap().clone()));
-            }
-            data
-        }
-        None => err!("Data missing"),
+    // The cipher body is normally sent as a structured per-type object, but
+    // newer clients may instead send it as a serialized-JSON string in `data`.
+    // Prefer the structured field (matching how existing clients behave) and
+    // fall back to `data` only when the structured field is missing.
+    let mut type_data = match type_data_opt {
+        Some(type_data) => type_data,
+        None => match data.data {
+            Some(Value::String(raw)) => match serde_json::from_str(&raw) {
+                Ok(parsed) => parsed,
+                Err(_) => err!("Invalid cipher data"),
+            },
+            Some(raw @ Value::Object(_)) => raw,
+            Some(_) => err!("Invalid cipher data"),
+            None => err!("Data missing"),
+        },
     };
 
+    if !type_data.is_object() {
+        err!("Invalid cipher data");
+    }
+    // Remove the 'Response' key from the base object.
+    type_data.as_object_mut().unwrap().remove("response");
+    // Remove the 'Response' key from every Uri.
+    if type_data["uris"].is_array() {
+        type_data["uris"] = Value::Array(_clean_cipher_data(type_data["uris"].as_array().unwrap().clone()));
+    }
+
+    cipher.key = data.key;
     cipher.name = data.name;
     cipher.notes = data.notes;
     cipher.fields = data.fields.map(|f| _clean_cipher_data(f));
@@ -1366,6 +1391,86 @@ mod tests {
         client.delete(&format!("/api/ciphers/{id}")).await.assert_ok();
         let after = client.get(&format!("/api/ciphers/{id}")).await;
         assert!(after.status >= 400, "expected deleted cipher to be gone, got {}: {}", after.status, after.body);
+    }
+
+    #[tokio::test]
+    async fn cipher_key_round_trips() {
+        let client = TestClient::register_and_login().await;
+
+        // Create with a per-cipher key ("cipher key encryption").
+        let created = client
+            .post(
+                "/api/ciphers",
+                json!({
+                    "type": 1,
+                    "name": "2.keyed|mac",
+                    "key": "2.cipherkey|mac",
+                    "login": { "username": "2.user|mac", "password": "2.pass|mac" },
+                    "lastKnownRevisionDate": null,
+                }),
+            )
+            .await;
+        created.assert_ok();
+        let created = created.json();
+        assert_eq!(created["key"], "2.cipherkey|mac", "key must be echoed on create");
+        let id = created["id"].as_str().expect("cipher id").to_string();
+
+        // Get by id preserves the key.
+        let got = client.get(&format!("/api/ciphers/{id}")).await;
+        got.assert_ok();
+        assert_eq!(got.json()["key"], "2.cipherkey|mac", "key must persist on get");
+
+        // Update to a rotated key survives.
+        let updated = client
+            .put(
+                &format!("/api/ciphers/{id}"),
+                json!({
+                    "type": 1,
+                    "name": "2.keyed|mac",
+                    "key": "2.rotatedkey|mac",
+                    "login": { "username": "2.user|mac", "password": "2.pass|mac" },
+                    "lastKnownRevisionDate": null,
+                }),
+            )
+            .await;
+        updated.assert_ok();
+        assert_eq!(updated.json()["key"], "2.rotatedkey|mac", "key must update");
+
+        // Sync surfaces the stored key too.
+        let sync = client.get("/api/sync").await;
+        sync.assert_ok();
+        let sync = sync.json();
+        let cipher = sync["ciphers"].as_array().unwrap().iter().find(|c| c["id"] == id).expect("cipher in sync");
+        assert_eq!(cipher["key"], "2.rotatedkey|mac", "key must appear in sync");
+    }
+
+    #[tokio::test]
+    async fn create_cipher_with_raw_data_string() {
+        let client = TestClient::register_and_login().await;
+
+        // Newer-client shape: no structured `login`, body carried as a
+        // serialized-JSON string in `data`.
+        let raw = json!({ "username": "2.user|mac", "password": "2.pass|mac", "uris": [] }).to_string();
+        let created = client
+            .post(
+                "/api/ciphers",
+                json!({
+                    "type": 1,
+                    "name": "2.raw|mac",
+                    "data": raw,
+                    "lastKnownRevisionDate": null,
+                }),
+            )
+            .await;
+        created.assert_ok();
+        let created = created.json();
+        assert_eq!(created["name"], "2.raw|mac");
+        // The body should be surfaced under the per-type `login` key.
+        assert_eq!(created["login"]["username"], "2.user|mac");
+
+        // Missing both structured and raw data is still an error.
+        let bad = client.post("/api/ciphers", json!({ "type": 1, "name": "2.empty|mac", "lastKnownRevisionDate": null })).await;
+        assert!(bad.status >= 400, "expected error when no cipher body provided, got {}", bad.status);
     }
 
     #[tokio::test]

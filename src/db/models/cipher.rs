@@ -34,6 +34,11 @@ pub struct Cipher {
     pub password_history: Option<Vec<Value>>,
     pub deleted_at: Option<DateTime<Utc>>,
     pub reprompt: Option<RepromptType>,
+
+    // Per-cipher encryption key ("cipher key encryption"), wrapped under the
+    // user/org key. Clients encrypt the item's fields with this key, so it must
+    // be stored and returned verbatim or the client cannot decrypt the cipher.
+    pub key: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -83,6 +88,7 @@ impl<'a> From<RowSlice<'a>> for Cipher {
             password_history: row.get::<Option<Json<Vec<LowerCase<_>>>>>(10).map(|x| x.0.into_iter().map(|x| x.data).collect()),
             deleted_at: row.get(11),
             reprompt: reprompt.and_then(RepromptType::from_repr),
+            key: row.get(13),
         }
     }
 }
@@ -110,6 +116,7 @@ impl Cipher {
             password_history: None,
             deleted_at: None,
             reprompt: None,
+            key: None,
         }
     }
 
@@ -362,7 +369,7 @@ impl FullCipher {
             "deletedDate": self.cipher.deleted_at.map_or(Value::Null, |d| Value::String(format_date(&d))),
             "reprompt": self.cipher.reprompt.unwrap_or(RepromptType::None) as i32,
             "organizationId": self.cipher.organization_uuid,
-            "key": null,
+            "key": self.cipher.key,
             "attachments": attachments_json,
             // We have UseTotp set to true by default within the Organization model.
             // This variable together with UsersGetPremium is used to show or hide the TOTP counter.
@@ -452,7 +459,7 @@ impl Cipher {
     pub async fn save(&mut self, conn: &Conn) -> Result<()> {
         self.updated_at = Utc::now();
 
-        conn.execute(r"INSERT INTO ciphers (uuid, created_at, updated_at, user_uuid, organization_uuid, atype, name, notes, fields, data, password_history, deleted_at, reprompt) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) ON CONFLICT (uuid) DO UPDATE
+        conn.execute(r#"INSERT INTO ciphers (uuid, created_at, updated_at, user_uuid, organization_uuid, atype, name, notes, fields, data, password_history, deleted_at, reprompt, "key") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT (uuid) DO UPDATE
         SET
         created_at = EXCLUDED.created_at,
         updated_at = EXCLUDED.updated_at,
@@ -465,7 +472,8 @@ impl Cipher {
         data = EXCLUDED.data,
         password_history = EXCLUDED.password_history,
         deleted_at = EXCLUDED.deleted_at,
-        reprompt = EXCLUDED.reprompt", &[
+        reprompt = EXCLUDED.reprompt,
+        "key" = EXCLUDED."key""#, &[
             &self.uuid,
             &self.created_at,
             &self.updated_at,
@@ -479,6 +487,7 @@ impl Cipher {
             &self.password_history.clone().map(Value::Array),
             &self.deleted_at,
             &self.reprompt.map(|x| x as i32),
+            &self.key,
         ]).await.ise()?;
         Self::flag_revision(conn, self.uuid).await.ise()?;
         Ok(())

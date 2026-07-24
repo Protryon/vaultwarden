@@ -85,5 +85,27 @@ mod tests {
 
 The client sends the master password hash as an opaque credential (the server
 re-hashes it), so no client-side Bitwarden crypto is needed. `TestClient`
-exposes `get`/`post`/`put`/`delete`/`post_form`; responses have `assert_ok`,
-`assert_status`, and `json` helpers.
+exposes `get`/`post`/`put`/`delete`/`post_form`/`post_multipart` (attachments and
+file sends)/`delete_json` (bulk-delete endpoints that take a body on `DELETE`);
+responses have `assert_ok`, `assert_status`, and `json` helpers.
+
+Fixtures build common boilerplate and return the created ids/JSON:
+`create_folder`, `create_login_cipher`, `create_org`, `create_org_collection`,
+`create_org_cipher`, `add_org_member` / `add_org_member_scoped`,
+`add_emergency_contact`, and `enable_totp` (plus the `totp_code(secret, step)`
+free function for driving TOTP logins). Mail is disabled in the test config, so
+org and emergency-access invites to existing users auto-accept and only need
+confirming.
+
+## Debugging failures
+
+Endpoint tests only see the HTTP status and body; a `500` comes back with an
+empty body. Set `VW_TEST_LOG=1` to log the server side (including the failing
+SQL) to stderr:
+
+```bash
+VW_TEST_LOG=1 cargo test <name> -- --nocapture
+```
+
+Note this crate is edition 2024, so `gen` is a reserved word — don't use it as a
+variable name in tests.
