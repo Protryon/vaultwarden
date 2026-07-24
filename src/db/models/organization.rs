@@ -429,6 +429,7 @@ impl UserOrganization {
                         "id": cu.collection_uuid,
                         "readOnly": cu.read_only,
                         "hidePasswords": cu.hide_passwords,
+                        "manage": cu.manage,
                     })
                 })
                 .collect()
@@ -459,6 +460,7 @@ impl UserOrganization {
             "id": self.user_uuid,
             "readOnly": col_user.read_only,
             "hidePasswords": col_user.hide_passwords,
+            "manage": col_user.manage,
         })
     }
 
@@ -475,6 +477,7 @@ impl UserOrganization {
                         "id": c.collection_uuid,
                         "readOnly": c.read_only,
                         "hidePasswords": c.hide_passwords,
+                        "manage": c.manage,
                     })
                 })
                 .collect()

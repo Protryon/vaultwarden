@@ -37,6 +37,7 @@ pub struct CollectionGroup {
     pub group_uuid: Uuid,
     pub read_only: bool,
     pub hide_passwords: bool,
+    pub manage: bool,
 }
 
 impl From<Row> for CollectionGroup {
@@ -46,6 +47,7 @@ impl From<Row> for CollectionGroup {
             group_uuid: row.get(1),
             read_only: row.get(2),
             hide_passwords: row.get(3),
+            manage: row.get(4),
         }
     }
 }
@@ -108,7 +110,8 @@ impl Group {
                 json!({
                     "id": entry.collection_uuid,
                     "readOnly": entry.read_only,
-                    "hidePasswords": entry.hide_passwords
+                    "hidePasswords": entry.hide_passwords,
+                    "manage": entry.manage
                 })
             })
             .collect();
@@ -141,12 +144,13 @@ impl Group {
 }
 
 impl CollectionGroup {
-    pub fn new(collection_uuid: Uuid, group_uuid: Uuid, read_only: bool, hide_passwords: bool) -> Self {
+    pub fn new(collection_uuid: Uuid, group_uuid: Uuid, read_only: bool, hide_passwords: bool, manage: bool) -> Self {
         Self {
             collection_uuid,
             group_uuid,
             read_only,
             hide_passwords,
+            manage,
         }
     }
 }
@@ -227,14 +231,16 @@ impl Group {
 
 impl CollectionGroup {
     pub async fn save(&self, conn: &Conn) -> Result<()> {
-        conn.execute(r"INSERT INTO collection_groups (collection_uuid, group_uuid, read_only, hide_passwords) VALUES ($1, $2, $3, $4) ON CONFLICT (collection_uuid, group_uuid) DO UPDATE
+        conn.execute(r"INSERT INTO collection_groups (collection_uuid, group_uuid, read_only, hide_passwords, manage) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (collection_uuid, group_uuid) DO UPDATE
         SET
         read_only = EXCLUDED.read_only,
-        hide_passwords = EXCLUDED.hide_passwords", &[
+        hide_passwords = EXCLUDED.hide_passwords,
+        manage = EXCLUDED.manage", &[
             &self.collection_uuid,
             &self.group_uuid,
             &self.read_only,
             &self.hide_passwords,
+            &self.manage,
         ]).await.ise()?;
         Group::flag_revision(conn, self.group_uuid).await.ise()?;
         Ok(())

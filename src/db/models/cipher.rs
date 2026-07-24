@@ -167,6 +167,9 @@ impl Cipher {
 pub struct AccessRestrictions {
     pub read_only: bool,
     pub hide_passwords: bool,
+    // Only meaningful for collection access (from user_collection_auth); cipher-level access
+    // (user_cipher_auth) leaves this false.
+    pub manage: bool,
 }
 
 impl FullCipher {
@@ -188,6 +191,7 @@ impl FullCipher {
                     access: AccessRestrictions {
                         read_only: row.get(0),
                         hide_passwords: row.get(1),
+                        manage: false,
                     },
                     collection_uuids,
                     folder_uuid: row.get(2),
@@ -581,6 +585,7 @@ impl Cipher {
             .map(|x| AccessRestrictions {
                 read_only: x.get(0),
                 hide_passwords: x.get(1),
+                manage: false,
             }))
     }
 

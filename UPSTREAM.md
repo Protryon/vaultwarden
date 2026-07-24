@@ -48,7 +48,7 @@ snapshot (2026-07-24) and drift as files change — re-anchor before acting.
    **Duo Universal Prompt** (OIDC `AuthUrl`), and the **2FA `userVerificationToken`** setup
    flow. dani has already ported the first three.
 
-3. **Flexible-collections `manage` permission** is dropped end-to-end (no DB column, no
+3. **Flexible-collections `manage` permission** — ✅ done 2026-07-24 (migration V5; see O1/O5). Was dropped end-to-end (no DB column, no
    request parsing, no response emission). dani implements it fully — this is the single most
    pervasive org-side gap.
 
@@ -164,7 +164,7 @@ These are self-contained defects — typos or wrong literals — independent of 
 
 ## Organizations + Public
 
-- **[HIGH] O1 — Collection `manage` permission dropped end-to-end.** Every collection-access
+- **[HIGH] ✅ O1 — Collection `manage` permission dropped end-to-end.** *(fixed 2026-07-24: migration V5 adds a `manage` column to `collection_users`/`collection_groups`; `user_collection_auth` now aggregates it (`bool_or`, owners/admins manage all); `manage` is threaded through `AccessRestrictions`, `CollectionUser`/`CollectionGroup`, the three request DTOs (`SelectionReadOnly`/`CollectionData`/`NewCollectionObjectData`), every save path, and every collection-access response. Test: `collection_manage_permission_round_trips`.)* Every collection-access
   request DTO accepts only `id/readOnly/hidePasswords`; `manage` is deserialized-away, never
   persisted (no DB column), never emitted. Affects invite/edit-user, collection & group
   create/update, collection-users, details. The web-vault "can manage" toggle no-ops. Ours:
@@ -193,7 +193,7 @@ These are self-contained defects — typos or wrong literals — independent of 
   `unmanaged` never emitted. Ours: [collection.rs:84](src/db/models/collection.rs#L84),
   [organizations.rs:346](src/api/core/organizations.rs#L346). **dani: partial** (real
   `externalId` + `manage`; no `type`).
-- **[MED] O5 — Collection-users list omits `manage`.** `GET .../collections/:cid/users`. Ours:
+- **[MED] ✅ O5 — Collection-users list omits `manage`.** *(fixed 2026-07-24 with O1.)* `GET .../collections/:cid/users`. Ours:
   [organization.rs:427](src/db/models/organization.rs#L427). **dani: no**.
 - **[MED] O6 — `GET /organizations/:id/keys` discriminator typo `pbject`.** See B3.
 - **[LOW] O7 — Public/directory-connector API largely unimplemented.** Only `ldap_import`

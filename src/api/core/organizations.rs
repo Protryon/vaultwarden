@@ -150,6 +150,8 @@ struct NewCollectionObjectData {
     hide_passwords: bool,
     id: Uuid,
     read_only: bool,
+    #[serde(default)]
+    manage: bool,
 }
 
 #[derive(Deserialize)]
@@ -381,7 +383,7 @@ async fn post_organization_collections(
     log_event(EventType::CollectionCreated, collection.uuid, org_uuid, headers.user.uuid, headers.device.atype, Utc::now(), headers.ip, &conn).await?;
 
     for group in data.groups {
-        CollectionGroup::new(collection.uuid, group.id, group.read_only, group.hide_passwords).save(&conn).await?;
+        CollectionGroup::new(collection.uuid, group.id, group.read_only, group.hide_passwords, group.manage).save(&conn).await?;
     }
 
     //TODO: N+1 query
@@ -400,6 +402,7 @@ async fn post_organization_collections(
             collection_uuid: collection.uuid,
             read_only: user.read_only,
             hide_passwords: user.hide_passwords,
+            manage: user.manage,
         }
         .save(&conn)
         .await?;
@@ -458,7 +461,7 @@ async fn post_organization_collection_update(
     CollectionGroup::delete_all_by_collection(&conn, col_id).await?;
 
     for group in data.groups {
-        CollectionGroup::new(col_id, group.id, group.read_only, group.hide_passwords).save(&conn).await?;
+        CollectionGroup::new(col_id, group.id, group.read_only, group.hide_passwords, group.manage).save(&conn).await?;
     }
 
     CollectionUser::delete_all_by_collection(&conn, col_id).await?;
@@ -479,6 +482,7 @@ async fn post_organization_collection_update(
             collection_uuid: collection.uuid,
             read_only: user.read_only,
             hide_passwords: user.hide_passwords,
+            manage: user.manage,
         }
         .save(&conn)
         .await?;
@@ -710,6 +714,7 @@ async fn put_collection_users(
             collection_uuid: col_id,
             read_only: d.read_only,
             hide_passwords: d.hide_passwords,
+            manage: d.manage,
         }
         .save(&conn)
         .await?;
@@ -796,6 +801,8 @@ struct CollectionData {
     id: Uuid,
     read_only: bool,
     hide_passwords: bool,
+    #[serde(default)]
+    manage: bool,
 }
 
 #[serde_as]
@@ -869,6 +876,7 @@ async fn send_invite(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdmi
                             collection_uuid: collection.uuid,
                             read_only: col.read_only,
                             hide_passwords: col.hide_passwords,
+                            manage: col.manage,
                         }
                         .save(&conn)
                         .await?;
@@ -1276,6 +1284,7 @@ async fn edit_user(
                         collection_uuid: collection.uuid,
                         read_only: col.read_only,
                         hide_passwords: col.hide_passwords,
+                        manage: col.manage,
                     }
                     .save(&conn)
                     .await?;
@@ -2055,11 +2064,13 @@ struct SelectionReadOnly {
     id: Uuid,
     read_only: bool,
     hide_passwords: bool,
+    #[serde(default)]
+    manage: bool,
 }
 
 impl SelectionReadOnly {
     pub fn to_collection_group(&self, group_uuid: Uuid) -> CollectionGroup {
-        CollectionGroup::new(self.id, group_uuid, self.read_only, self.hide_passwords)
+        CollectionGroup::new(self.id, group_uuid, self.read_only, self.hide_passwords, self.manage)
     }
 
     pub fn to_collection_group_details_read_only(collection_group: &CollectionGroup) -> SelectionReadOnly {
@@ -2067,6 +2078,7 @@ impl SelectionReadOnly {
             id: collection_group.group_uuid,
             read_only: collection_group.read_only,
             hide_passwords: collection_group.hide_passwords,
+            manage: collection_group.manage,
         }
     }
 
@@ -2075,6 +2087,7 @@ impl SelectionReadOnly {
             id: collection_user.user_uuid,
             read_only: collection_user.read_only,
             hide_passwords: collection_user.hide_passwords,
+            manage: collection_user.manage,
         }
     }
 
@@ -2860,6 +2873,49 @@ mod tests {
         });
         let resp = member.put(&format!("/api/ciphers/{cipher_id}"), update).await;
         assert!(resp.status >= 400, "read-only member should not edit cipher, got {}: {}", resp.status, resp.body);
+    }
+
+    // Flexible-collections `manage` must persist end-to-end: through the request DTO, the
+    // collection_users column, the user_collection_auth view, and every response.
+    #[tokio::test]
+    async fn collection_manage_permission_round_trips() {
+        let owner = TestClient::register_and_login().await;
+        let member = TestClient::register_and_login().await;
+        let org_id = owner.create_org("ManageOrg").await["id"].as_str().unwrap().to_string();
+        let col = owner.create_org_collection(&org_id, "2.managed|mac").await;
+        let member_id = owner.add_org_member_scoped(&org_id, &member, &[(col.as_str(), false, false)]).await;
+
+        // Grant manage via the collection-users endpoint.
+        owner
+            .put(
+                &format!("/api/organizations/{org_id}/collections/{col}/users"),
+                json!([{ "id": member_id, "readOnly": false, "hidePasswords": false, "manage": true }]),
+            )
+            .await
+            .assert_ok();
+
+        // Owner's view: the collection's user list reports manage.
+        let users = owner.get(&format!("/api/organizations/{org_id}/collections/{col}/users")).await;
+        users.assert_ok();
+        let entry = users.json().as_array().unwrap().iter().find(|u| u["id"] == member_id.to_string()).cloned().expect("member listed");
+        assert_eq!(entry["manage"], true, "collection user list should report manage: {}", users.body);
+
+        // Member's view: their own collection details carry manage (via user_collection_auth).
+        let sync = member.get("/api/sync").await;
+        let mine = sync.json()["collections"].as_array().unwrap().iter().find(|c| c["id"] == col).cloned().expect("member sees collection");
+        assert_eq!(mine["manage"], true, "member's collection details should carry manage: {}", sync.body);
+
+        // Revoking manage round-trips back to false.
+        owner
+            .put(
+                &format!("/api/organizations/{org_id}/collections/{col}/users"),
+                json!([{ "id": member_id, "readOnly": false, "hidePasswords": false, "manage": false }]),
+            )
+            .await
+            .assert_ok();
+        let sync2 = member.get("/api/sync").await;
+        let mine2 = sync2.json()["collections"].as_array().unwrap().iter().find(|c| c["id"] == col).cloned().expect("member sees collection");
+        assert_eq!(mine2["manage"], false, "manage should be revocable: {}", sync2.body);
     }
 
     #[tokio::test]

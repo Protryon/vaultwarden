@@ -27,6 +27,7 @@ pub struct CollectionUser {
     pub collection_uuid: Uuid,
     pub read_only: bool,
     pub hide_passwords: bool,
+    pub manage: bool,
 }
 
 #[derive(Debug)]
@@ -58,6 +59,7 @@ impl From<Row> for CollectionUser {
             collection_uuid: row.get(1),
             read_only: row.get(2),
             hide_passwords: row.get(3),
+            manage: row.get(4),
         }
     }
 }
@@ -98,6 +100,7 @@ impl CollectionWithAccess {
         json_object["object"] = json!("collectionDetails");
         json_object["readOnly"] = json!(self.access.read_only);
         json_object["hidePasswords"] = json!(self.access.hide_passwords);
+        json_object["manage"] = json!(self.access.manage);
         json_object
     }
 
@@ -105,7 +108,7 @@ impl CollectionWithAccess {
         Ok(conn
             .query(
                 r"
-        SELECT uca.read_only, uca.hide_passwords, co.*
+        SELECT uca.read_only, uca.hide_passwords, uca.manage, co.*
         FROM collections co
         INNER JOIN user_collection_auth uca ON uca.collection_uuid = co.uuid AND uca.user_uuid = $1
         ",
@@ -115,12 +118,13 @@ impl CollectionWithAccess {
             .ise()?
             .into_iter()
             .map(|row| {
-                let collection: Collection = RowSlice::new(&row).slice_from(2..).into();
+                let collection: Collection = RowSlice::new(&row).slice_from(3..).into();
                 CollectionWithAccess {
                     collection,
                     access: AccessRestrictions {
                         read_only: row.get(0),
                         hide_passwords: row.get(1),
+                        manage: row.get(2),
                     },
                 }
             })
@@ -286,14 +290,16 @@ impl CollectionUser {
     }
 
     pub async fn save(&self, conn: &Conn) -> Result<()> {
-        conn.execute(r"INSERT INTO collection_users (user_uuid, collection_uuid, read_only, hide_passwords) VALUES ($1, $2, $3, $4) ON CONFLICT (user_uuid, collection_uuid) DO UPDATE
+        conn.execute(r"INSERT INTO collection_users (user_uuid, collection_uuid, read_only, hide_passwords, manage) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (user_uuid, collection_uuid) DO UPDATE
         SET
         read_only = EXCLUDED.read_only,
-        hide_passwords = EXCLUDED.hide_passwords", &[
+        hide_passwords = EXCLUDED.hide_passwords,
+        manage = EXCLUDED.manage", &[
             &self.user_uuid,
             &self.collection_uuid,
             &self.read_only,
             &self.hide_passwords,
+            &self.manage,
         ]).await.ise()?;
         User::flag_revision_for(conn, self.user_uuid).await.ise()?;
         Ok(())
