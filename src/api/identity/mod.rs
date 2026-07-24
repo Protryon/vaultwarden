@@ -34,7 +34,7 @@ use crate::{
     util,
 };
 
-use super::core::accounts::{prelogin, register};
+use super::core::accounts::{prelogin, register, register_send_verification_email};
 
 //todo: make this not panicky
 
@@ -43,6 +43,8 @@ pub fn route() -> Router {
         .post("/connect/token", login)
         .post("/accounts/prelogin", prelogin)
         .post("/accounts/register", register)
+        .post("/accounts/register/finish", register)
+        .post("/accounts/register/send-verification-email", register_send_verification_email)
         .get("/account/prevalidate", prevalidate)
         .get("/connect/oidc-signin", oidc_signin)
         .get("/connect/authorize", authorize)

@@ -22,6 +22,8 @@ use crate::{
 pub fn route(router: Router) -> Router {
     router
         .post("/accounts/register", register)
+        .post("/accounts/register/finish", register)
+        .post("/accounts/register/send-verification-email", register_send_verification_email)
         .post("/accounts/set-password", post_set_password)
         .get("/accounts/profile", profile)
         .put("/accounts/profile", post_profile)
@@ -214,6 +216,8 @@ pub struct RegisterData {
     token: Option<String>,
     #[allow(dead_code)]
     organization_user_id: Option<String>,
+    // Sent by the two-step (email-verified) registration flow via /accounts/register/finish.
+    email_verification_token: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -258,8 +262,24 @@ fn enforce_password_hint_setting(password_hint: &Option<String>) -> Result<()> {
 }
 
 pub async fn register(conn: AutoTxn, data: Json<RegisterData>) -> Result<Json<Value>> {
-    let data: RegisterData = data.0;
+    let mut data: RegisterData = data.0;
     let email = data.email.to_lowercase();
+
+    // The two-step registration flow (/accounts/register/finish) carries an email-verification
+    // token minted by /accounts/register/send-verification-email. Validate it and, if it was
+    // actually delivered by email, treat the address as verified.
+    let mut email_verified = false;
+    if let Some(token) = data.email_verification_token.take() {
+        let claims = crate::auth::decode_register_verify(&token)?;
+        if claims.sub.to_lowercase() != email {
+            err!("Email verification token does not match email");
+        }
+        // The name isn't resent on finish, so recover it from the token.
+        if data.name.is_none() {
+            data.name = claims.name;
+        }
+        email_verified = claims.verified;
+    }
 
     // Check if the length of the username exceeds 50 characters (Same is Upstream Bitwarden)
     // This also prevents issues with very long usernames causing to large JWT's. See #2419
@@ -343,6 +363,11 @@ pub async fn register(conn: AutoTxn, data: Json<RegisterData>) -> Result<Json<Va
         user.public_key = Some(keys.public_key);
     }
 
+    // A verified email-verification token counts as confirming the address.
+    if email_verified {
+        user.verified_at = Some(Utc::now());
+    }
+
     if CONFIG.mail_enabled() {
         if CONFIG.settings.signups_verify && !verified_by_invite {
             if let Err(e) = mail::send_welcome_must_verify(&user.email, user.uuid).await {
@@ -361,6 +386,39 @@ pub async fn register(conn: AutoTxn, data: Json<RegisterData>) -> Result<Json<Va
       "object": "register",
       "captchaBypassToken": "",
     })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterVerificationData {
+    email: String,
+    name: Option<String>,
+}
+
+// First step of the two-step registration flow: mint an email-verification token. When mail
+// is enabled and signups require verification, the token is emailed and we return 204;
+// otherwise (the common self-host case) we hand the token straight back so the client can
+// proceed to /accounts/register/finish. Ref: Bitwarden AccountsController.PostRegisterSendEmail.
+pub async fn register_send_verification_email(conn: AutoTxn, data: Json<RegisterVerificationData>) -> Result<Response> {
+    let data: RegisterVerificationData = data.0;
+    let email = data.email.to_lowercase();
+
+    // Registration can only continue if signups are allowed or a pending invitation exists.
+    if !(CONFIG.is_signup_allowed(&email) || (!CONFIG.mail_enabled() && Invitation::find_by_email(&conn, &email).await?.is_some())) {
+        err!("Registration not allowed or user already exists")
+    }
+
+    let should_send_mail = CONFIG.mail_enabled() && CONFIG.settings.signups_verify;
+    let token = crate::auth::encode_jwt(&crate::auth::generate_register_verify_claims(email.clone(), data.name.clone(), should_send_mail));
+
+    if should_send_mail {
+        mail::send_register_verify_email(&email, &token).await?;
+        // 204: the token was delivered by email, not in the response body.
+        (axol::http::StatusCode::NoContent, ()).into_response()
+    } else {
+        // The client uses this token directly as `emailVerificationToken` on register/finish.
+        Json(json!(token)).into_response()
+    }
 }
 
 pub async fn post_set_password(headers: Headers, data: Json<SetPasswordData>) -> Result<Json<Value>> {
@@ -1637,6 +1695,79 @@ mod tests {
         // A denied request is removed.
         let after = client.get(&format!("/api/auth-requests/{req_id}")).await;
         assert!(after.status >= 400, "denied auth request should be gone, got {}: {}", after.status, after.body);
+    }
+
+    // Two-step (email-verified) registration: send-verification-email hands back a token when
+    // mail is disabled, and register/finish consumes it to create a working account.
+    #[tokio::test]
+    async fn two_step_registration_finish() {
+        let client = TestClient::new().await;
+        let email = client.email.clone();
+
+        // Step 1: request a verification token (mail disabled -> returned in the body).
+        let verify = client.post("/identity/accounts/register/send-verification-email", json!({ "email": email, "name": "Two Step" })).await;
+        verify.assert_ok();
+        let token = verify.json().as_str().expect("token returned as a JSON string").to_string();
+        assert!(!token.is_empty(), "verification token should not be empty: {}", verify.body);
+
+        // Step 2: finish registration with the token (name is recovered from the token).
+        let finish = client
+            .post(
+                "/identity/accounts/register/finish",
+                json!({
+                    "email": email,
+                    "emailVerificationToken": token,
+                    "kdf": 0,
+                    "kdfIterations": 600_000,
+                    "key": client.akey,
+                    "keys": { "encryptedPrivateKey": client.private_key, "publicKey": client.public_key },
+                    "masterPasswordHash": client.master_password_hash,
+                }),
+            )
+            .await;
+        finish.assert_ok();
+
+        // Step 3: the account works.
+        let form = [
+            ("grant_type", "password"),
+            ("username", email.as_str()),
+            ("password", client.master_password_hash.as_str()),
+            ("scope", "api offline_access"),
+            ("client_id", "web"),
+            ("device_identifier", client.device_id.as_str()),
+            ("device_name", "test-harness"),
+            ("device_type", "14"),
+        ];
+        let login = client.post_form("/identity/connect/token", &form).await;
+        login.assert_ok();
+        assert!(login.json()["access_token"].as_str().is_some(), "should log in after two-step registration: {}", login.body);
+    }
+
+    // A finish token whose email doesn't match the registration email is rejected.
+    #[tokio::test]
+    async fn two_step_registration_rejects_mismatched_token() {
+        let alice = TestClient::new().await;
+        let verify = alice.post("/identity/accounts/register/send-verification-email", json!({ "email": alice.email, "name": "Alice" })).await;
+        verify.assert_ok();
+        let token = verify.json().as_str().unwrap().to_string();
+
+        // Reuse Alice's token to try to register a different email.
+        let bob = TestClient::new().await;
+        let finish = bob
+            .post(
+                "/identity/accounts/register/finish",
+                json!({
+                    "email": bob.email,
+                    "emailVerificationToken": token,
+                    "kdf": 0,
+                    "kdfIterations": 600_000,
+                    "key": bob.akey,
+                    "keys": { "encryptedPrivateKey": bob.private_key, "publicKey": bob.public_key },
+                    "masterPasswordHash": bob.master_password_hash,
+                }),
+            )
+            .await;
+        assert!(finish.status >= 400, "a token for a different email must be rejected, got {}: {}", finish.status, finish.body);
     }
 
     // The v2 key-rotation endpoint re-keys the user's key material and vault items, then the

@@ -44,7 +44,7 @@ snapshot (2026-07-24) and drift as files change — re-anchor before acting.
 
 2. **"v2 modernization" gaps.** Bitwarden reworked several flows into new routes + bodies;
    the fork still carries the pre-v2 shape. Biggest ones: **key rotation** (`key-management/rotate-user-account-keys`, ✅ done),
-   **two-step registration** (`register/finish`),
+   **two-step registration** (`register/finish`, ✅ done),
    **Duo Universal Prompt** (OIDC `AuthUrl`), and the **2FA `userVerificationToken`** setup
    flow. dani has already ported the first three.
 
@@ -121,7 +121,7 @@ These are self-contained defects — typos or wrong literals — independent of 
   `accountKeys` / `accountData` / `oldMasterKeyAuthenticationHash` (and rotates Sends, which we
   never do). Current web-vault → 404/deserialize failure; rotation broken. Ours:
   [accounts.rs:610](src/api/core/accounts.rs#L610). **dani: yes** (ported route + v2 body).
-- **[MED] A2 — Two-step registration missing.** No `register/finish` or
+- **[MED] ✅ A2 — Two-step registration missing.** *(fixed 2026-07-24: added `POST /accounts/register/send-verification-email` (returns a register-verify JWT when mail is disabled, else emails it and returns 204) and `POST /accounts/register/finish` (the existing `register` handler now validates an `emailVerificationToken`, recovering the name from it and marking the email verified). New `RegisterVerifyJwtClaims` + `send_register_verify_email` mail template ported from dani. The org/emergency/provider invite-token variants of register/finish are not ported — our `register` already covers org-invite and emergency via `token`/Invitation. Tests: `two_step_registration_finish`, `two_step_registration_rejects_mismatched_token`.)* No `register/finish` or
   `register/send-verification-email`; only the legacy single-shot `/accounts/register`. Email-
   verified signup (and invite-token variants) can't complete. Ours:
   [accounts.rs:200](src/api/core/accounts.rs#L200). **dani: yes**.

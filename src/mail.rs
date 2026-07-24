@@ -150,6 +150,27 @@ pub async fn send_verify_email(address: &str, uuid: Uuid) -> Result<()> {
     send_email(address, &subject, body_html, body_text).await
 }
 
+pub async fn send_register_verify_email(email: &str, token: &str) -> Result<()> {
+    let mut query = url::Url::parse("https://query.builder").unwrap();
+    query.query_pairs_mut().append_pair("email", email).append_pair("token", token);
+    let query_string = match query.query() {
+        Some(q) => q,
+        None => err!("Failed to build verify URL query parameters"),
+    };
+
+    let (subject, body_html, body_text) = get_text(
+        "email/register_verify_email",
+        json!({
+            // Anchor `#` must precede the query so the SPA router picks it up.
+            "url": format!("{}/#/finish-signup/?{query_string}", &*PUBLIC_NO_TRAILING_SLASH),
+            "img_src": &*SMTP_IMAGE_SRC,
+            "email": email,
+        }),
+    )?;
+
+    send_email(email, &subject, body_html, body_text).await
+}
+
 pub async fn send_welcome(address: &str) -> Result<()> {
     let (subject, body_html, body_text) = get_text(
         "email/welcome",

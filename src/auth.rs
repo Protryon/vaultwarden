@@ -25,6 +25,7 @@ static JWT_VERIFYEMAIL_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|verifyema
 static JWT_ADMIN_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|admin", CONFIG.settings.public));
 static JWT_SEND_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|send", CONFIG.settings.public));
 static JWT_ORG_API_KEY_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|api.organization", CONFIG.settings.public));
+static JWT_REGISTER_VERIFY_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|registerverify", CONFIG.settings.public));
 
 static PRIVATE_RSA_KEY: Lazy<EncodingKey> = Lazy::new(|| {
     let key = std::fs::read(CONFIG.private_rsa_key()).unwrap_or_else(|e| panic!("Error loading private RSA Key. \n{e}"));
@@ -98,6 +99,10 @@ pub fn decode_api_org(token: &str) -> Result<OrgApiKeyLoginJwtClaims> {
     decode_jwt(token, JWT_ORG_API_KEY_ISSUER.to_string())
 }
 
+pub fn decode_register_verify(token: &str) -> Result<RegisterVerifyJwtClaims> {
+    decode_jwt(token, JWT_REGISTER_VERIFY_ISSUER.to_string())
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LoginJwtClaims {
     // Not before
@@ -156,6 +161,35 @@ pub fn generate_invite_claims(user_uuid: Uuid, email: String, org_uuid: Option<U
         email,
         org_uuid,
         invited_by_email,
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RegisterVerifyJwtClaims {
+    // Not before
+    pub nbf: i64,
+    // Expiration time
+    pub exp: i64,
+    // Issuer
+    pub iss: String,
+    // Subject (the email being verified)
+    pub sub: String,
+
+    pub name: Option<String>,
+    // Whether the email was actually verified (i.e. the token was delivered by email
+    // rather than handed straight to the client because mail is disabled).
+    pub verified: bool,
+}
+
+pub fn generate_register_verify_claims(email: String, name: Option<String>, verified: bool) -> RegisterVerifyJwtClaims {
+    let time_now = Utc::now();
+    RegisterVerifyJwtClaims {
+        nbf: time_now.timestamp(),
+        exp: (time_now + Duration::minutes(30)).timestamp(),
+        iss: JWT_REGISTER_VERIFY_ISSUER.to_string(),
+        sub: email,
+        name,
+        verified,
     }
 }
 
