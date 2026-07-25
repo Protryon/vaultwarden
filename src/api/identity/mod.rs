@@ -42,6 +42,8 @@ pub fn route() -> Router {
     Router::new()
         .post("/connect/token", login)
         .post("/accounts/prelogin", prelogin)
+        // Newer clients (web-vault) hit the /password suffix; same handler.
+        .post("/accounts/prelogin/password", prelogin)
         .post("/accounts/register", register)
         .post("/accounts/register/finish", register)
         .post("/accounts/register/send-verification-email", register_send_verification_email)

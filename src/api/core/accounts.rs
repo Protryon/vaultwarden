@@ -47,6 +47,8 @@ pub fn route(router: Router) -> Router {
         .get("/accounts/revision-date", revision_date)
         .post("/accounts/password-hint", password_hint)
         .post("/accounts/prelogin", prelogin)
+        // Newer clients (web-vault) hit the /password suffix; same handler.
+        .post("/accounts/prelogin/password", prelogin)
         .post("/accounts/api-key", api_key)
         .post("/accounts/rotate-api-key", rotate_api_key)
         .get("/tasks", get_tasks)
@@ -1418,6 +1420,19 @@ mod tests {
         resp.assert_ok();
         let body = resp.json();
         // Pbkdf2 == 0, which is what the harness registers with.
+        assert_eq!(body["kdf"], 0);
+        assert!(body["kdfIterations"].as_i64().unwrap() >= 100_000);
+    }
+
+    #[tokio::test]
+    async fn prelogin_password_alias_returns_kdf_settings() {
+        // Newer web-vault clients POST to /accounts/prelogin/password instead of
+        // /accounts/prelogin; both must hit the same handler.
+        let client = TestClient::register_and_login().await;
+
+        let resp = client.post("/identity/accounts/prelogin/password", json!({ "email": client.email })).await;
+        resp.assert_ok();
+        let body = resp.json();
         assert_eq!(body["kdf"], 0);
         assert!(body["kdfIterations"].as_i64().unwrap() >= 100_000);
     }
