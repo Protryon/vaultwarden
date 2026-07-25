@@ -21,25 +21,31 @@ effort:
 
 - **HIGH** — a current client flow fails, silently drops data, or a value is rejected/panics.
 - **MED** — degraded behavior, missing fields newer clients read, or type coercion issues.
-- **LOW** — cosmetic / forward-compat / conformance-only; current pinned web-vault tolerates it.
+- **LOW** — cosmetic / conformance / forward-compat; the running web-vault (v2026.6.2) works
+  without it.
 
 This is a **starting map to iterate on**, not a fix list. Line numbers are from the audit
 snapshot (2026-07-24) and drift as files change — re-anchor before acting.
 
-> **Bundled web-vault:** as of 2026-07-25 the Dockerfile ships web-vault **v2026.6.2** (bumped
-> from v2025.12.1 to reach parity with dani). Several findings below were rated "benign with the
-> pinned web-vault" — that assumption is now weaker. The client-reachable un-ported surfaces to
-> watch are **T5/T6** (2FA `userVerificationToken` setup + per-provider `DELETE`) and **T1/T2**
-> (Duo Universal Prompt). Verify 2FA enable/disable in the bundled UI against v2026.6.2.
+> **Bundled web-vault — re-triaged 2026-07-25.** The Dockerfile now ships web-vault
+> **v2026.6.2** (up from v2025.12.1). Severities below assume this client, so the old "benign
+> with the pinned web-vault" hedges are retired. The headline consequence is **2FA management**:
+> the current server (`TwoFactorController`) hands the setup GET a `userVerificationToken` and
+> validates *that* on the PUT/POST/DELETE instead of the master-password hash, and disables a
+> method via `DELETE /two-factor/{provider}`. Our endpoints still return no token, still check
+> `masterPasswordHash`, and have no per-provider DELETE — so **enabling or disabling any 2FA
+> method from the bundled UI now breaks** (T5/T6, promoted to HIGH), on top of Duo (T1/T2).
+> Login-time 2FA (entering a code) is unaffected.
 
 ---
 
 ## Cross-cutting themes
 
-1. **"v2 modernization" gaps.** Bitwarden reworked several flows into new routes + bodies;
-   the fork still carries the pre-v2 shape. The remaining open ones are the **Duo Universal
-   Prompt** (OIDC `AuthUrl`) and the **2FA `userVerificationToken`** setup flow. dani has
-   already ported both.
+1. **"v2 modernization" gaps — now client-reachable.** Bitwarden reworked several flows into
+   new routes + bodies; the fork still carries the pre-v2 shape. With v2026.6.2 the open ones
+   are actively exercised by the running client: the **2FA `userVerificationToken`**
+   setup/disable flow (T5/T6) and the **Duo Universal Prompt** (T1/T2). dani has ported the
+   Duo side; the userVerificationToken flow is new work for both.
 
 ---
 
@@ -147,14 +153,19 @@ snapshot (2026-07-24) and drift as files change — re-anchor before acting.
   under a `Duo` object + `UserVerificationToken`; ours is flat. Web-vault Duo setup posts
   `clientId`/`clientSecret` → rejected. Ours: [duo.rs:122](src/api/core/two_factor/duo.rs#L122).
   **dani: yes**.
-- **[MED] T5 — `userVerificationToken` absent; details not nested under provider key.** Newer
-  BW mints a UV token on the 2FA GET and nests details under `authenticator`/`duo`/`email`/
-  `webAuthn`/`yubiKey`; the matching updates require that token instead of `masterPasswordHash`.
-  Ours are flat and password-based. Benign with pinned web-vault. Ours:
-  [authenticator.rs:38](src/api/core/two_factor/authenticator.rs#L38) et al. **dani: no**.
-- **[MED] T6 — Per-provider DELETE endpoints not implemented.** BW moved to
-  `DELETE /two-factor/{authenticator,duo,yubikey,webauthn,email}` (UV-token auth); we keep only
-  the generic `POST/PUT /two-factor/disable` + `DELETE /two-factor/webauthn`. Ours:
+- **[HIGH] T5 — 2FA setup/enable expects `masterPasswordHash`, not `userVerificationToken`.**
+  The running web-vault gets a `userVerificationToken` from the setup GET (e.g.
+  `POST /two-factor/get-authenticator`) and sends *that* on the enable PUT/POST — the current
+  server validates the token there, not the master-password hash (`TwoFactorController`
+  `TryUnprotect(model.UserVerificationToken)`). Our GET returns no token
+  ([authenticator.rs:38](src/api/core/two_factor/authenticator.rs#L38)) and our enable handlers
+  require `masterPasswordHash` (`activate_authenticator` calls `check_valid_password`), so
+  enabling authenticator/email/webauthn/yubikey/duo from the bundled UI fails. Details are also
+  meant to nest under `authenticator`/`duo`/`email`/`webAuthn`/`yubiKey`. **dani: no.**
+- **[HIGH] T6 — Per-provider DELETE endpoints not implemented.** The current UI disables a
+  method via `DELETE /two-factor/{authenticator,duo,yubikey,email}` (UV-token auth); we keep
+  only the generic `POST/PUT /two-factor/disable` + `DELETE /two-factor/webauthn`, so disabling
+  any other method from the bundled UI 404s. Ours:
   [two_factor/mod.rs:28](src/api/core/two_factor/mod.rs#L28). **dani: no**.
 - **[LOW] T7 — WebAuthn/YubiKey response `object` is `twoFactorU2f`** instead of
   `twoFactorWebAuthn`/`twoFactorYubiKey` (`get_webauthn` already uses the correct one —
@@ -163,9 +174,11 @@ snapshot (2026-07-24) and drift as files change — re-anchor before acting.
 - **[LOW] T8 — `send-email-login` missing `AuthRequestId`/`SsoEmail2FaSessionToken`.** Only
   master-password auth; can't send OTP during passwordless/SSO/device-approval login. Ours:
   [email.rs:21](src/api/core/two_factor/email.rs#L21). **dani: no**.
-- **[LOW] T9 — `get-webauthn-challenge` not wrapped as `{object,options}`.** Returns a flat
-  challenge; BW wraps in `{object:"twoFactorWebAuthnChallenge", options}`. Matches pinned
-  web-vault. Ours: [webauthn.rs:122](src/api/core/two_factor/webauthn.rs#L122). **dani: yes**.
+- **[MED] T9 — `get-webauthn-challenge` not wrapped as `{object,options}`.** Returns a flat
+  challenge; BW wraps in `{object:"twoFactorWebAuthnChallenge", options}`, which the current
+  web-vault's WebAuthn-registration flow expects. Ours:
+  [webauthn.rs:122](src/api/core/two_factor/webauthn.rs#L122). **dani: yes**. *(Verify in the
+  bundled UI.)*
 
 ---
 
@@ -192,10 +205,10 @@ snapshot (2026-07-24) and drift as files change — re-anchor before acting.
   status; new clients prefer it, fall back to `policies`). Accepted-not-confirmed members may
   miss policies. (`unofficialServer:true` is a correct vaultwarden extension.) Ours:
   [ciphers.rs:142](src/api/core/ciphers.rs#L142). **dani: no**.
-- **[LOW] E7 — Notification-center REST endpoints absent.** No `GET /notifications` or
-  mark-read/delete; combined with E3 the whole feature is missing (config doc still advertises
-  a `notifications` URL). Ours: [notifications/mod.rs:107](src/api/notifications/mod.rs#L107).
-  **dani: no**.
+- **[MED] E7 — Notification-center REST endpoints absent.** No `GET /notifications` or
+  mark-read/delete; v2026.6.2 ships a notification-center UI, so it surfaces empty/erroring
+  (compounded by E3, and the config doc still advertises a `notifications` URL). Ours:
+  [notifications/mod.rs:107](src/api/notifications/mod.rs#L107). **dani: no**.
 - **[LOW] E8 — Logout push payload `{userId,date}` vs BW `{userId, reason?}`.** Inert today
   (clients re-auth on userId); forward-compat gap on logout-reason. Ours:
   [push/mod.rs:201](src/push/mod.rs#L201). **dani: partial** (same `{userId,date}`).
@@ -208,8 +221,20 @@ snapshot (2026-07-24) and drift as files change — re-anchor before acting.
 
 ## Suggested triage order
 
-1. **Port remaining stale-vs-dani wins** — T1/T2 (Duo Universal), E4 (event org-user id),
-   S2 (reject email-restricted sends like dani), T7/T9. dani has the code.
-2. **New-vs-both-behind-Bitwarden** items — `policiesNew` (E6), notification center (E3/E7),
-   `userVerificationToken` + per-provider DELETE (T5/T6). Genuinely new work; prioritize by
-   client version targets.
+Re-triaged 2026-07-25 for web-vault **v2026.6.2** (the running client). Nothing was downgraded
+by the bump — a newer client only exercises *more* surface — so the reshuffle is about what the
+bundled UI now actively hits.
+
+1. **2FA management — regressed by the version bump (do first).** The whole enable/disable
+   surface in the bundled UI is broken: **T5** (`userVerificationToken` from the setup GET +
+   on the enable PUT/POST), **T6** (per-provider `DELETE`), **T1/T2** (Duo Universal), and
+   **T9** (webauthn challenge envelope). dani has T1/T2/T9; the userVerificationToken flow
+   (T5/T6) is new work. This is the most visible breakage on the current client.
+2. **Portable stale-vs-dani wins** — **E4** (event org-user id), **S2** (reject email-restricted
+   sends like dani, security-relevant), **T7** (2FA response `object` discriminator). Small;
+   dani has the code.
+3. **Visible feature/field gaps on the new client** — notification center (**E3/E7**), member/
+   collection fields (**O3/O4**), sync `policiesNew` (**E6**, though the `policies` fallback
+   still works).
+4. **Remaining conformance/forward-compat** — the LOW cipher/send/org/event items
+   (C5–C8, S7–S11, O9/O10, E5/E8, A10). Batch as cleanup.
