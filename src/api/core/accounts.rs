@@ -206,13 +206,10 @@ async fn get_auth_requests_pending(headers: Headers) -> Result<Json<Value>> {
 #[serde(rename_all = "camelCase")]
 pub struct RegisterData {
     email: String,
-    kdf: Option<i32>,
-    kdf_iterations: Option<i32>,
-    kdf_memory: Option<i32>,
-    kdf_parallelism: Option<i32>,
-    key: String,
+    #[serde(flatten)]
+    credentials: MasterPasswordCredentials,
+    #[serde(alias = "userAsymmetricKeys")]
     keys: Option<KeysData>,
-    master_password_hash: String,
     master_password_hint: Option<String>,
     name: Option<String>,
     token: Option<String>,
@@ -225,17 +222,119 @@ pub struct RegisterData {
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct SetPasswordData {
-    kdf: Option<i32>,
-    kdf_iterations: Option<i32>,
-    kdf_memory: Option<i32>,
-    kdf_parallelism: Option<i32>,
-    key: String,
+    #[serde(flatten)]
+    credentials: MasterPasswordCredentials,
+    #[serde(alias = "userAsymmetricKeys")]
     keys: Option<KeysData>,
-    master_password_hash: String,
     master_password_hint: Option<String>,
     #[allow(dead_code)]
     #[serde(rename = "orgIdentifier")]
     org_identifier: Option<String>,
+}
+
+/// Master-password credentials sent to register / set-password. Clients send one of two wire
+/// shapes: the legacy flat form (`masterPasswordHash` + `key` + flat `kdf*`) or the v2 nested
+/// form (`masterPasswordAuthentication` + `masterPasswordUnlock`). Bitwarden collapses both
+/// onto the same stored state — password hash, wrapped user key, KDF params, and salt (= the
+/// user's email) — so we accept either and read through these accessors.
+#[derive(Deserialize, Debug)]
+#[serde(untagged)]
+enum MasterPasswordCredentials {
+    Legacy(LegacyCredentials),
+    V2(V2Credentials),
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct LegacyCredentials {
+    kdf: Option<i32>,
+    kdf_iterations: Option<i32>,
+    kdf_memory: Option<i32>,
+    kdf_parallelism: Option<i32>,
+    #[serde(alias = "userSymmetricKey")]
+    key: String,
+    master_password_hash: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct V2Credentials {
+    master_password_authentication: MasterPasswordAuthentication,
+    master_password_unlock: MasterPasswordUnlock,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct KdfData {
+    #[serde(alias = "kdfType")]
+    kdf: i32,
+    #[serde(alias = "iterations")]
+    kdf_iterations: i32,
+    #[serde(alias = "memory")]
+    kdf_memory: Option<i32>,
+    #[serde(alias = "parallelism")]
+    kdf_parallelism: Option<i32>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct MasterPasswordAuthentication {
+    kdf: KdfData,
+    salt: String,
+    #[serde(alias = "masterPasswordAuthenticationHash")]
+    hash: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct MasterPasswordUnlock {
+    kdf: KdfData,
+    salt: String,
+    #[serde(alias = "masterKeyWrappedUserKey")]
+    key: String,
+}
+
+impl MasterPasswordCredentials {
+    /// The master-password hash the server re-hashes and stores.
+    fn master_password_hash(&self) -> &str {
+        match self {
+            Self::Legacy(c) => &c.master_password_hash,
+            Self::V2(c) => &c.master_password_authentication.hash,
+        }
+    }
+
+    /// The master-key-wrapped user key (stored as `akey`).
+    fn user_key(&self) -> &str {
+        match self {
+            Self::Legacy(c) => &c.key,
+            Self::V2(c) => &c.master_password_unlock.key,
+        }
+    }
+
+    /// `(kdf_type, kdf_iterations, kdf_memory, kdf_parallelism)`. v2 always carries type +
+    /// iterations; the legacy form may omit them, in which case the caller keeps its defaults.
+    fn kdf(&self) -> (Option<i32>, Option<i32>, Option<i32>, Option<i32>) {
+        match self {
+            Self::Legacy(c) => (c.kdf, c.kdf_iterations, c.kdf_memory, c.kdf_parallelism),
+            Self::V2(c) => {
+                let k = &c.master_password_unlock.kdf;
+                (Some(k.kdf), Some(k.kdf_iterations), k.kdf_memory, k.kdf_parallelism)
+            }
+        }
+    }
+
+    /// A v2 body carries the KDF and salt twice (authentication + unlock); the two must agree
+    /// and the salt must be the user's normalized email. The legacy form has nothing extra.
+    fn validate(&self, email: &str) -> Result<()> {
+        if let Self::V2(c) = self {
+            let a = &c.master_password_authentication;
+            let u = &c.master_password_unlock;
+            if a.kdf.kdf != u.kdf.kdf || a.kdf.kdf_iterations != u.kdf.kdf_iterations || a.salt != email || u.salt != email {
+                err!("Invalid master password credentials");
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -282,6 +381,9 @@ pub async fn register(conn: AutoTxn, data: Json<RegisterData>) -> Result<Json<Va
         }
         email_verified = claims.verified;
     }
+
+    // Reject inconsistent v2 credential bodies before we touch the account.
+    data.credentials.validate(&email)?;
 
     // Check if the length of the username exceeds 50 characters (Same is Upstream Bitwarden)
     // This also prevents issues with very long usernames causing to large JWT's. See #2419
@@ -341,18 +443,17 @@ pub async fn register(conn: AutoTxn, data: Json<RegisterData>) -> Result<Json<Va
     // Make sure we don't leave a lingering invitation.
     Invitation::take(&conn, &email).await?;
 
-    if let Some(client_kdf_type) = data.kdf {
-        user.client_kdf_type = client_kdf_type;
+    let (kdf_type, kdf_iter, kdf_mem, kdf_para) = data.credentials.kdf();
+    if let Some(kdf_type) = kdf_type {
+        user.client_kdf_type = kdf_type;
     }
-
-    if let Some(client_kdf_iter) = data.kdf_iterations {
-        user.client_kdf_iter = client_kdf_iter;
+    if let Some(kdf_iter) = kdf_iter {
+        user.client_kdf_iter = kdf_iter;
     }
+    user.client_kdf_memory = kdf_mem;
+    user.client_kdf_parallelism = kdf_para;
 
-    user.client_kdf_memory = data.kdf_memory;
-    user.client_kdf_parallelism = data.kdf_parallelism;
-
-    user.set_password(&data.master_password_hash, Some(data.key), true, None, &conn).await?;
+    user.set_password(data.credentials.master_password_hash(), Some(data.credentials.user_key().to_string()), true, None, &conn).await?;
     user.password_hint = password_hint;
 
     // Add extra fields if present
@@ -433,22 +534,25 @@ pub async fn post_set_password(headers: Headers, data: Json<SetPasswordData>) ->
     let password_hint = clean_password_hint(&data.master_password_hint);
     enforce_password_hint_setting(&password_hint)?;
 
-    if let Some(client_kdf_iter) = data.kdf_iterations {
-        user.client_kdf_iter = client_kdf_iter;
-    }
+    // Reject inconsistent v2 credential bodies before we touch the account.
+    data.credentials.validate(&user.email)?;
 
-    if let Some(client_kdf_type) = data.kdf {
-        user.client_kdf_type = client_kdf_type;
+    let (kdf_type, kdf_iter, kdf_mem, kdf_para) = data.credentials.kdf();
+    if let Some(kdf_iter) = kdf_iter {
+        user.client_kdf_iter = kdf_iter;
+    }
+    if let Some(kdf_type) = kdf_type {
+        user.client_kdf_type = kdf_type;
     }
 
     //We need to allow revision-date to use the old security_timestamp
     let routes = vec!["revision_date"];
     let routes: Option<Vec<String>> = Some(routes.iter().map(ToString::to_string).collect());
 
-    user.client_kdf_memory = data.kdf_memory;
-    user.client_kdf_parallelism = data.kdf_parallelism;
+    user.client_kdf_memory = kdf_mem;
+    user.client_kdf_parallelism = kdf_para;
 
-    user.set_password(&data.master_password_hash, Some(data.key), false, routes, &conn).await?;
+    user.set_password(data.credentials.master_password_hash(), Some(data.credentials.user_key().to_string()), false, routes, &conn).await?;
     user.password_hint = password_hint;
 
     if let Some(keys) = data.keys {
@@ -550,8 +654,10 @@ pub async fn post_keys(headers: Headers, data: Json<KeysData>) -> Result<Json<Va
     user.save(&conn).await?;
 
     Ok(Json(json!({
+        "key": user.akey,
         "privateKey": user.private_key,
         "publicKey": user.public_key,
+        "accountKeys": user.account_keys_json(),
         "object":"keys"
     })))
 }
@@ -575,6 +681,8 @@ pub async fn post_password(headers: Headers, data: Json<ChangePassData>) -> Resu
 
     user.password_hint = clean_password_hint(&data.master_password_hint);
     enforce_password_hint_setting(&user.password_hint)?;
+    // The user has now set a password of their own choosing, so clear any admin-forced reset.
+    user.force_password_reset = false;
     let mut conn = DB.get().await.ise()?;
 
     log_user_event(EventType::UserChangedPassword, user.uuid, headers.device.atype, Utc::now(), headers.ip, &mut conn).await?;
@@ -1201,10 +1309,20 @@ pub async fn prelogin(data: Json<PreloginData>) -> Result<Json<Value>> {
     };
 
     let result = json!({
+        // Legacy flat fields (kept for older clients).
         "kdf": kdf_type,
         "kdfIterations": kdf_iter,
         "kdfMemory": kdf_mem,
         "kdfParallelism": kdf_para,
+        // Newer clients read the nested settings + salt. BW currently just echoes the
+        // request email as the salt (the client re-derives from it).
+        "kdfSettings": {
+            "kdfType": kdf_type,
+            "iterations": kdf_iter,
+            "memory": kdf_mem,
+            "parallelism": kdf_para,
+        },
+        "salt": data.email.trim().to_lowercase(),
     });
 
     Ok(Json(result))
@@ -1384,6 +1502,12 @@ mod tests {
         let profile = resp.json();
         assert_eq!(profile["email"].as_str().unwrap().to_lowercase(), client.email.to_lowercase());
         assert_eq!(profile["object"], "profile");
+        // A6: newer clients read structured accountKeys, verifyDevices, and organizationsNew.
+        assert_eq!(profile["accountKeys"]["object"], "privateKeys");
+        assert!(profile["verifyDevices"].is_boolean(), "profile should carry verifyDevices");
+        assert!(profile["organizationsNew"].is_array(), "profile should carry organizationsNew");
+        // A11: a normal account is not under an admin-forced password reset.
+        assert_eq!(profile["forcePasswordReset"], false);
     }
 
     #[tokio::test]
@@ -1422,6 +1546,10 @@ mod tests {
         // Pbkdf2 == 0, which is what the harness registers with.
         assert_eq!(body["kdf"], 0);
         assert!(body["kdfIterations"].as_i64().unwrap() >= 100_000);
+        // A5: newer clients read the nested kdfSettings + salt (the normalized email).
+        assert_eq!(body["kdfSettings"]["kdfType"], 0);
+        assert_eq!(body["kdfSettings"]["iterations"], body["kdfIterations"]);
+        assert_eq!(body["salt"], client.email.to_lowercase());
     }
 
     #[tokio::test]
@@ -1453,6 +1581,57 @@ mod tests {
         });
         let resp = client.post("/identity/accounts/register", body).await;
         assert!(resp.status >= 400, "expected duplicate registration to fail, got {}: {}", resp.status, resp.body);
+    }
+
+    #[tokio::test]
+    async fn register_v2_credential_body_round_trips() {
+        // A4: newer clients send the v2 nested credential body (masterPasswordAuthentication +
+        // masterPasswordUnlock) instead of the flat masterPasswordHash/key. It must register an
+        // account that then logs in with the same hash.
+        let mut client = TestClient::new().await;
+        let email = client.email.to_lowercase();
+        let body = json!({
+            "email": client.email,
+            "masterPasswordAuthentication": {
+                "kdf": { "kdfType": 0, "iterations": 600_000 },
+                "salt": email,
+                "masterPasswordAuthenticationHash": client.master_password_hash,
+            },
+            "masterPasswordUnlock": {
+                "kdf": { "kdfType": 0, "iterations": 600_000 },
+                "salt": email,
+                "masterKeyWrappedUserKey": client.akey,
+            },
+            "userAsymmetricKeys": { "encryptedPrivateKey": client.private_key, "publicKey": client.public_key },
+            "name": "V2 User",
+        });
+        client.post("/identity/accounts/register", body).await.assert_ok();
+
+        client.login().await;
+        assert!(client.user_id.is_some(), "v2-registered account should log in");
+    }
+
+    #[tokio::test]
+    async fn register_v2_rejects_salt_email_mismatch() {
+        // A4: the v2 body carries the salt twice and it must equal the account email.
+        let client = TestClient::new().await;
+        let body = json!({
+            "email": client.email,
+            "masterPasswordAuthentication": {
+                "kdf": { "kdfType": 0, "iterations": 600_000 },
+                "salt": "someone-else@test.example",
+                "masterPasswordAuthenticationHash": client.master_password_hash,
+            },
+            "masterPasswordUnlock": {
+                "kdf": { "kdfType": 0, "iterations": 600_000 },
+                "salt": "someone-else@test.example",
+                "masterKeyWrappedUserKey": client.akey,
+            },
+            "userAsymmetricKeys": { "encryptedPrivateKey": client.private_key, "publicKey": client.public_key },
+            "name": "V2 Bad",
+        });
+        let resp = client.post("/identity/accounts/register", body).await;
+        assert!(resp.status >= 400, "salt/email mismatch should be rejected, got {}: {}", resp.status, resp.body);
     }
 
     /// Log in via the password grant with an arbitrary password hash, returning the
@@ -1527,6 +1706,11 @@ mod tests {
         let j = resp.json();
         assert_eq!(j["privateKey"], "2.newpriv|mac");
         assert_eq!(j["publicKey"], "newpublickey");
+        // A7: newer clients read the wrapped user key + structured accountKeys.
+        assert!(j["key"].as_str().is_some(), "keys response should include the wrapped user key");
+        assert_eq!(j["accountKeys"]["object"], "privateKeys");
+        assert_eq!(j["accountKeys"]["publicKeyEncryptionKeyPair"]["publicKey"], "newpublickey");
+        assert_eq!(j["accountKeys"]["publicKeyEncryptionKeyPair"]["wrappedPrivateKey"], "2.newpriv|mac");
     }
 
     #[tokio::test]

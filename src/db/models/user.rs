@@ -62,6 +62,8 @@ pub struct User {
     pub avatar_color: Option<String>,
 
     pub external_id: Option<String>,
+
+    pub force_password_reset: bool,
 }
 
 impl From<Row> for User {
@@ -97,6 +99,7 @@ impl From<Row> for User {
             client_kdf_memory: row.get(27),
             client_kdf_parallelism: row.get(28),
             external_id: row.get(29),
+            force_password_reset: row.get(30),
         }
     }
 }
@@ -162,6 +165,7 @@ impl User {
             api_key: None,
             avatar_color: None,
             external_id: None,
+            force_password_reset: false,
         }
     }
 
@@ -288,10 +292,31 @@ impl User {
         Self::flag_revision_for(conn, self.uuid).await
     }
 
+    /// The account's asymmetric key pair in Bitwarden's `PrivateKeysResponseModel` shape
+    /// (`object: "privateKeys"`). Shared by the profile, the `/accounts/keys` response and the
+    /// `/connect/token` auth response so they can't drift.
+    pub fn account_keys_json(&self) -> Value {
+        json!({
+            "publicKeyEncryptionKeyPair": {
+                "wrappedPrivateKey": self.private_key,
+                "publicKey": self.public_key,
+                "object": "publicKeyEncryptionKeyPair"
+            },
+            "object": "privateKeys"
+        })
+    }
+
     pub async fn to_json(&self, conn: &Conn) -> Result<Value> {
         let mut orgs_json = Vec::new();
         for c in UserOrganization::find_by_user_with_status(conn, self.uuid, UserOrgStatus::Confirmed).await.ise()? {
             orgs_json.push(c.to_json(conn).await.ise()?);
+        }
+
+        // `organizationsNew` additionally includes Accepted-but-not-yet-Confirmed memberships;
+        // newer clients prefer it and fall back to `organizations`.
+        let mut orgs_new_json = orgs_json.clone();
+        for c in UserOrganization::find_by_user_with_status(conn, self.uuid, UserOrgStatus::Accepted).await.ise()? {
+            orgs_new_json.push(c.to_json(conn).await.ise()?);
         }
 
         let twofactor_enabled = !TwoFactor::find_by_user_official(conn, self.uuid).await.ise()?.is_empty();
@@ -316,11 +341,14 @@ impl User {
             "twoFactorEnabled": twofactor_enabled,
             "key": self.akey,
             "privateKey": self.private_key,
+            "accountKeys": self.account_keys_json(),
             "securityStamp": self.security_stamp,
             "organizations": orgs_json,
+            "organizationsNew": orgs_new_json,
             "providers": [],
             "providerOrganizations": [],
-            "forcePasswordReset": false,
+            "forcePasswordReset": self.force_password_reset,
+            "verifyDevices": false,
             "avatarColor": self.avatar_color,
             "usesKeyConnector": false,
             "creationDate": format_date(&self.created_at),
@@ -333,7 +361,7 @@ impl User {
             return Err(Error::bad_request("User email can't be empty"));
         }
 
-        conn.execute(r"INSERT INTO users (uuid, enabled, created_at, verified_at, last_verifying_at, login_verify_count, name, email, akey, email_new, email_new_token, password_hash, salt, password_iterations, security_stamp, stamp_exception, password_hint, private_key, public_key, totp_secret, totp_recover, equivalent_domains, excluded_globals, client_kdf_type, client_kdf_iter, client_kdf_memory, client_kdf_parallelism, api_key, avatar_color, external_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30) ON CONFLICT (uuid) DO UPDATE
+        conn.execute(r"INSERT INTO users (uuid, enabled, created_at, verified_at, last_verifying_at, login_verify_count, name, email, akey, email_new, email_new_token, password_hash, salt, password_iterations, security_stamp, stamp_exception, password_hint, private_key, public_key, totp_secret, totp_recover, equivalent_domains, excluded_globals, client_kdf_type, client_kdf_iter, client_kdf_memory, client_kdf_parallelism, api_key, avatar_color, external_id, force_password_reset) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31) ON CONFLICT (uuid) DO UPDATE
         SET
         enabled = EXCLUDED.enabled,
         created_at = EXCLUDED.created_at,
@@ -363,7 +391,8 @@ impl User {
         client_kdf_parallelism = EXCLUDED.client_kdf_parallelism,
         api_key = EXCLUDED.api_key,
         avatar_color = EXCLUDED.avatar_color,
-        external_id = EXCLUDED.external_id", &[
+        external_id = EXCLUDED.external_id,
+        force_password_reset = EXCLUDED.force_password_reset", &[
             &self.uuid,
             &self.enabled,
             &self.created_at,
@@ -394,6 +423,7 @@ impl User {
             &self.api_key,
             &self.avatar_color,
             &self.external_id,
+            &self.force_password_reset,
         ]).await.ise()?;
         self.flag_revision(conn).await.ise()?;
         Ok(())
@@ -430,5 +460,35 @@ impl User {
 
     pub async fn last_active(&self, conn: &Conn) -> Result<Option<DateTime<Utc>>> {
         Ok(Device::find_latest_active_by_user(conn, self.uuid).await.ise()?.map(|x| x.updated_at))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_harness::run_db_test;
+
+    #[tokio::test]
+    async fn force_password_reset_flag_round_trips() {
+        // A11: the force-password-reset flag must persist and be reflected in the profile.
+        run_db_test(async |db| {
+            let mut user = User::new("force-reset@example.test".to_string());
+            assert!(!user.force_password_reset, "new users default to not-forced");
+            user.save(db.conn()).await.unwrap();
+
+            // An admin reset sets it; it survives a reload and shows in the profile.
+            user.force_password_reset = true;
+            user.save(db.conn()).await.unwrap();
+            let reloaded = User::get(db.conn(), user.uuid).await.unwrap().expect("user exists");
+            assert!(reloaded.force_password_reset);
+            assert_eq!(reloaded.to_json(db.conn()).await.unwrap()["forcePasswordReset"], true);
+
+            // Changing the password clears it again.
+            user.force_password_reset = false;
+            user.save(db.conn()).await.unwrap();
+            let reloaded = User::get(db.conn(), user.uuid).await.unwrap().expect("user exists");
+            assert!(!reloaded.force_password_reset);
+        })
+        .await;
     }
 }

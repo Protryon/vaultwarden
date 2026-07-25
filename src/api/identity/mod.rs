@@ -262,18 +262,11 @@ async fn authorization_login(data: ConnectData, user_uuid: &mut Option<Uuid>, co
         "token_type": "Bearer",
         "refresh_token": device.refresh_token,
         "expires_in": expires_in,
-        "Key": user.akey,
-        "PrivateKey": user.private_key,
-        "Kdf": user.client_kdf_type,
-        "KdfIterations": user.client_kdf_iter,
-        "KdfMemory": user.client_kdf_memory,
-        "KdfParallelism": user.client_kdf_parallelism,
-        "ResetMasterPassword": user.password_hash.is_empty(),
-        // "forcePasswordReset": false,
         // "keyConnectorUrl": false,
         "scope": scope,
         "unofficialServer": true,
     });
+    extend_object(&mut result, user_auth_response_fields(&user, conn).await?);
 
     if let Some(token) = twofactor_token {
         result["TwoFactorToken"] = Value::String(token);
@@ -352,14 +345,7 @@ async fn user_auth_response_fields(user: &User, conn: &Conn) -> Result<Value> {
         Value::Null
     };
 
-    let account_keys = json!({
-        "publicKeyEncryptionKeyPair": {
-            "wrappedPrivateKey": user.private_key,
-            "publicKey": user.public_key,
-            "Object": "publicKeyEncryptionKeyPair"
-        },
-        "Object": "privateKeys"
-    });
+    let account_keys = user.account_keys_json();
 
     Ok(json!({
         "Key": user.akey,
@@ -369,7 +355,7 @@ async fn user_auth_response_fields(user: &User, conn: &Conn) -> Result<Value> {
         "KdfMemory": user.client_kdf_memory,
         "KdfParallelism": user.client_kdf_parallelism,
         "ResetMasterPassword": !has_master_password,
-        "ForcePasswordReset": false,
+        "ForcePasswordReset": user.force_password_reset,
         "MasterPasswordPolicy": master_password_policy,
         "AccountKeys": account_keys,
         "UserDecryptionOptions": {

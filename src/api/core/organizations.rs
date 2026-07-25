@@ -2512,6 +2512,8 @@ async fn put_reset_password(
 
     let mut user = user;
     user.set_password(reset_request.new_master_password_hash.as_str(), Some(reset_request.key), true, None, &conn).await?;
+    // Force the member to change this admin-chosen password the next time they log in.
+    user.force_password_reset = true;
     user.save(&conn).await?;
 
     ws_users().send_logout(&user, &conn, None).await?;
