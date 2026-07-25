@@ -1,6 +1,13 @@
-FROM docker.io/vaultwarden/web-vault@sha256:bf5aa55dc7bcb99f85d2a88ff44d32cdc832e934a0603fe28e5c3f92904bad42 as vault
+# web-vault v2026.6.2 (at parity with upstream dani-garcia/vaultwarden).
+# To resolve/refresh this digest:
+#   docker pull docker.io/vaultwarden/web-vault:v2026.6.2
+#   docker image inspect --format "{{.RepoDigests}}" docker.io/vaultwarden/web-vault:v2026.6.2
+# NOTE: this client is newer than the API surface this fork fully implements. In particular
+# the 2FA userVerificationToken setup flow (UPSTREAM.md T5/T6) and Duo Universal Prompt
+# (T1/T2) are not yet ported, so verify 2FA enable/disable in the bundled UI before shipping.
+FROM docker.io/vaultwarden/web-vault@sha256:f004f72a5d357b87483839500a517da3d1b4ea0a57b9731989d298cccea7d02a as vault
 
-FROM lukemathwalker/cargo-chef:0.1.73-rust-1.91.1-slim-bullseye AS planner
+FROM lukemathwalker/cargo-chef:0.1.73-rust-1.91.1-slim-bookworm AS planner
 WORKDIR /plan
 
 COPY ./src ./src
@@ -11,7 +18,7 @@ COPY ./Cargo.toml .
 
 RUN cargo chef prepare --recipe-path recipe.json
 
-FROM lukemathwalker/cargo-chef:0.1.73-rust-1.91.1-bullseye AS builder
+FROM lukemathwalker/cargo-chef:0.1.73-rust-1.91.1-bookworm AS builder
 
 WORKDIR /build
 RUN apt-get update && apt-get install cmake -y
@@ -28,12 +35,12 @@ COPY ./Cargo.toml .
 
 RUN cargo build --release -p vaultwarden && mv /build/target/release/vaultwarden /build/target/vaultwarden
 
-FROM debian:bullseye-slim
+FROM debian:bookworm-slim
 WORKDIR /runtime
 
 COPY --from=builder /build/target/vaultwarden /runtime/vaultwarden
 COPY --from=vault /web-vault /web-vault
 
-RUN apt-get update && apt-get install libssl1.1 ca-certificates -y && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install libssl3 ca-certificates -y && rm -rf /var/lib/apt/lists/*
 
 ENTRYPOINT ["/runtime/vaultwarden"]

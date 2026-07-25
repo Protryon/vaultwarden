@@ -26,6 +26,12 @@ effort:
 This is a **starting map to iterate on**, not a fix list. Line numbers are from the audit
 snapshot (2026-07-24) and drift as files change — re-anchor before acting.
 
+> **Bundled web-vault:** as of 2026-07-25 the Dockerfile ships web-vault **v2026.6.2** (bumped
+> from v2025.12.1 to reach parity with dani). Several findings below were rated "benign with the
+> pinned web-vault" — that assumption is now weaker. The client-reachable un-ported surfaces to
+> watch are **T5/T6** (2FA `userVerificationToken` setup + per-provider `DELETE`) and **T1/T2**
+> (Duo Universal Prompt). Verify 2FA enable/disable in the bundled UI against v2026.6.2.
+
 ---
 
 ## Cross-cutting themes
