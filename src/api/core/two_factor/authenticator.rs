@@ -18,7 +18,7 @@ use crate::{
 
 pub use crate::config::CONFIG;
 
-use super::_generate_recover_code;
+use super::{_generate_recover_code, UserVerify, mint_user_verification_token};
 
 pub async fn generate_authenticator(headers: Headers, data: Json<PasswordData>) -> Result<Json<Value>> {
     let data: PasswordData = data.0;
@@ -35,9 +35,14 @@ pub async fn generate_authenticator(headers: Headers, data: Json<PasswordData>) 
         _ => (false, crypto::encode_random_bytes::<20>(BASE32)),
     };
 
+    // `userVerificationToken` (modern web-vault) is replayed on the enable/disable request; the
+    // flat `enabled`/`key` (older clients) and the nested `authenticator` object (current clients)
+    // carry the same details either way.
     Ok(Json(json!({
         "enabled": enabled,
         "key": key,
+        "authenticator": { "enabled": enabled, "key": key },
+        "userVerificationToken": mint_user_verification_token(user.uuid, TwoFactorType::Authenticator),
         "object": "twoFactorAuthenticator"
     })))
 }
@@ -45,7 +50,8 @@ pub async fn generate_authenticator(headers: Headers, data: Json<PasswordData>) 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct EnableAuthenticatorData {
-    master_password_hash: String,
+    #[serde(flatten)]
+    verify: UserVerify,
     key: String,
     #[serde(deserialize_with = "serde_aux::field_attributes::deserialize_string_from_number")]
     token: String,
@@ -53,15 +59,12 @@ pub struct EnableAuthenticatorData {
 
 pub async fn activate_authenticator(headers: Headers, data: Json<EnableAuthenticatorData>) -> Result<Json<Value>> {
     let data: EnableAuthenticatorData = data.0;
-    let password_hash = data.master_password_hash;
     let key = data.key;
     let token = data.token;
 
     let mut user = headers.user;
 
-    if !user.check_valid_password(&password_hash) {
-        err!("Invalid password");
-    }
+    data.verify.validate(&user, TwoFactorType::Authenticator)?;
 
     // Validate key as base32 and 20 bytes length
     let decoded_key: Vec<u8> = match BASE32.decode(key.as_bytes()) {
@@ -84,6 +87,7 @@ pub async fn activate_authenticator(headers: Headers, data: Json<EnableAuthentic
     Ok(Json(json!({
         "enabled": true,
         "key": key,
+        "authenticator": { "enabled": true, "key": key },
         "object": "twoFactorAuthenticator"
     })))
 }
@@ -231,6 +235,85 @@ mod tests {
         let list = client.get("/api/two-factor").await;
         list.assert_ok();
         assert!(list.json()["data"].as_array().unwrap().is_empty(), "2FA list should be empty after disable: {}", list.body);
+    }
+
+    #[tokio::test]
+    async fn get_authenticator_mints_user_verification_token() {
+        let client = TestClient::register_and_login().await;
+        let gen_resp = client.post("/api/two-factor/get-authenticator", json!({ "masterPasswordHash": client.master_password_hash })).await;
+        gen_resp.assert_ok();
+        let body = gen_resp.json();
+        // Modern web-vault reads the token + nested `authenticator`; older clients read flat `key`.
+        assert!(body["userVerificationToken"].as_str().is_some_and(|t| !t.is_empty()), "should mint a token: {}", gen_resp.body);
+        assert!(body["key"].as_str().is_some(), "flat key present: {}", gen_resp.body);
+        assert_eq!(body["authenticator"]["key"], body["key"], "nested key mirrors flat key: {}", gen_resp.body);
+    }
+
+    #[tokio::test]
+    async fn enable_authenticator_via_user_verification_token() {
+        let client = TestClient::register_and_login().await;
+
+        // Setup GET mints the token once the master password is proven.
+        let gen_resp = client.post("/api/two-factor/get-authenticator", json!({ "masterPasswordHash": client.master_password_hash })).await;
+        gen_resp.assert_ok();
+        let secret = gen_resp.json()["key"].as_str().unwrap().to_string();
+        let uvt = gen_resp.json()["userVerificationToken"].as_str().unwrap().to_string();
+
+        // Enable with the token instead of the master-password hash (the modern client flow).
+        let activate =
+            client.post("/api/two-factor/authenticator", json!({ "userVerificationToken": uvt, "key": secret, "token": totp_code(&secret, 0) })).await;
+        activate.assert_ok();
+
+        let list = client.get("/api/two-factor").await;
+        let types: Vec<i64> = list.json()["data"].as_array().unwrap().iter().filter_map(|p| p["type"].as_i64()).collect();
+        assert!(types.contains(&0), "authenticator should be enabled: {}", list.body);
+    }
+
+    #[tokio::test]
+    async fn enable_authenticator_rejects_bogus_token() {
+        let client = TestClient::register_and_login().await;
+        let gen_resp = client.post("/api/two-factor/get-authenticator", json!({ "masterPasswordHash": client.master_password_hash })).await;
+        let secret = gen_resp.json()["key"].as_str().unwrap().to_string();
+
+        // Neither a valid password nor a valid token → rejected before touching the TOTP code.
+        let bad = client
+            .post("/api/two-factor/authenticator", json!({ "userVerificationToken": "not-a-jwt", "key": secret, "token": totp_code(&secret, 0) }))
+            .await;
+        assert!(bad.status >= 400, "bogus token should be rejected, got {}: {}", bad.status, bad.body);
+    }
+
+    #[tokio::test]
+    async fn delete_authenticator_via_user_verification_token() {
+        let client = TestClient::register_and_login().await;
+        client.enable_totp().await;
+
+        // Mint a fresh token bound to the authenticator provider, then disable via per-provider DELETE.
+        let gen_resp = client.post("/api/two-factor/get-authenticator", json!({ "masterPasswordHash": client.master_password_hash })).await;
+        let uvt = gen_resp.json()["userVerificationToken"].as_str().unwrap().to_string();
+
+        let del = client.delete_json("/api/two-factor/authenticator", json!({ "userVerificationToken": uvt })).await;
+        del.assert_ok();
+
+        let list = client.get("/api/two-factor").await;
+        assert!(list.json()["data"].as_array().unwrap().is_empty(), "2FA list should be empty after per-provider delete: {}", list.body);
+    }
+
+    #[tokio::test]
+    async fn user_verification_token_is_provider_bound() {
+        let client = TestClient::register_and_login().await;
+        client.enable_totp().await;
+
+        // A token minted for the authenticator must not authorize disabling a different provider.
+        let gen_resp = client.post("/api/two-factor/get-authenticator", json!({ "masterPasswordHash": client.master_password_hash })).await;
+        let uvt = gen_resp.json()["userVerificationToken"].as_str().unwrap().to_string();
+
+        let del = client.delete_json("/api/two-factor/duo", json!({ "userVerificationToken": uvt })).await;
+        assert!(del.status >= 400, "authenticator token must not delete Duo, got {}: {}", del.status, del.body);
+
+        // And the authenticator is still enabled.
+        let list = client.get("/api/two-factor").await;
+        let types: Vec<i64> = list.json()["data"].as_array().unwrap().iter().filter_map(|p| p["type"].as_i64()).collect();
+        assert!(types.contains(&0), "authenticator should remain enabled: {}", list.body);
     }
 
     #[tokio::test]

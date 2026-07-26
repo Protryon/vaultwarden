@@ -1,6 +1,5 @@
 use axol::prelude::*;
 use chrono::Utc;
-use data_encoding::BASE64;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use url::Url;
@@ -11,13 +10,13 @@ use crate::{
     api::PasswordData,
     auth::Headers,
     crypto,
-    db::{Conn, DB, Event, EventType, TwoFactor, TwoFactorType, User},
+    db::{Conn, DB, EventType, TwoFactor, TwoFactorType, User},
     error::MapResult,
     events::log_user_event,
     util::get_reqwest_client,
 };
 
-use super::_generate_recover_code;
+use super::{_generate_recover_code, UserVerify, mint_user_verification_token};
 
 #[derive(Clone, Serialize, Deserialize)]
 struct DuoData {
@@ -101,17 +100,24 @@ pub async fn get_duo(headers: Headers, data: Json<PasswordData>) -> Result<Json<
         DuoStatus::Disabled(false) => (false, None),
     };
 
+    // Duo Universal wire format: `clientId`/`clientSecret` (was `integrationKey`/`secretKey`).
+    let uv_token = mint_user_verification_token(headers.user.uuid, TwoFactorType::Duo);
     let json = if let Some(data) = data {
         json!({
             "enabled": enabled,
             "host": data.host,
-            "secretKey": data.secret_key,
-            "integrationKey": data.integration_key,
+            "clientSecret": data.secret_key,
+            "clientId": data.integration_key,
+            "userVerificationToken": uv_token,
             "object": "twoFactorDuo"
         })
     } else {
         json!({
             "enabled": enabled,
+            "host": null,
+            "clientSecret": null,
+            "clientId": null,
+            "userVerificationToken": uv_token,
             "object": "twoFactorDuo"
         })
     };
@@ -120,21 +126,21 @@ pub async fn get_duo(headers: Headers, data: Json<PasswordData>) -> Result<Json<
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 #[serde(rename_all = "camelCase")]
 pub struct EnableDuoData {
-    master_password_hash: String,
+    #[serde(flatten)]
+    verify: UserVerify,
     host: Url,
-    secret_key: String,
-    integration_key: String,
+    client_secret: String,
+    client_id: String,
 }
 
 impl From<EnableDuoData> for DuoData {
     fn from(d: EnableDuoData) -> Self {
         Self {
             host: d.host,
-            integration_key: d.integration_key,
-            secret_key: d.secret_key,
+            integration_key: d.client_id,
+            secret_key: d.client_secret,
         }
     }
 }
@@ -145,16 +151,14 @@ fn check_duo_fields_custom(data: &EnableDuoData) -> bool {
         st.is_empty() || s == DISABLED_MESSAGE_DEFAULT
     }
 
-    !empty_or_default(&data.secret_key) && !empty_or_default(&data.integration_key)
+    !empty_or_default(&data.client_secret) && !empty_or_default(&data.client_id)
 }
 
 pub async fn activate_duo(headers: Headers, data: Json<EnableDuoData>) -> Result<Json<Value>> {
     let data: EnableDuoData = data.0;
     let mut user = headers.user;
 
-    if !user.check_valid_password(&data.master_password_hash) {
-        err!("Invalid password");
-    }
+    data.verify.validate(&user, TwoFactorType::Duo)?;
 
     let (data, data_str) = if check_duo_fields_custom(&data) {
         let data_req: DuoData = data.into();
@@ -177,8 +181,8 @@ pub async fn activate_duo(headers: Headers, data: Json<EnableDuoData>) -> Result
     Ok(Json(json!({
         "enabled": true,
         "host": data.host,
-        "secretKey": data.secret_key,
-        "integrationKey": data.integration_key,
+        "clientSecret": data.secret_key,
+        "clientId": data.integration_key,
         "object": "twoFactorDuo"
     })))
 }
@@ -212,13 +216,6 @@ async fn duo_api_request(method: &str, path: &str, params: &str, data: &DuoData)
     Ok(())
 }
 
-const DUO_EXPIRE: i64 = 300;
-const APP_EXPIRE: i64 = 3600;
-
-const AUTH_PREFIX: &str = "AUTH";
-const DUO_PREFIX: &str = "TX";
-const APP_PREFIX: &str = "APP";
-
 async fn get_user_duo_data(uuid: Uuid, conn: &Conn) -> Result<DuoStatus> {
     // If the user doesn't have an entry, disabled
     let twofactor = match TwoFactor::find_by_user_and_type(conn, uuid, TwoFactorType::Duo).await? {
@@ -241,7 +238,9 @@ async fn get_user_duo_data(uuid: Uuid, conn: &Conn) -> Result<DuoStatus> {
 }
 
 // let (ik, sk, ak, host) = get_duo_keys();
-async fn get_duo_keys_email(email: &str, conn: &Conn) -> Result<(String, String, String, Url)> {
+// Duo Universal (OIDC) only needs (client_id, client_secret, host); the app_key is retained in the
+// tuple for signature compatibility but ignored by the OIDC flow (see `duo_oidc`).
+pub async fn get_duo_keys_email(email: &str, conn: &Conn) -> Result<(String, String, String, Url)> {
     let data = match User::find_by_email(conn, email).await? {
         Some(u) => get_user_duo_data(u.uuid, conn).await?.data(),
         _ => DuoData::global(),
@@ -249,106 +248,4 @@ async fn get_duo_keys_email(email: &str, conn: &Conn) -> Result<(String, String,
     .map_res("Can't fetch Duo Keys")?;
 
     Ok((data.integration_key, data.secret_key, CONFIG.duo.as_ref().map(|x| x.app_key.clone()).ok_or(Error::NotFound)?, data.host))
-}
-
-pub async fn generate_duo_signature(email: &str, conn: &Conn) -> Result<(String, Url)> {
-    let now = Utc::now().timestamp();
-
-    let (ik, sk, ak, host) = get_duo_keys_email(email, conn).await?;
-
-    let duo_sign = sign_duo_values(&sk, email, &ik, DUO_PREFIX, now + DUO_EXPIRE);
-    let app_sign = sign_duo_values(&ak, email, &ik, APP_PREFIX, now + APP_EXPIRE);
-
-    Ok((format!("{duo_sign}:{app_sign}"), host))
-}
-
-fn sign_duo_values(key: &str, email: &str, ikey: &str, prefix: &str, expire: i64) -> String {
-    let val = format!("{email}|{ikey}|{expire}");
-    let cookie = format!("{}|{}", prefix, BASE64.encode(val.as_bytes()));
-
-    format!("{}|{}", cookie, crypto::hmac_sign(key, &cookie))
-}
-
-pub async fn validate_duo_login(user_uuid: Uuid, email: &str, response: &str, conn: &Conn) -> Result<()> {
-    // email is as entered by the user, so it needs to be normalized before
-    // comparison with auth_user below.
-    let email = &email.to_lowercase();
-
-    let split: Vec<&str> = response.split(':').collect();
-    if split.len() != 2 {
-        Event::new(EventType::UserFailedLogIn2fa, None).with_user_uuid(user_uuid).save(conn).await?;
-        err!("Invalid response length");
-    }
-
-    let auth_sig = split[0];
-    let app_sig = split[1];
-
-    let now = Utc::now().timestamp();
-
-    let (ik, sk, ak, _host) = get_duo_keys_email(email, conn).await?;
-
-    let auth_user = parse_duo_values(&sk, auth_sig, &ik, AUTH_PREFIX, now)?;
-    let app_user = parse_duo_values(&ak, app_sig, &ik, APP_PREFIX, now)?;
-
-    if !crypto::ct_eq(&auth_user, app_user) || !crypto::ct_eq(&auth_user, email) {
-        Event::new(EventType::UserFailedLogIn2fa, None).with_user_uuid(user_uuid).save(conn).await?;
-        err!("Error validating duo authentication")
-    }
-
-    Ok(())
-}
-
-fn parse_duo_values(key: &str, val: &str, ikey: &str, prefix: &str, time: i64) -> Result<String> {
-    let split: Vec<&str> = val.split('|').collect();
-    if split.len() != 3 {
-        err!("Invalid value length")
-    }
-
-    let u_prefix = split[0];
-    let u_b64 = split[1];
-    let u_sig = split[2];
-
-    let sig = crypto::hmac_sign(key, &format!("{u_prefix}|{u_b64}"));
-
-    if !crypto::ct_eq(crypto::hmac_sign(key, &sig), crypto::hmac_sign(key, u_sig)) {
-        err!("Duo signatures don't match")
-    }
-
-    if u_prefix != prefix {
-        err!("Prefixes don't match")
-    }
-
-    let cookie_vec = match BASE64.decode(u_b64.as_bytes()) {
-        Ok(c) => c,
-        Err(_) => err!("Invalid Duo cookie encoding"),
-    };
-
-    let cookie = match String::from_utf8(cookie_vec) {
-        Ok(c) => c,
-        Err(_) => err!("Invalid Duo cookie encoding"),
-    };
-
-    let cookie_split: Vec<&str> = cookie.split('|').collect();
-    if cookie_split.len() != 3 {
-        err!("Invalid cookie length")
-    }
-
-    let username = cookie_split[0];
-    let u_ikey = cookie_split[1];
-    let expire = cookie_split[2];
-
-    if !crypto::ct_eq(ikey, u_ikey) {
-        err!("Invalid ikey")
-    }
-
-    let expire: i64 = match expire.parse() {
-        Ok(e) => e,
-        Err(_) => err!("Invalid expire time"),
-    };
-
-    if time >= expire {
-        err!("Expired authorization")
-    }
-
-    Ok(username.into())
 }

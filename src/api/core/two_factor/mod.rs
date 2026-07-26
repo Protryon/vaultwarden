@@ -1,13 +1,16 @@
+use std::net::IpAddr;
+
 use axol::prelude::*;
 use chrono::Utc;
 use data_encoding::BASE32;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 use crate::{
     CONFIG,
     api::PasswordData,
-    auth::{ClientHeaders, Headers},
+    auth::{ClientHeaders, Headers, decode_2fa_user_verification, encode_jwt, generate_2fa_user_verification_claims},
     crypto,
     db::{Conn, DB, EventType, OrgPolicyType, Organization, TwoFactor, TwoFactorType, User, UserOrgType, UserOrganization},
     events::log_user_event,
@@ -16,6 +19,7 @@ use crate::{
 
 pub mod authenticator;
 pub mod duo;
+pub mod duo_oidc;
 pub mod email;
 pub mod webauthn;
 pub mod yubikey;
@@ -35,18 +39,119 @@ pub fn route(router: Router) -> Router {
         .post("/two-factor/get-authenticator", authenticator::generate_authenticator)
         .post("/two-factor/authenticator", authenticator::activate_authenticator)
         .put("/two-factor/authenticator", authenticator::activate_authenticator)
-        //TODO https://github.com/Protryon/vaultwarden/commit/08183fc9992c39c8e7649f730f38d89c265417c2
+        .delete("/two-factor/authenticator", delete_authenticator)
         .post("/two-factor/get-yubikey", yubikey::generate_yubikey)
         .post("/two-factor/yubikey", yubikey::activate_yubikey)
         .put("/two-factor/yubikey", yubikey::activate_yubikey)
+        .delete("/two-factor/yubikey", delete_yubikey)
         .post("/two-factor/get-webauthn", webauthn::get_webauthn)
         .post("/two-factor/webauthn", webauthn::activate_webauthn)
         .put("/two-factor/webauthn", webauthn::activate_webauthn)
         .delete("/two-factor/webauthn", webauthn::delete_webauthn)
+        .delete("/two-factor/webauthn/all", webauthn::delete_webauthn_all)
         .post("/two-factor/get-webauthn-challenge", webauthn::generate_webauthn_challenge)
         .post("/two-factor/get-duo", duo::get_duo)
         .post("/two-factor/duo", duo::activate_duo)
         .put("/two-factor/duo", duo::activate_duo)
+        .delete("/two-factor/duo", delete_duo)
+        .delete("/two-factor/email", delete_email)
+}
+
+/// Mints a `userVerificationToken` (see [`crate::auth::TwoFactorUserVerificationJwtClaims`]) bound
+/// to `user_uuid` and `provider`. The setup GET endpoints (`get-authenticator`, `get-duo`, …)
+/// return this once the master password is verified; the matching enable/disable request replays
+/// it via [`UserVerify`].
+pub fn mint_user_verification_token(user_uuid: Uuid, provider: TwoFactorType) -> String {
+    encode_jwt(&generate_2fa_user_verification_claims(user_uuid, provider as i32))
+}
+
+/// Proof-of-identity fields shared by every 2FA management request. The modern web-vault sends a
+/// `userVerificationToken` obtained from the setup GET; older clients send the master-password
+/// hash directly. Handlers `#[serde(flatten)]` this into their request body and call
+/// [`UserVerify::validate`] before mutating 2FA config. Unknown sibling fields (e.g. a webauthn
+/// `id`) are ignored, so the same type works as a standalone DELETE body too.
+#[derive(Deserialize, Default, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct UserVerify {
+    pub master_password_hash: Option<String>,
+    pub user_verification_token: Option<String>,
+}
+
+impl UserVerify {
+    /// Authorizes managing `provider` for `user`: a valid userVerificationToken bound to this
+    /// user + provider, or (fallback for older clients) the correct master-password hash.
+    pub fn validate(&self, user: &User, provider: TwoFactorType) -> Result<()> {
+        if let Some(token) = self.user_verification_token.as_deref().filter(|t| !t.is_empty()) {
+            let claims = decode_2fa_user_verification(token)?;
+            if claims.sub != user.uuid || claims.provider != provider as i32 {
+                err!("User verification failed");
+            }
+            return Ok(());
+        }
+        if let Some(hash) = self.master_password_hash.as_deref().filter(|h| !h.is_empty())
+            && user.check_valid_password(hash)
+        {
+            return Ok(());
+        }
+        err!("User verification failed");
+    }
+}
+
+/// Deletes a single 2FA `provider` for `user`, mirroring the generic `disable` logic: logs the
+/// event and, if this was the user's last 2FA method, drops them from orgs that require 2FA.
+pub async fn disable_twofactor_for_user(user: &User, type_: TwoFactorType, device_type: i32, ip: IpAddr, conn: &mut Conn) -> Result<()> {
+    if let Some(twofactor) = TwoFactor::find_by_user_and_type(conn, user.uuid, type_).await? {
+        twofactor.delete(conn).await?;
+        log_user_event(EventType::UserDisabled2fa, user.uuid, device_type, Utc::now(), ip, conn).await?;
+    }
+
+    let twofactor_disabled = TwoFactor::find_by_user_official(conn, user.uuid).await?.is_empty();
+
+    if twofactor_disabled {
+        for user_org in UserOrganization::find_by_user_and_policy(conn, user.uuid, OrgPolicyType::TwoFactorAuthentication).await?.into_iter() {
+            if user_org.atype < UserOrgType::Admin {
+                if CONFIG.mail_enabled() {
+                    let org = Organization::get(conn, user_org.organization_uuid).await?.ok_or(Error::NotFound)?;
+                    mail::send_2fa_removed_from_org(&user.email, &org.name).await?;
+                }
+                user_org.delete(conn).await?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Shared handler for the per-provider `DELETE /two-factor/{provider}` endpoints. The modern
+/// web-vault disables a method this way (authorized by a userVerificationToken) instead of the
+/// legacy generic `POST /two-factor/disable`.
+async fn delete_provider(headers: Headers, verify: UserVerify, type_: TwoFactorType) -> Result<Json<Value>> {
+    let user = headers.user;
+    verify.validate(&user, type_)?;
+    let mut conn = DB.get().await.ise()?;
+    disable_twofactor_for_user(&user, type_, headers.device.atype, headers.ip, &mut conn).await?;
+
+    Ok(Json(json!({
+        "enabled": false,
+        "type": type_,
+        "object": "twoFactorProvider"
+    })))
+}
+
+pub async fn delete_authenticator(headers: Headers, data: Json<UserVerify>) -> Result<Json<Value>> {
+    delete_provider(headers, data.0, TwoFactorType::Authenticator).await
+}
+
+pub async fn delete_yubikey(headers: Headers, data: Json<UserVerify>) -> Result<Json<Value>> {
+    delete_provider(headers, data.0, TwoFactorType::YubiKey).await
+}
+
+pub async fn delete_duo(headers: Headers, data: Json<UserVerify>) -> Result<Json<Value>> {
+    delete_provider(headers, data.0, TwoFactorType::Duo).await
+}
+
+pub async fn delete_email(headers: Headers, data: Json<UserVerify>) -> Result<Json<Value>> {
+    delete_provider(headers, data.0, TwoFactorType::Email).await
 }
 
 pub async fn get_twofactor(headers: Headers) -> Result<Json<Value>> {
@@ -141,24 +246,7 @@ pub async fn disable_twofactor(headers: Headers, data: Json<DisableTwoFactorData
     let type_ = TwoFactorType::from_repr(data.r#type).ok_or(Error::NotFound)?;
     let mut conn = DB.get().await.ise()?;
 
-    if let Some(twofactor) = TwoFactor::find_by_user_and_type(&conn, user.uuid, type_).await? {
-        twofactor.delete(&conn).await?;
-        log_user_event(EventType::UserDisabled2fa, user.uuid, headers.device.atype, Utc::now(), headers.ip, &mut conn).await?;
-    }
-
-    let twofactor_disabled = TwoFactor::find_by_user_official(&conn, user.uuid).await?.is_empty();
-
-    if twofactor_disabled {
-        for user_org in UserOrganization::find_by_user_and_policy(&conn, user.uuid, OrgPolicyType::TwoFactorAuthentication).await?.into_iter() {
-            if user_org.atype < UserOrgType::Admin {
-                if CONFIG.mail_enabled() {
-                    let org = Organization::get(&conn, user_org.organization_uuid).await?.ok_or(Error::NotFound)?;
-                    mail::send_2fa_removed_from_org(&user.email, &org.name).await?;
-                }
-                user_org.delete(&mut conn).await?;
-            }
-        }
-    }
+    disable_twofactor_for_user(&user, type_, headers.device.atype, headers.ip, &mut conn).await?;
 
     Ok(Json(json!({
         "enabled": false,

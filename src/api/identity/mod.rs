@@ -20,7 +20,7 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::api::core::two_factor::email::{self, EmailTokenData};
-use crate::api::core::two_factor::{duo, yubikey};
+use crate::api::core::two_factor::yubikey;
 use crate::config::SSO_CALLBACK_URL;
 use crate::db::{AuthRequest, Event, OrgPolicyType, OrganizationPolicy, SsoNonce};
 use crate::{
@@ -640,7 +640,7 @@ async fn twofactor_auth(user_uuid: Uuid, data: &ConnectData, device: &mut Device
 
     let twofactor_code = match data.two_factor_token {
         Some(ref code) => code,
-        None => err_json!(json_err_twofactor(&twofactor_ids, user_uuid, conn).await?, "2FA token not provided"),
+        None => err_json!(json_err_twofactor(&twofactor_ids, user_uuid, data, conn).await?, "2FA token not provided"),
     };
 
     let selected_twofactor = twofactors.into_iter().find(|tf| tf.atype == selected_id && tf.enabled);
@@ -655,7 +655,12 @@ async fn twofactor_auth(user_uuid: Uuid, data: &ConnectData, device: &mut Device
         TwoFactorType::Authenticator => _tf::authenticator::validate_totp_code_str(user_uuid, twofactor_code, selected_data, ip.ip, conn).await?,
         TwoFactorType::Webauthn => _tf::webauthn::validate_webauthn_login(user_uuid, twofactor_code, conn).await?,
         TwoFactorType::YubiKey => _tf::yubikey::validate_yubikey_login(twofactor_code, selected_data).await?,
-        TwoFactorType::Duo => _tf::duo::validate_duo_login(user_uuid, data.username.as_ref().unwrap().trim(), twofactor_code, conn).await?,
+        TwoFactorType::Duo => {
+            let email = data.username.as_ref().unwrap().trim();
+            let client_id = data.client_id.as_deref().unwrap_or("web");
+            let device_identifier = data.device_identifier.unwrap_or_default();
+            _tf::duo_oidc::validate_duo_login(conn, user_uuid, email, twofactor_code, client_id, device_identifier).await?
+        }
         TwoFactorType::Email => _tf::email::validate_email_code_str(user_uuid, twofactor_code, selected_data).await?,
 
         TwoFactorType::Remember => {
@@ -664,7 +669,7 @@ async fn twofactor_auth(user_uuid: Uuid, data: &ConnectData, device: &mut Device
                     remember = 1; // Make sure we also return the token here, otherwise it will only remember the first time
                 }
                 _ => {
-                    err_json!(json_err_twofactor(&twofactor_ids, user_uuid, conn).await?, "2FA Remember token not provided")
+                    err_json!(json_err_twofactor(&twofactor_ids, user_uuid, data, conn).await?, "2FA Remember token not provided")
                 }
             }
         }
@@ -690,7 +695,7 @@ fn selected_data(tf: Option<TwoFactor>) -> Result<Value> {
     tf.map(|t| t.data).map_res("Two factor doesn't exist").map_err(Into::into)
 }
 
-async fn json_err_twofactor(providers: &[TwoFactorType], user_uuid: Uuid, conn: &Conn) -> Result<Value> {
+async fn json_err_twofactor(providers: &[TwoFactorType], user_uuid: Uuid, data: &ConnectData, conn: &Conn) -> Result<Value> {
     use crate::api::core::two_factor;
 
     let mut result = json!({
@@ -720,11 +725,14 @@ async fn json_err_twofactor(providers: &[TwoFactorType], user_uuid: Uuid, conn: 
                     None => err!("User does not exist"),
                 };
 
-                let (signature, host) = duo::generate_duo_signature(&email, conn).await?;
+                // Duo Universal Prompt: hand the client an OIDC redirect URL instead of the dead
+                // legacy Web SDK v2 `{Host, Signature}` iframe params.
+                let client_id = data.client_id.as_deref().unwrap_or("web");
+                let device_identifier = data.device_identifier.unwrap_or_default();
+                let auth_url = two_factor::duo_oidc::get_duo_auth_url(conn, &email, client_id, device_identifier).await?;
 
                 result["TwoFactorProviders2"][(provider as i32).to_string()] = json!({
-                    "Host": host,
-                    "Signature": signature,
+                    "AuthUrl": auth_url,
                 });
             }
 

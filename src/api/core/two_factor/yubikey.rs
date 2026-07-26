@@ -1,7 +1,7 @@
 use axol::prelude::*;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use yubico::{config::Config, verify};
 
 use crate::{
@@ -13,12 +13,13 @@ use crate::{
     events::log_user_event,
 };
 
-use super::_generate_recover_code;
+use super::{_generate_recover_code, UserVerify, mint_user_verification_token};
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct EnableYubikeyData {
-    master_password_hash: String,
+    #[serde(flatten)]
+    verify: UserVerify,
     key1: Option<String>,
     key2: Option<String>,
     key3: Option<String>,
@@ -47,6 +48,23 @@ fn jsonify_yubikeys(yubikeys: Vec<String>) -> serde_json::Value {
         result[format!("Key{}", i + 1)] = Value::String(key);
     }
 
+    result
+}
+
+/// Builds the YubiKey provider response. Emits the flat `Key1..5`/`nfc`/`enabled` fields (older
+/// clients) plus a nested `yubiKey` object (current web-vault), with the corrected
+/// `twoFactorYubiKey` discriminator. `uv_token` is included only on the setup GET.
+fn yubikey_response(keys: Vec<String>, nfc: bool, enabled: bool, uv_token: Option<String>) -> Value {
+    let mut details = jsonify_yubikeys(keys);
+    details["enabled"] = Value::Bool(enabled);
+    details["nfc"] = Value::Bool(nfc);
+
+    let mut result = details.clone();
+    result["object"] = Value::String("twoFactorYubiKey".to_owned());
+    result["yubiKey"] = details;
+    if let Some(token) = uv_token {
+        result["userVerificationToken"] = Value::String(token);
+    }
     result
 }
 
@@ -85,21 +103,13 @@ pub async fn generate_yubikey(headers: Headers, data: Json<PasswordData>) -> Res
 
     let r = TwoFactor::find_by_user_and_type(&conn, user_uuid, TwoFactorType::YubiKey).await?;
 
+    let uv_token = Some(mint_user_verification_token(user_uuid, TwoFactorType::YubiKey));
+
     if let Some(r) = r {
         let yubikey_metadata: YubikeyMetadata = serde_json::from_value(r.data).ise()?;
-
-        let mut result = jsonify_yubikeys(yubikey_metadata.keys);
-
-        result["enabled"] = Value::Bool(true);
-        result["nfc"] = Value::Bool(yubikey_metadata.nfc);
-        result["object"] = Value::String("twoFactorU2f".to_owned());
-
-        Ok(Json(result))
+        Ok(Json(yubikey_response(yubikey_metadata.keys, yubikey_metadata.nfc, true, uv_token)))
     } else {
-        Ok(Json(json!({
-            "enabled": false,
-            "object": "twoFactorU2f",
-        })))
+        Ok(Json(yubikey_response(Vec::new(), false, false, uv_token)))
     }
 }
 
@@ -107,9 +117,7 @@ pub async fn activate_yubikey(headers: Headers, data: Json<EnableYubikeyData>) -
     let data: EnableYubikeyData = data.0;
     let mut user = headers.user;
 
-    if !user.check_valid_password(&data.master_password_hash) {
-        err!("Invalid password");
-    }
+    data.verify.validate(&user, TwoFactorType::YubiKey)?;
     let mut conn = DB.get().await.ise()?;
 
     // Check if we already have some data
@@ -121,10 +129,7 @@ pub async fn activate_yubikey(headers: Headers, data: Json<EnableYubikeyData>) -
     let yubikeys = parse_yubikeys(&data);
 
     if yubikeys.is_empty() {
-        return Ok(Json(json!({
-            "enabled": false,
-            "object": "twoFactorU2f",
-        })));
+        return Ok(Json(yubikey_response(Vec::new(), false, false, None)));
     }
 
     // Ensure they are valid OTPs
@@ -151,13 +156,7 @@ pub async fn activate_yubikey(headers: Headers, data: Json<EnableYubikeyData>) -
 
     log_user_event(EventType::UserUpdated2fa, user.uuid, headers.device.atype, Utc::now(), headers.ip, &mut conn).await?;
 
-    let mut result = jsonify_yubikeys(yubikey_metadata.keys);
-
-    result["enabled"] = Value::Bool(true);
-    result["nfc"] = Value::Bool(yubikey_metadata.nfc);
-    result["object"] = Value::String("twoFactorU2f".to_owned());
-
-    Ok(Json(result))
+    Ok(Json(yubikey_response(yubikey_metadata.keys, yubikey_metadata.nfc, true, None)))
 }
 
 pub async fn validate_yubikey_login(response: &str, twofactor_data: Value) -> Result<()> {

@@ -26,6 +26,7 @@ static JWT_ADMIN_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|admin", CONFIG.
 static JWT_SEND_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|send", CONFIG.settings.public));
 static JWT_ORG_API_KEY_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|api.organization", CONFIG.settings.public));
 static JWT_REGISTER_VERIFY_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|registerverify", CONFIG.settings.public));
+static JWT_2FA_USER_VERIFICATION_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|2fauserverification", CONFIG.settings.public));
 
 static PRIVATE_RSA_KEY: Lazy<EncodingKey> = Lazy::new(|| {
     let key = std::fs::read(CONFIG.private_rsa_key()).unwrap_or_else(|e| panic!("Error loading private RSA Key. \n{e}"));
@@ -101,6 +102,10 @@ pub fn decode_api_org(token: &str) -> Result<OrgApiKeyLoginJwtClaims> {
 
 pub fn decode_register_verify(token: &str) -> Result<RegisterVerifyJwtClaims> {
     decode_jwt(token, JWT_REGISTER_VERIFY_ISSUER.to_string())
+}
+
+pub fn decode_2fa_user_verification(token: &str) -> Result<TwoFactorUserVerificationJwtClaims> {
+    decode_jwt(token, JWT_2FA_USER_VERIFICATION_ISSUER.to_string())
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -335,6 +340,36 @@ pub fn generate_send_claims(send_id: Uuid, file_id: Uuid) -> BasicJwtClaims {
         exp: (time_now + Duration::minutes(2)).timestamp(),
         iss: JWT_SEND_ISSUER.to_string(),
         sub: format!("{send_id}/{file_id}"),
+    }
+}
+
+/// Short-lived token minted by the 2FA setup GET endpoints (`get-authenticator`, `get-duo`, …)
+/// once the user proves knowledge of their master password, and replayed on the matching
+/// enable/disable request. Mirrors Bitwarden's `userVerificationToken`, which the modern
+/// web-vault uses in place of re-sending the master-password hash. Bound to a single user and
+/// 2FA provider so a token minted for one provider can't authorize changes to another.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TwoFactorUserVerificationJwtClaims {
+    // Not before
+    pub nbf: i64,
+    // Expiration time
+    pub exp: i64,
+    // Issuer
+    pub iss: String,
+    // Subject (user uuid)
+    pub sub: Uuid,
+    // The 2FA provider type this token authorizes (TwoFactorType repr).
+    pub provider: i32,
+}
+
+pub fn generate_2fa_user_verification_claims(user_uuid: Uuid, provider: i32) -> TwoFactorUserVerificationJwtClaims {
+    let time_now = Utc::now();
+    TwoFactorUserVerificationJwtClaims {
+        nbf: time_now.timestamp(),
+        exp: (time_now + Duration::minutes(15)).timestamp(),
+        iss: JWT_2FA_USER_VERIFICATION_ISSUER.to_string(),
+        sub: user_uuid,
+        provider,
     }
 }
 

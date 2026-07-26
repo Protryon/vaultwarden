@@ -38,6 +38,11 @@ pub fn schedule_jobs() {
                 runtime.spawn(purge_auth_requests());
             }));
 
+            // Purge expired Duo Universal (OIDC) login contexts.
+            sched.add(Job::new("0 13,28,43,58 * * * *".parse().unwrap(), || {
+                runtime.spawn(crate::api::core::two_factor::duo_oidc::purge_duo_contexts());
+            }));
+
             // Purge sends that are past their deletion date.
             sched.add(Job::new(CONFIG.jobs.send_purge_schedule.clone(), || {
                 runtime.spawn(purge_sends());

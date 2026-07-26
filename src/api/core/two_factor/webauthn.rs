@@ -26,7 +26,7 @@ use crate::{
     events::log_user_event,
 };
 
-use super::_generate_recover_code;
+use super::{_generate_recover_code, UserVerify, disable_twofactor_for_user, mint_user_verification_token};
 
 static WEBAUTHN: LazyLock<Webauthn> = LazyLock::new(|| {
     let domain: Url = CONFIG.settings.public.clone();
@@ -85,13 +85,15 @@ pub async fn get_webauthn(headers: Headers, data: Json<PasswordData>) -> Result<
 
     Ok(Json(json!({
         "enabled": enabled,
-        "keys": registrations_json,
+        "keys": registrations_json.clone(),
+        "webAuthn": { "enabled": enabled, "keys": registrations_json },
+        "userVerificationToken": mint_user_verification_token(headers.user.uuid, TwoFactorType::Webauthn),
         "object": "twoFactorWebAuthn"
     })))
 }
 
-pub async fn generate_webauthn_challenge(headers: Headers, data: Json<PasswordData>) -> Result<Json<Value>> {
-    headers.user.check_valid_password_data(&data)?;
+pub async fn generate_webauthn_challenge(headers: Headers, data: Json<UserVerify>) -> Result<Json<Value>> {
+    data.0.validate(&headers.user, TwoFactorType::Webauthn)?;
     let conn = DB.get().await.ise()?;
 
     let registrations = get_webauthn_registrations(headers.user.uuid, &conn)
@@ -122,7 +124,14 @@ pub async fn generate_webauthn_challenge(headers: Headers, data: Json<PasswordDa
     let mut challenge_value = serde_json::to_value(challenge.public_key).ise()?;
     challenge_value["status"] = "ok".into();
     challenge_value["errorMessage"] = "".into();
-    Ok(Json(challenge_value))
+
+    // The current web-vault expects the challenge wrapped as `{object, options}` (T9). Keep the
+    // legacy flat fields alongside `options` so older clients that read the challenge directly
+    // still work.
+    let mut result = challenge_value.clone();
+    result["object"] = "twoFactorWebAuthnChallenge".into();
+    result["options"] = challenge_value;
+    Ok(Json(result))
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,7 +140,8 @@ pub struct EnableWebauthnData {
     #[serde(deserialize_with = "serde_aux::field_attributes::deserialize_number_from_string")]
     id: i32, // 1..5
     name: String,
-    master_password_hash: String,
+    #[serde(flatten)]
+    verify: UserVerify,
     device_response: RegisterPublicKeyCredentialCopy,
 }
 
@@ -214,9 +224,7 @@ pub async fn activate_webauthn(headers: Headers, data: Json<EnableWebauthnData>)
     let data: EnableWebauthnData = data.0;
     let mut user = headers.user;
 
-    if !user.check_valid_password(&data.master_password_hash) {
-        err!("Invalid password");
-    }
+    data.verify.validate(&user, TwoFactorType::Webauthn)?;
     let mut conn = DB.get().await.ise()?;
 
     // Retrieve and delete the saved challenge state
@@ -251,8 +259,9 @@ pub async fn activate_webauthn(headers: Headers, data: Json<EnableWebauthnData>)
     let keys_json: Vec<Value> = registrations.iter().map(WebauthnRegistration::to_json).collect();
     Ok(Json(json!({
         "enabled": true,
-        "keys": keys_json,
-        "object": "twoFactorU2f"
+        "keys": keys_json.clone(),
+        "webAuthn": { "enabled": true, "keys": keys_json },
+        "object": "twoFactorWebAuthn"
     })))
 }
 
@@ -261,14 +270,13 @@ pub async fn activate_webauthn(headers: Headers, data: Json<EnableWebauthnData>)
 pub struct DeleteU2FData {
     #[serde(deserialize_with = "serde_aux::field_attributes::deserialize_number_from_string")]
     id: i32,
-    master_password_hash: String,
+    #[serde(flatten)]
+    verify: UserVerify,
 }
 
 pub async fn delete_webauthn(headers: Headers, data: Json<DeleteU2FData>) -> Result<Json<Value>> {
     let id = data.id;
-    if !headers.user.check_valid_password(&data.master_password_hash) {
-        err!("Invalid password");
-    }
+    data.verify.validate(&headers.user, TwoFactorType::Webauthn)?;
     let conn = DB.get().await.ise()?;
 
     let mut tf = match TwoFactor::find_by_user_and_type(&conn, headers.user.uuid, TwoFactorType::Webauthn).await? {
@@ -292,8 +300,27 @@ pub async fn delete_webauthn(headers: Headers, data: Json<DeleteU2FData>) -> Res
 
     Ok(Json(json!({
         "enabled": true,
-        "keys": keys_json,
-        "object": "twoFactorU2f"
+        "keys": keys_json.clone(),
+        "webAuthn": { "enabled": true, "keys": keys_json },
+        "object": "twoFactorWebAuthn"
+    })))
+}
+
+/// `DELETE /two-factor/webauthn/all` — disables the WebAuthn provider entirely (all credentials).
+/// The current web-vault uses this to turn the method off, distinct from `DELETE /two-factor/webauthn`
+/// which removes a single credential by `id`.
+pub async fn delete_webauthn_all(headers: Headers, data: Json<UserVerify>) -> Result<Json<Value>> {
+    let user = headers.user;
+    data.0.validate(&user, TwoFactorType::Webauthn)?;
+    let mut conn = DB.get().await.ise()?;
+
+    disable_twofactor_for_user(&user, TwoFactorType::Webauthn, headers.device.atype, headers.ip, &mut conn).await?;
+
+    Ok(Json(json!({
+        "enabled": false,
+        "keys": [],
+        "webAuthn": { "enabled": false, "keys": [] },
+        "object": "twoFactorWebAuthn"
     })))
 }
 
@@ -424,4 +451,48 @@ fn check_and_update_backup_eligible(
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::test_harness::TestClient;
+
+    #[tokio::test]
+    async fn get_webauthn_mints_token_and_uses_correct_object() {
+        let client = TestClient::register_and_login().await;
+        let resp = client.post("/api/two-factor/get-webauthn", json!({ "masterPasswordHash": client.master_password_hash })).await;
+        resp.assert_ok();
+        let body = resp.json();
+        assert_eq!(body["object"], "twoFactorWebAuthn", "discriminator: {}", resp.body);
+        assert!(body["userVerificationToken"].as_str().is_some_and(|t| !t.is_empty()), "should mint a token: {}", resp.body);
+    }
+
+    #[tokio::test]
+    async fn webauthn_challenge_is_wrapped_in_envelope() {
+        let client = TestClient::register_and_login().await;
+
+        // The current web-vault reads the registration challenge as `{object, options}` (T9).
+        let resp = client.post("/api/two-factor/get-webauthn-challenge", json!({ "masterPasswordHash": client.master_password_hash })).await;
+        resp.assert_ok();
+        let body = resp.json();
+        assert_eq!(body["object"], "twoFactorWebAuthnChallenge", "envelope object: {}", resp.body);
+        assert!(body["options"].is_object(), "options should be nested: {}", resp.body);
+        // The nested options still carry the FIDO2 challenge fields.
+        assert!(body["options"]["challenge"].as_str().is_some(), "challenge inside options: {}", resp.body);
+    }
+
+    #[tokio::test]
+    async fn webauthn_challenge_accepts_user_verification_token() {
+        let client = TestClient::register_and_login().await;
+
+        // Mint a WebAuthn-bound token from the setup GET, then use it (no password) on the challenge.
+        let get = client.post("/api/two-factor/get-webauthn", json!({ "masterPasswordHash": client.master_password_hash })).await;
+        let uvt = get.json()["userVerificationToken"].as_str().unwrap().to_string();
+
+        let resp = client.post("/api/two-factor/get-webauthn-challenge", json!({ "userVerificationToken": uvt })).await;
+        resp.assert_ok();
+        assert_eq!(resp.json()["object"], "twoFactorWebAuthnChallenge", "envelope via token: {}", resp.body);
+    }
 }

@@ -15,6 +15,7 @@ mod organization;
 mod send;
 mod sso_nonce;
 mod two_factor;
+mod two_factor_duo_context;
 mod two_factor_incomplete;
 mod user;
 
@@ -35,5 +36,6 @@ pub use self::organization::{Organization, OrganizationApiKey, UserOrgStatus, Us
 pub use self::send::{Send, SendType};
 pub use self::sso_nonce::SsoNonce;
 pub use self::two_factor::{TwoFactor, TwoFactorType};
+pub use self::two_factor_duo_context::TwoFactorDuoContext;
 pub use self::two_factor_incomplete::TwoFactorIncomplete;
 pub use self::user::{User, UserKdfType, UserStampException};

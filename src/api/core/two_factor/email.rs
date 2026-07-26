@@ -16,7 +16,7 @@ use crate::{
     util::AutoTxn,
 };
 
-use super::_generate_recover_code;
+use super::{_generate_recover_code, UserVerify, mint_user_verification_token};
 
 #[derive(Deserialize)]
 #[allow(non_snake_case)]
@@ -83,9 +83,12 @@ pub async fn get_email(headers: Headers, data: Json<PasswordData>) -> Result<Jso
         _ => (false, serde_json::value::Value::Null),
     };
 
+    // `email` (the address) and `enabled` stay flat as clients expect; the `userVerificationToken`
+    // is the new field, replayed on `send-email` / `PUT email` / `DELETE email`.
     Ok(Json(json!({
         "email": mfa_email,
         "enabled": enabled,
+        "userVerificationToken": mint_user_verification_token(user.uuid, TwoFactorType::Email),
         "object": "twoFactorEmail"
     })))
 }
@@ -95,7 +98,8 @@ pub async fn get_email(headers: Headers, data: Json<PasswordData>) -> Result<Jso
 pub struct SendEmailData {
     /// Email where 2FA codes will be sent to, can be different than user email account.
     email: String,
-    master_password_hash: String,
+    #[serde(flatten)]
+    verify: UserVerify,
 }
 
 /// Send a verification email to the specified email address to check whether it exists/belongs to user.
@@ -103,9 +107,7 @@ pub async fn send_email(conn: AutoTxn, headers: Headers, data: Json<SendEmailDat
     let data: SendEmailData = data.0;
     let user = headers.user;
 
-    if !user.check_valid_password(&data.master_password_hash) {
-        err!("Invalid password");
-    }
+    data.verify.validate(&user, TwoFactorType::Email)?;
 
     if CONFIG.email_2fa.is_none() {
         err!("Email 2FA is disabled")
@@ -129,11 +131,13 @@ pub async fn send_email(conn: AutoTxn, headers: Headers, data: Json<SendEmailDat
     Ok(())
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmailData {
-    email: String,
-    master_password_hash: String,
+    // The client also sends `email`, but the address to verify is taken from the pending
+    // EmailVerificationChallenge row created by `send_email`, so it is ignored here (serde drops it).
+    #[serde(flatten)]
+    verify: UserVerify,
     token: String,
 }
 
@@ -142,9 +146,7 @@ pub async fn email(headers: Headers, data: Json<EmailData>) -> Result<Json<Value
     let data: EmailData = data.0;
     let mut user = headers.user;
 
-    if !user.check_valid_password(&data.master_password_hash) {
-        err!("Invalid password");
-    }
+    data.verify.validate(&user, TwoFactorType::Email)?;
     let mut conn = DB.get().await.ise()?;
 
     let mut twofactor = TwoFactor::find_by_user_and_type(&conn, user.uuid, TwoFactorType::EmailVerificationChallenge).await?.map_res("Two factor not found")?;
