@@ -198,7 +198,12 @@ impl Event {
             "cipherId": self.cipher_uuid,
             "collectionId": self.collection_uuid,
             "groupId": self.group_uuid,
-            "organizationUserId": self.user_uuid,
+            // A membership has no id of its own here — it is keyed by (user_uuid, organization_uuid) —
+            // so the membership id we hand clients is the user's uuid, the same value
+            // `to_json_user_details` emits as the member's `id`. It is only a membership id when the
+            // event carries org context, though: the org-less copy of a user event describes no
+            // membership, and Bitwarden leaves `organizationUserId` null there.
+            "organizationUserId": self.organization_uuid.and(self.user_uuid),
             "actingUserId": self.act_user_uuid,
             "date": format_date(&self.event_date),
             "deviceType": self.device_type,
@@ -302,6 +307,12 @@ impl Event {
             .collect())
     }
 
+    #[cfg(test)]
+    pub fn with_organization_uuid(mut self, uuid: Uuid) -> Self {
+        self.organization_uuid = Some(uuid);
+        self
+    }
+
     pub async fn clean_events(conn: &Conn) -> Result<()> {
         let Some(days_to_retain) = CONFIG.settings.events_days_retain else {
             return Ok(());
@@ -309,5 +320,27 @@ impl Event {
         let min_date = Utc::now() - Duration::days(days_to_retain);
         conn.execute(r"DELETE FROM events WHERE event_date < $1", &[&min_date]).await.ise()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A user event is stored twice: once bare, once per org the user belongs to. Only the
+    /// org-scoped copy describes a membership, so only it may name one — the bare copy has no
+    /// organization for a membership id to be relative to.
+    #[test]
+    fn organization_user_id_requires_org_context() {
+        let user_uuid = Uuid::new_v4();
+        let organization_uuid = Uuid::new_v4();
+
+        let bare = Event::new(EventType::UserClientExportedVault, None).with_user_uuid(user_uuid).to_json();
+        assert_eq!(bare["userId"], json!(user_uuid));
+        assert_eq!(bare["organizationUserId"], Value::Null);
+
+        let scoped = Event::new(EventType::UserClientExportedVault, None).with_user_uuid(user_uuid).with_organization_uuid(organization_uuid).to_json();
+        assert_eq!(scoped["userId"], json!(user_uuid));
+        assert_eq!(scoped["organizationUserId"], json!(user_uuid));
     }
 }

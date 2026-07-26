@@ -99,7 +99,7 @@ pub async fn get_user_events(Path(path): Path<GetUserEventsQuery>, Query(data): 
     })))
 }
 
-fn get_continuation_token(events_json: &Vec<Value>) -> Option<&str> {
+fn get_continuation_token(events_json: &[Value]) -> Option<&str> {
     // When the length of the vec equals the max page_size there probably is more data
     // When it is less, then all events are loaded.
     if events_json.len() as i64 == Event::PAGE_SIZE {
@@ -158,12 +158,11 @@ pub async fn post_events_collect(headers: Headers, data: Json<Vec<EventCollectio
                 }
             }
             _ => {
-                if let Some(cipher_uuid) = event.cipher_id {
-                    if let Some(cipher) = Cipher::get(&conn, cipher_uuid).await? {
-                        if let Some(org_uuid) = cipher.organization_uuid {
-                            log_event(event.r#type, cipher_uuid, org_uuid, headers.user.uuid, headers.device.atype, event.date, headers.ip, &conn).await?;
-                        }
-                    }
+                if let Some(cipher_uuid) = event.cipher_id
+                    && let Some(cipher) = Cipher::get(&conn, cipher_uuid).await?
+                    && let Some(org_uuid) = cipher.organization_uuid
+                {
+                    log_event(event.r#type, cipher_uuid, org_uuid, headers.user.uuid, headers.device.atype, event.date, headers.ip, &conn).await?;
                 }
             }
         }
@@ -226,6 +225,55 @@ mod tests {
         let resp = owner.get(&format!("/api/organizations/{org_id}/users/{owner_id}/events{}", range_query())).await;
         resp.assert_ok();
         assert!(!resp.json()["data"].as_array().unwrap().is_empty(), "user events should include the owner's actions: {}", resp.body);
+    }
+
+    // A membership has no id of its own in this fork — it is keyed by (user, org) — so the
+    // membership id on the wire is the user's uuid, the same value the member list reports as
+    // `id`. Org-scoped events must carry it as `organizationUserId` so the client can attribute
+    // a row to a member.
+    #[tokio::test]
+    async fn org_events_carry_the_membership_id() {
+        let owner = TestClient::register_and_login().await;
+        let org_id = owner.create_org("Attribution").await["id"].as_str().unwrap().to_string();
+        let owner_id = owner.user_id.unwrap().to_string();
+        let date = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+
+        // A user event (1007, client-exported vault) is fanned out to a row per org.
+        owner.post("/events/collect", json!([{ "type": 1007, "date": date }])).await.assert_ok();
+
+        // The member list keys members by the same id the event log reports.
+        let members = owner.get(&format!("/api/organizations/{org_id}/users")).await;
+        let member_id = members.json()["data"].as_array().unwrap()[0]["id"].as_str().unwrap().to_string();
+        assert_eq!(member_id, owner_id, "member id should be the user uuid");
+
+        let resp = owner.get(&format!("/api/organizations/{org_id}/events{}", range_query())).await;
+        resp.assert_ok();
+        let exported = resp.json()["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["type"].as_i64() == Some(1007))
+            .cloned()
+            .unwrap_or_else(|| panic!("exported-vault event (1007) should be logged for the org: {}", resp.body));
+        assert_eq!(exported["organizationUserId"].as_str(), Some(member_id.as_str()), "org event should name the acting membership: {exported}");
+        assert_eq!(exported["userId"].as_str(), Some(owner_id.as_str()), "org event should name the user: {exported}");
+
+        // Events with no membership subject leave the field null rather than reusing some
+        // other id: a cipher event names the acting user, not a member.
+        let cols = owner.get(&format!("/api/organizations/{org_id}/collections")).await;
+        let col_id = cols.json()["data"].as_array().unwrap()[0]["id"].as_str().unwrap().to_string();
+        owner.create_org_cipher(&org_id, &col_id, "2.attributed|mac").await;
+
+        let resp = owner.get(&format!("/api/organizations/{org_id}/events{}", range_query())).await;
+        let created = resp.json()["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["type"].as_i64() == Some(1100))
+            .cloned()
+            .unwrap_or_else(|| panic!("CipherCreated (1100) should be logged: {}", resp.body));
+        assert!(created["organizationUserId"].is_null(), "cipher event names no membership: {created}");
+        assert_eq!(created["actingUserId"].as_str(), Some(owner_id.as_str()), "cipher event should name the acting user: {created}");
     }
 
     #[tokio::test]

@@ -55,6 +55,10 @@ pub struct SendData {
     deletion_date: DateTime<Utc>,
     disabled: bool,
     hide_email: Option<bool>,
+    // Comma-separated recipient list for an email-restricted Send. Not supported here (see
+    // `reject_email_restricted`), but it must be captured rather than ignored so the request
+    // can be rejected instead of creating an unrestricted Send.
+    emails: Option<String>,
 
     // Data field
     name: String,
@@ -100,7 +104,23 @@ async fn enforce_disable_hide_email_policy(data: &SendData, headers: &Headers, c
     Ok(())
 }
 
+/// Rejects Sends restricted to a list of recipient emails.
+///
+/// Bitwarden gates access to such a Send behind an emailed OTP; we have no storage or
+/// verification flow for it. Accepting the request and dropping the field would hand the user
+/// a Send they believe is restricted but that anyone with the link can open, so refuse instead.
+/// Bitwarden treats a blank `emails` as "no restriction" (`SendRequestModel.cs`), so only a
+/// non-blank list is an error.
+fn reject_email_restricted(data: &SendData) -> Result<()> {
+    if data.emails.as_deref().is_some_and(|emails| !emails.trim().is_empty()) {
+        err!("Sends with email verification are not supported");
+    }
+    Ok(())
+}
+
 fn create_send(data: SendData, user_uuid: Uuid) -> Result<Send> {
+    reject_email_restricted(&data)?;
+
     let data_val = if data.r#type == SendType::Text {
         data.text
     } else if data.r#type == SendType::File {
@@ -125,11 +145,8 @@ fn create_send(data: SendData, user_uuid: Uuid) -> Result<Send> {
     let mut send = Send::new(data.r#type, data.name, data_str, data.key, data.deletion_date);
     send.user_uuid = Some(user_uuid);
     send.notes = data.notes;
-    send.max_access_count = match data.max_access_count {
-        Some(m) => Some(m),
-        _ => None,
-    };
-    send.expiration_date = data.expiration_date.map(|d| d);
+    send.max_access_count = data.max_access_count;
+    send.expiration_date = data.expiration_date;
     send.disabled = data.disabled;
     send.hide_email = data.hide_email;
     send.atype = data.r#type;
@@ -315,10 +332,7 @@ async fn post_send_file_v2(headers: Headers, data: Json<SendData>) -> Result<Jso
 
     enforce_disable_hide_email_policy(&data, &headers, &conn).await?;
 
-    let file_length = match data.file_length {
-        Some(m) => Some(m),
-        _ => None,
-    };
+    let file_length = data.file_length;
 
     let size_limit = match CONFIG.settings.user_attachment_limit {
         Some(0) => err!("File uploads are disabled"),
@@ -403,16 +417,16 @@ async fn post_access(Path(access_id): Path<String>, ip: ClientIp, data: Json<Sen
         None => err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NotFound),
     };
 
-    if let Some(max_access_count) = send.max_access_count {
-        if send.access_count >= max_access_count {
-            err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NotFound);
-        }
+    if let Some(max_access_count) = send.max_access_count
+        && send.access_count >= max_access_count
+    {
+        err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NotFound);
     }
 
-    if let Some(expiration) = send.expiration_date {
-        if Utc::now() >= expiration {
-            err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NotFound)
-        }
+    if let Some(expiration) = send.expiration_date
+        && Utc::now() >= expiration
+    {
+        err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NotFound)
     }
 
     if Utc::now() >= send.deletion_date {
@@ -451,16 +465,16 @@ async fn post_access_file(Path(path): Path<SendFilePath>, data: Json<SendAccessD
         None => err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NotFound),
     };
 
-    if let Some(max_access_count) = send.max_access_count {
-        if send.access_count >= max_access_count {
-            err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NotFound)
-        }
+    if let Some(max_access_count) = send.max_access_count
+        && send.access_count >= max_access_count
+    {
+        err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NotFound)
     }
 
-    if let Some(expiration) = send.expiration_date {
-        if Utc::now() >= expiration {
-            err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NotFound)
-        }
+    if let Some(expiration) = send.expiration_date
+        && Utc::now() >= expiration
+    {
+        err_code!(SEND_INACCESSIBLE_MSG, StatusCode::NotFound)
     }
 
     if Utc::now() >= send.deletion_date {
@@ -532,6 +546,7 @@ async fn put_send(Path(uuid): Path<Uuid>, headers: Headers, data: Json<SendData>
 
     let data: SendData = data.0;
     enforce_disable_hide_email_policy(&data, &headers, &conn).await?;
+    reject_email_restricted(&data)?;
 
     let mut send = match Send::get_for_user(&conn, uuid, headers.user.uuid).await? {
         Some(s) => s,
@@ -563,11 +578,8 @@ async fn put_send(Path(uuid): Path<Uuid>, headers: Headers, data: Json<SendData>
     send.akey = data.key;
     send.deletion_date = data.deletion_date;
     send.notes = data.notes;
-    send.max_access_count = match data.max_access_count {
-        Some(m) => Some(m),
-        _ => None,
-    };
-    send.expiration_date = data.expiration_date.map(|d| d);
+    send.max_access_count = data.max_access_count;
+    send.expiration_date = data.expiration_date;
     send.hide_email = data.hide_email;
     send.disabled = data.disabled;
 
@@ -590,11 +602,11 @@ pub fn apply_send_rotation(send: &mut Send, data: SendData) -> Result<()> {
         err!("Sends can't change type")
     }
     // The file blob is immutable, so only Text sends carry updated data.
-    if data.r#type == SendType::Text {
-        if let Some(mut d) = data.text {
-            d.as_object_mut().and_then(|d| d.remove("Response"));
-            send.data = d;
-        }
+    if data.r#type == SendType::Text
+        && let Some(mut d) = data.text
+    {
+        d.as_object_mut().and_then(|d| d.remove("Response"));
+        send.data = d;
     }
     send.name = data.name;
     send.akey = data.key;
@@ -712,6 +724,38 @@ mod tests {
 
         let cross = bob.get(&format!("/api/sends/{id}")).await;
         assert!(cross.status >= 400, "user should not see another user's send, got {}: {}", cross.status, cross.body);
+    }
+
+    // Email-restricted sends are not supported. The request must be refused outright rather
+    // than accepted with the restriction dropped, which would leave the send open to anyone
+    // holding the link while the client shows it as restricted.
+    #[tokio::test]
+    async fn email_restricted_send_is_rejected() {
+        let client = TestClient::register_and_login().await;
+        let deletion = (chrono::Utc::now() + chrono::Duration::days(7)).to_rfc3339();
+        let body = |emails: serde_json::Value| {
+            json!({
+                "type": 0,
+                "key": "2.sendkey|mac",
+                "name": "2.restricted|mac",
+                "text": { "text": "2.secret|mac", "hidden": false },
+                "deletionDate": deletion,
+                "disabled": false,
+                "emails": emails,
+            })
+        };
+
+        let resp = client.post("/api/sends", body(json!("someone@example.com,other@example.com"))).await;
+        assert!(resp.status >= 400, "email-restricted send should be refused, got {}: {}", resp.status, resp.body);
+
+        // A blank list means "no restriction" to Bitwarden, so it must still create.
+        let created = client.post("/api/sends", body(json!(""))).await;
+        created.assert_ok();
+
+        // Updating an existing send into an email-restricted one is refused too.
+        let id = created.json()["id"].as_str().expect("send id").to_string();
+        let updated = client.put(&format!("/api/sends/{id}"), body(json!("someone@example.com"))).await;
+        assert!(updated.status >= 400, "update to email-restricted send should be refused, got {}: {}", updated.status, updated.body);
     }
 
     #[tokio::test]

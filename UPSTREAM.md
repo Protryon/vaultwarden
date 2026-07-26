@@ -21,34 +21,22 @@ effort:
 
 - **HIGH** — a current client flow fails, silently drops data, or a value is rejected/panics.
 - **MED** — degraded behavior, missing fields newer clients read, or type coercion issues.
-- **LOW** — cosmetic / conformance / forward-compat; the running web-vault (v2026.6.2) works
-  without it.
+- **LOW** — cosmetic / conformance / forward-compat; the client works without it.
 
-This is a **starting map to iterate on**, not a fix list. Line numbers are from the audit
-snapshot (2026-07-24) and drift as files change — re-anchor before acting.
+Severities assume the web-vault the Dockerfile bundles, **v2026.6.2**.
 
-> **Bundled web-vault — re-triaged 2026-07-25.** The Dockerfile now ships web-vault
-> **v2026.6.2** (up from v2025.12.1). Severities below assume this client, so the old "benign
-> with the pinned web-vault" hedges are retired.
->
-> **2FA management (the headline breakage) is now fixed — 2026-07-26.** The setup GET endpoints
-> mint a `userVerificationToken` (short-lived JWT bound to user + provider) that the enable/disable
-> requests replay in place of the master-password hash, per-provider `DELETE /two-factor/{provider}`
-> endpoints exist, the WebAuthn registration challenge is wrapped as `{object, options}`, the
-> response discriminators are corrected, and Duo now speaks the Universal Prompt (OIDC `AuthUrl`).
-> See the Two-Factor section for what remains (T8, and org-level Duo A10). Enable/disable handlers
-> still accept the master-password hash as a fallback, so older clients keep working.
+**This file tracks pending work only.** Findings are removed once implemented — the code and
+git history are the record of what was fixed, so an item's absence here means it is either done
+or was never a gap. Line numbers are from the audit snapshot (2026-07-24) and drift as files
+change — re-anchor before acting.
 
 ---
 
 ## Cross-cutting themes
 
 1. **"v2 modernization" gaps.** Bitwarden reworked several flows into new routes + bodies; the
-   fork still carries the pre-v2 shape in a few places. The **2FA** cluster (userVerificationToken
-   setup/disable flow, per-provider DELETE, Duo Universal Prompt, WebAuthn challenge envelope) was
-   the actively-broken-on-v2026.6.2 case and is now implemented (2026-07-26). Remaining v2 gaps are
-   lower-stakes: the account key/credential v2 bodies (largely done, see A-series) and the
-   notification-center REST surface (E7).
+   fork still carries the pre-v2 shape in a couple of places. What's left is lower-stakes: the
+   account key/credential v2 bodies (largely done) and the notification-center REST surface (E7).
 
 ---
 
@@ -75,14 +63,9 @@ snapshot (2026-07-24) and drift as files change — re-anchor before acting.
 
 - **[LOW] A10 — 2FA challenge never emits OrganizationDuo (type 6).** Enum defines it
   ([two_factor.rs:44](src/db/models/two_factor.rs#L44)) but `json_err_twofactor` skips it.
-  User-level Duo Universal now works (see Two-Factor), but `OrganizationDuo` only reaches the
-  challenge builder if org-level Duo *enforcement* exists — we have no org-level 2FA provider
-  storage, so there is nothing to emit and the catch-all skips it gracefully, matching dani.
+  Blocked on the real gap: there is no org-level 2FA provider storage, so org-enforced Duo can't
+  exist to be emitted. Harmless until then (the catch-all skips it gracefully, as dani does).
   Ours: [identity/mod.rs](src/api/identity/mod.rs). **dani: partial** (also a graceful skip).
-
-> `password_login` ([identity/mod.rs:454](src/api/identity/mod.rs#L454)) and the shared
-> `user_auth_response_fields` helper are the modernized template; the password, API-key,
-> refresh, and SSO (`authorization_code`) grants all route through it.
 
 ---
 
@@ -114,11 +97,10 @@ snapshot (2026-07-24) and drift as files change — re-anchor before acting.
 
 ## Sends + Emergency Access
 
-- **[HIGH] S2 — Send `emails` (email-restricted access) silently dropped.** `SendData` has no
-  `emails` field; serde ignores it, so an email-restricted Send is created with **no**
-  restriction (security-relevant — user thinks access is limited but it's public). dani at
-  least hard-rejects with "not supported". Ours: [sends.rs:44](src/api/core/sends.rs#L44).
-  **dani: partial** (rejects). Minimum bar: reject like dani.
+- **[LOW] S3 — Email-restricted Sends unimplemented.** A non-blank `emails` is refused rather
+  than silently dropped, so nothing is unsafe, but the feature itself — per-recipient emailed
+  OTP, `emails` stored and round-tripped on the Send — doesn't exist. Ours:
+  [sends.rs](src/api/core/sends.rs). **dani: no** (also refuses).
 - **[MED] S4 — `authType` missing from Send-access response.** Anonymous access payload can't
   advertise which challenge is required. Ours: [send.rs:191](src/db/models/send.rs#L191).
   **dani: no** (both omit).
@@ -138,26 +120,9 @@ snapshot (2026-07-24) and drift as files change — re-anchor before acting.
 - **[LOW] S11 — Send request ignores `id` (key-rotation) and `authType`.** Ours:
   [sends.rs:44](src/api/core/sends.rs#L44). **dani: partial**.
 
-> Correct & confirmed: all `object` discriminators (send/send-access/send-fileUpload/etc.),
-> the v2 two-step file-upload flow, `SendType`, `EmergencyAccessType`/`Status` enums.
-
 ---
 
 ## Two-Factor
-
-> **Implemented 2026-07-26 (T1, T2, T5, T6, T7, T9):** the v2-modernization 2FA cluster.
-> Setup GET endpoints mint a `userVerificationToken` (JWT bound to user + provider, 15-min TTL,
-> [auth.rs](src/auth.rs)); enable/disable handlers accept it via the shared `UserVerify`
-> ([two_factor/mod.rs](src/api/core/two_factor/mod.rs)) *or* the master-password hash (older
-> clients). Per-provider `DELETE /two-factor/{authenticator,yubikey,duo,email}` +
-> `DELETE /two-factor/webauthn/all` added. Response discriminators fixed to
-> `twoFactorYubiKey`/`twoFactorWebAuthn` and details echoed both flat and nested. WebAuthn
-> registration challenge wrapped as `{object:"twoFactorWebAuthnChallenge", options}`. Duo now
-> speaks the Universal Prompt (OIDC): [duo_oidc.rs](src/api/core/two_factor/duo_oidc.rs) ported
-> from dani, backed by a new `twofactor_duo_ctx` table (migration V8), with the login challenge
-> emitting `{AuthUrl}` and config taking `clientId`/`clientSecret`. Duo's live OIDC calls can't be
-> exercised in the harness; the token/DELETE/challenge/discriminator paths and the context table
-> are covered by tests.
 
 - **[LOW] T8 — `send-email-login` missing `AuthRequestId`/`SsoEmail2FaSessionToken`.** Only
   master-password auth; can't send OTP during passwordless/SSO/device-approval login. Ours:
@@ -167,20 +132,11 @@ snapshot (2026-07-24) and drift as files change — re-anchor before acting.
 
 ## Events + Notifications / Push + Sync
 
-- **[MED] ◐ E2 — EventType stale vs dani.** Missing `1010` (device-approval requested), `1505`,
-  `1513–1516` (org-user auth-request approved/rejected, deleted, left). Unknown DB values
-  render as `type:0` (blank rows). Ours: [event.rs:64](src/db/models/event.rs#L64). **dani: yes**.
-  *(enum part fixed 2026-07-24: all these variants added. The related `organizationUserId`
-  issue (E4) is separate and still open — it needs a membership-id column.)*
 - **[MED] E3 — `UpdateType`/PushType truncated at 16.** Missing 17–27, notably `Notification=20`
   / `NotificationStatus=21` (notification center), `RefreshSecurityTasks=22`, `PolicyChanged=25`,
   `SyncOrganizations=17`. Clients get no live pushes for these; only picked up on next full
   sync. Ours: [notifications/mod.rs:560](src/api/notifications/mod.rs#L560). **dani: partial**
   (documents 17–22 as commented placeholders; neither implements).
-- **[MED] E4 — Event `organizationUserId` returns the user UUID, not the membership id.** Our
-  `Event` has no membership column, so `userId` and `organizationUserId` are the same value;
-  member-scoped log filtering mismatches. Ours: [event.rs:181](src/db/models/event.rs#L181).
-  **dani: yes** (stores a distinct `org_user_uuid`).
 - **[LOW] E5 — Event items omit `object:"event"` and optional ids** (`installationId`,
   `systemUser`, `domainName`, `sendId`, `secretId`, …). List wrapper sets `object:"list"` but
   items lack per-item `object`. Ours: [event.rs:171](src/db/models/event.rs#L171). **dani: no**.
@@ -196,21 +152,14 @@ snapshot (2026-07-24) and drift as files change — re-anchor before acting.
   (clients re-auth on userId); forward-compat gap on logout-reason. Ours:
   [push/mod.rs:201](src/push/mod.rs#L201). **dani: partial** (same `{userId,date}`).
 
-> Correct & confirmed: SignalR envelope shape, auth-request push types 15/16 + payloads, sync
-> `userDecryption.masterPasswordUnlock` KDF block (salt = email). The anonymous-hub
-> `AuthRequestResponseRecieved` misspelling intentionally matches Bitwarden/clients.
-
 ---
 
 ## Suggested triage order
 
-Re-triaged 2026-07-25 for web-vault **v2026.6.2**; the 2FA-management cluster that topped this
-list was implemented 2026-07-26 (see Two-Factor) and is removed below.
+Last re-triaged 2026-07-26 for web-vault **v2026.6.2**.
 
-1. **Portable stale-vs-dani wins** — **E4** (event org-user id), **S2** (reject email-restricted
-   sends like dani, security-relevant). Small; dani has the code.
-2. **Visible feature/field gaps on the new client** — notification center (**E3/E7**), member/
+1. **Visible feature/field gaps on the new client** — notification center (**E3/E7**), member/
    collection fields (**O3/O4**), sync `policiesNew` (**E6**, though the `policies` fallback
    still works).
-3. **Remaining conformance/forward-compat** — the LOW two-factor/cipher/send/org/event items
-   (**T8**, C5–C8, S7–S11, O9/O10, E5/E8, A10). Batch as cleanup.
+2. **Remaining conformance/forward-compat** — the LOW two-factor/cipher/send/org/event items
+   (**T8**, C5–C8, S3/S7–S11, O9/O10, E5/E8, A10). Batch as cleanup.
