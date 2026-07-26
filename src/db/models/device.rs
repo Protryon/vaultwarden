@@ -90,10 +90,10 @@ impl Device {
         let time_now = Utc::now();
         self.updated_at = time_now;
 
-        let orgowner: Vec<_> = orgs.iter().filter(|o| o.atype == UserOrgType::Owner).map(|o| o.organization_uuid.clone()).collect();
-        let orgadmin: Vec<_> = orgs.iter().filter(|o| o.atype == UserOrgType::Admin).map(|o| o.organization_uuid.clone()).collect();
-        let orguser: Vec<_> = orgs.iter().filter(|o| o.atype == UserOrgType::User).map(|o| o.organization_uuid.clone()).collect();
-        let orgmanager: Vec<_> = orgs.iter().filter(|o| o.atype == UserOrgType::Manager).map(|o| o.organization_uuid.clone()).collect();
+        let orgowner: Vec<_> = orgs.iter().filter(|o| o.atype == UserOrgType::Owner).map(|o| o.organization_uuid).collect();
+        let orgadmin: Vec<_> = orgs.iter().filter(|o| o.atype == UserOrgType::Admin).map(|o| o.organization_uuid).collect();
+        let orguser: Vec<_> = orgs.iter().filter(|o| o.atype == UserOrgType::User).map(|o| o.organization_uuid).collect();
+        let orgmanager: Vec<_> = orgs.iter().filter(|o| o.atype == UserOrgType::Manager).map(|o| o.organization_uuid).collect();
 
         // Create the JWT claims struct, to send to the client
         use crate::auth::{DEFAULT_VALIDITY, JWT_LOGIN_ISSUER, LoginJwtClaims, encode_jwt};
@@ -101,7 +101,7 @@ impl Device {
             nbf: time_now.timestamp(),
             exp: (time_now + *DEFAULT_VALIDITY).timestamp(),
             iss: JWT_LOGIN_ISSUER.to_string(),
-            sub: user.uuid.clone(),
+            sub: user.uuid,
 
             premium: true,
             name: user.name.clone(),

@@ -247,21 +247,21 @@ pub async fn push_folder_update(ut: UpdateType, folder: &Folder, acting_device_u
 }
 
 pub async fn push_send_update(ut: UpdateType, send: &crate::db::Send, acting_device_uuid: Uuid, conn: &Conn) -> Result<()> {
-    if let Some(s) = send.user_uuid {
-        if Device::check_user_has_push_device(conn, s).await? {
-            tokio::task::spawn(send_to_push_relay(json!({
+    if let Some(s) = send.user_uuid
+        && Device::check_user_has_push_device(conn, s).await?
+    {
+        tokio::task::spawn(send_to_push_relay(json!({
+            "userId": send.user_uuid,
+            "organizationId": (),
+            "deviceId": acting_device_uuid,
+            "identifier": acting_device_uuid,
+            "type": ut as i32,
+            "payload": {
+                "id": send.uuid,
                 "userId": send.user_uuid,
-                "organizationId": (),
-                "deviceId": acting_device_uuid,
-                "identifier": acting_device_uuid,
-                "type": ut as i32,
-                "payload": {
-                    "id": send.uuid,
-                    "userId": send.user_uuid,
-                    "revisionDate": send.revision_date
-                }
-            })));
-        }
+                "revisionDate": send.revision_date
+            }
+        })));
     }
     Ok(())
 }

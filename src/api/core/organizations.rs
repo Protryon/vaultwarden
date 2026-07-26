@@ -742,7 +742,7 @@ async fn get_org_details(Query(data): Query<OrgIdData>, headers: Headers) -> Res
 }
 
 async fn _get_org_details(org_uuid: Uuid, user_uuid: Uuid, conn: &Conn) -> Result<Value> {
-    let ciphers_json = FullCipher::find_by_org(&conn, user_uuid, org_uuid).await?.iter().map(|x| x.to_json(false)).collect::<Vec<_>>();
+    let ciphers_json = FullCipher::find_by_org(conn, user_uuid, org_uuid).await?.iter().map(|x| x.to_json(false)).collect::<Vec<_>>();
 
     Ok(Value::Array(ciphers_json))
 }
@@ -1359,7 +1359,7 @@ async fn _delete_user(
     headers: &OrgAdminHeaders,
     conn: &Conn,
 ) -> Result<()> {
-    let user_to_delete = match UserOrganization::get(&conn, user_id, org_uuid).await? {
+    let user_to_delete = match UserOrganization::get(conn, user_id, org_uuid).await? {
         Some(user) => user,
         None => err!("User to delete isn't member of the organization"),
     };
@@ -1370,19 +1370,19 @@ async fn _delete_user(
 
     if user_to_delete.atype == UserOrgType::Owner && user_to_delete.status() == UserOrgStatus::Confirmed {
         // Removing owner, check that there is at least one other confirmed owner
-        if UserOrganization::count_confirmed_by_org_and_type(&conn, org_uuid, UserOrgType::Owner).await? <= 1 {
+        if UserOrganization::count_confirmed_by_org_and_type(conn, org_uuid, UserOrgType::Owner).await? <= 1 {
             err!("Can't delete the last owner")
         }
     }
 
-    log_event(EventType::OrganizationUserRemoved, user_to_delete.user_uuid, org_uuid, headers.user.uuid, headers.device.atype, Utc::now(), headers.ip, &conn)
+    log_event(EventType::OrganizationUserRemoved, user_to_delete.user_uuid, org_uuid, headers.user.uuid, headers.device.atype, Utc::now(), headers.ip, conn)
         .await?;
 
-    if let Some(user) = User::get(&conn, user_to_delete.user_uuid).await? {
-        ws_users().send_user_update(UpdateType::SyncOrgKeys, &conn, &user).await?;
+    if let Some(user) = User::get(conn, user_to_delete.user_uuid).await? {
+        ws_users().send_user_update(UpdateType::SyncOrgKeys, conn, &user).await?;
     }
 
-    user_to_delete.delete(&conn).await
+    user_to_delete.delete(conn).await
 }
 
 async fn bulk_public_keys(conn: AutoTxn, Path(org_uuid): Path<Uuid>, _headers: OrgAdminHeaders, data: Json<OrgBulkIds>) -> Result<Json<Value>> {
@@ -1776,24 +1776,54 @@ async fn import(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHead
             }
 
         // If user is not part of the organization, but it exists
-        } else if UserOrganization::find_by_email_and_organization(&conn, &user_data.email, org_uuid).await?.is_none() {
-            if let Some(user) = User::find_by_email(&conn, &user_data.email).await? {
-                let user_org_status = if CONFIG.mail_enabled() {
-                    UserOrgStatus::Invited
-                } else {
-                    UserOrgStatus::Accepted // Automatically mark user as accepted if no email invites
+        } else if UserOrganization::find_by_email_and_organization(&conn, &user_data.email, org_uuid).await?.is_none()
+            && let Some(user) = User::find_by_email(&conn, &user_data.email).await?
+        {
+            let user_org_status = if CONFIG.mail_enabled() {
+                UserOrgStatus::Invited
+            } else {
+                UserOrgStatus::Accepted // Automatically mark user as accepted if no email invites
+            };
+
+            let mut new_org_user = UserOrganization::new(user.uuid, org_uuid);
+            new_org_user.access_all = false;
+            new_org_user.atype = UserOrgType::User;
+            new_org_user.status = user_org_status;
+
+            new_org_user.save(&conn).await?;
+
+            log_event(
+                EventType::OrganizationUserInvited,
+                new_org_user.user_uuid,
+                org_uuid,
+                headers.user.uuid,
+                headers.device.atype,
+                Utc::now(),
+                headers.ip,
+                &conn,
+            )
+            .await?;
+
+            if CONFIG.mail_enabled() {
+                let org_name = match Organization::get(&conn, org_uuid).await? {
+                    Some(org) => org.name,
+                    None => err!("Error looking up organization"),
                 };
 
-                let mut new_org_user = UserOrganization::new(user.uuid, org_uuid);
-                new_org_user.access_all = false;
-                new_org_user.atype = UserOrgType::User;
-                new_org_user.status = user_org_status;
+                mail::send_invite(&user_data.email, user.uuid, Some(org_uuid), &org_name, Some(headers.user.email.clone())).await?;
+            }
+        }
+    }
 
-                new_org_user.save(&conn).await?;
-
+    // If this flag is enabled, any user that isn't provided in the Users list will be removed (by default they will be kept unless they have Deleted == true)
+    if data.overwrite_existing {
+        for user_org in UserOrganization::find_by_org_and_type(&conn, org_uuid, UserOrgType::User).await? {
+            if let Some(user_email) = User::get(&conn, user_org.user_uuid).await?.map(|u| u.email)
+                && !data.users.iter().any(|u| u.email == user_email)
+            {
                 log_event(
-                    EventType::OrganizationUserInvited,
-                    new_org_user.user_uuid,
+                    EventType::OrganizationUserRemoved,
+                    user_org.user_uuid,
                     org_uuid,
                     headers.user.uuid,
                     headers.device.atype,
@@ -1803,37 +1833,7 @@ async fn import(conn: AutoTxn, Path(org_uuid): Path<Uuid>, headers: OrgAdminHead
                 )
                 .await?;
 
-                if CONFIG.mail_enabled() {
-                    let org_name = match Organization::get(&conn, org_uuid).await? {
-                        Some(org) => org.name,
-                        None => err!("Error looking up organization"),
-                    };
-
-                    mail::send_invite(&user_data.email, user.uuid, Some(org_uuid), &org_name, Some(headers.user.email.clone())).await?;
-                }
-            }
-        }
-    }
-
-    // If this flag is enabled, any user that isn't provided in the Users list will be removed (by default they will be kept unless they have Deleted == true)
-    if data.overwrite_existing {
-        for user_org in UserOrganization::find_by_org_and_type(&conn, org_uuid, UserOrgType::User).await? {
-            if let Some(user_email) = User::get(&conn, user_org.user_uuid).await?.map(|u| u.email) {
-                if !data.users.iter().any(|u| u.email == user_email) {
-                    log_event(
-                        EventType::OrganizationUserRemoved,
-                        user_org.user_uuid,
-                        org_uuid,
-                        headers.user.uuid,
-                        headers.device.atype,
-                        Utc::now(),
-                        headers.ip,
-                        &conn,
-                    )
-                    .await?;
-
-                    user_org.delete(&conn).await?;
-                }
+                user_org.delete(&conn).await?;
             }
         }
     }
@@ -2168,25 +2168,16 @@ async fn add_update_group(
     group.save(conn).await?;
 
     for selection_read_only_request in collections {
-        let collection_group = selection_read_only_request.to_collection_group(group.uuid.clone());
+        let collection_group = selection_read_only_request.to_collection_group(group.uuid);
         collection_group.save(conn).await?;
     }
 
     for assigned_user_id in users {
-        let user_entry = GroupUser::new(group.uuid.clone(), assigned_user_id.clone());
+        let user_entry = GroupUser::new(group.uuid, assigned_user_id);
         user_entry.save(conn).await?;
 
-        log_event(
-            EventType::OrganizationUserUpdatedGroups,
-            assigned_user_id,
-            org_uuid,
-            headers.user.uuid.clone(),
-            headers.device.atype,
-            Utc::now(),
-            headers.ip,
-            conn,
-        )
-        .await?;
+        log_event(EventType::OrganizationUserUpdatedGroups, assigned_user_id, org_uuid, headers.user.uuid, headers.device.atype, Utc::now(), headers.ip, conn)
+            .await?;
     }
 
     Ok(Json(json!({
@@ -2219,14 +2210,14 @@ async fn get_group_details(
 }
 
 async fn _delete_group(org_uuid: Uuid, group_id: Uuid, headers: &OrgAdminHeaders, conn: &Conn) -> Result<()> {
-    let group = match Group::get_for_org(&conn, group_id, org_uuid).await? {
+    let group = match Group::get_for_org(conn, group_id, org_uuid).await? {
         Some(group) => group,
         _ => err!("Group not found"),
     };
 
-    log_event(EventType::GroupDeleted, group.uuid, org_uuid, headers.user.uuid.clone(), headers.device.atype, Utc::now(), headers.ip, &conn).await?;
+    log_event(EventType::GroupDeleted, group.uuid, org_uuid, headers.user.uuid, headers.device.atype, Utc::now(), headers.ip, conn).await?;
 
-    group.delete(&conn).await
+    group.delete(conn).await
 }
 
 async fn delete_group(
@@ -2325,17 +2316,8 @@ async fn put_group_users(
         let user_entry = GroupUser::new(group_id, assigned_user_id);
         user_entry.save(&conn).await?;
 
-        log_event(
-            EventType::OrganizationUserUpdatedGroups,
-            assigned_user_id,
-            org_uuid,
-            headers.user.uuid.clone(),
-            headers.device.atype,
-            Utc::now(),
-            headers.ip,
-            &conn,
-        )
-        .await?;
+        log_event(EventType::OrganizationUserUpdatedGroups, assigned_user_id, org_uuid, headers.user.uuid, headers.device.atype, Utc::now(), headers.ip, &conn)
+            .await?;
     }
 
     conn.commit().await?;

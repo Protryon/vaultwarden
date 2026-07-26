@@ -174,7 +174,7 @@ impl AdminTemplateData {
             page_content: String::from(page_content),
             page_data: Some(page_data),
             logged_in: true,
-            urlpath: (&*PUBLIC_NO_TRAILING_SLASH).clone(),
+            urlpath: (*PUBLIC_NO_TRAILING_SLASH).clone(),
         }
     }
 
@@ -727,7 +727,7 @@ struct TimeApi {
 async fn get_json_api<T: DeserializeOwned>(url: &str) -> Result<T> {
     let json_api = get_reqwest_client();
 
-    Ok(json_api.get(url).send().await.map_err(Error::internal)?.error_for_status().map_err(Error::internal)?.json::<T>().await.map_err(Error::internal)?)
+    json_api.get(url).send().await.map_err(Error::internal)?.error_for_status().map_err(Error::internal)?.json::<T>().await.map_err(Error::internal)
 }
 
 async fn has_http_access() -> bool {
@@ -777,18 +777,16 @@ async fn get_release_info(has_http_access: bool, running_within_docker: bool) ->
 }
 
 async fn get_ntp_time(has_http_access: bool) -> String {
-    if has_http_access {
-        if let Ok(ntp_time) = get_json_api::<TimeApi>("https://www.timeapi.io/api/Time/current/zone?timeZone=UTC").await {
-            return format!(
-                "{year}-{month:02}-{day:02} {hour:02}:{minute:02}:{seconds:02} UTC",
-                year = ntp_time.year,
-                month = ntp_time.month,
-                day = ntp_time.day,
-                hour = ntp_time.hour,
-                minute = ntp_time.minute,
-                seconds = ntp_time.seconds
-            );
-        }
+    if has_http_access && let Ok(ntp_time) = get_json_api::<TimeApi>("https://www.timeapi.io/api/Time/current/zone?timeZone=UTC").await {
+        return format!(
+            "{year}-{month:02}-{day:02} {hour:02}:{minute:02}:{seconds:02} UTC",
+            year = ntp_time.year,
+            month = ntp_time.month,
+            day = ntp_time.day,
+            hour = ntp_time.hour,
+            minute = ntp_time.minute,
+            seconds = ntp_time.seconds
+        );
     }
     String::from("Unable to fetch NTP time.")
 }

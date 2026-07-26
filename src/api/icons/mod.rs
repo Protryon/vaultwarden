@@ -166,14 +166,14 @@ async fn check_domain_blacklist_reason(domain: &str) -> Option<DomainBlacklistRe
         }
     }
 
-    if !CONFIG.advanced.icon_blacklist_ips.is_empty() {
-        if let Ok(addrs) = lookup_host((domain, 0)).await {
-            for addr in addrs {
-                for blacklist in &CONFIG.advanced.icon_blacklist_ips {
-                    if blacklist.contains(addr.ip()) {
-                        debug!("IP {} for domain '{}' failed blacklist!", addr.ip(), domain);
-                        return Some(DomainBlacklistReason::IP);
-                    }
+    if !CONFIG.advanced.icon_blacklist_ips.is_empty()
+        && let Ok(addrs) = lookup_host((domain, 0)).await
+    {
+        for addr in addrs {
+            for blacklist in &CONFIG.advanced.icon_blacklist_ips {
+                if blacklist.contains(addr.ip()) {
+                    debug!("IP {} for domain '{}' failed blacklist!", addr.ip(), domain);
+                    return Some(DomainBlacklistReason::IP);
                 }
             }
         }
@@ -191,10 +191,7 @@ async fn get_icon(domain: &str) -> Option<(Vec<u8>, String)> {
     }
 
     if let Some(icon) = get_cached_icon(&path).await {
-        let icon_type = match get_icon_type(&icon) {
-            Some(x) => x,
-            _ => "x-icon",
-        };
+        let icon_type = get_icon_type(&icon).unwrap_or("x-icon");
         return Some((icon, icon_type.to_string()));
     }
 
@@ -316,16 +313,16 @@ fn get_favicons_node(dom: Tokenizer<StringReader<'_>, FaviconEmitter>, icons: &m
     }
 
     for icon_tag in icon_tags {
-        if let Some(icon_href) = icon_tag.attributes.get(ATTR_HREF) {
-            if let Ok(full_href) = base_url.join(std::str::from_utf8(icon_href).unwrap_or_default()) {
-                let sizes = if let Some(v) = icon_tag.attributes.get(ATTR_SIZES) {
-                    std::str::from_utf8(v).unwrap_or_default()
-                } else {
-                    ""
-                };
-                let priority = get_icon_priority(full_href.as_str(), sizes);
-                icons.push(Icon::new(priority, full_href.to_string()));
-            }
+        if let Some(icon_href) = icon_tag.attributes.get(ATTR_HREF)
+            && let Ok(full_href) = base_url.join(std::str::from_utf8(icon_href).unwrap_or_default())
+        {
+            let sizes = if let Some(v) = icon_tag.attributes.get(ATTR_SIZES) {
+                std::str::from_utf8(v).unwrap_or_default()
+            } else {
+                ""
+            };
+            let priority = get_icon_priority(full_href.as_str(), sizes);
+            icons.push(Icon::new(priority, full_href.to_string()));
         };
     }
 }

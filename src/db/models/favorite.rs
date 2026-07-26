@@ -5,7 +5,10 @@ use crate::db::Conn;
 
 use super::User;
 
+/// Mirrors the `favorites` table. The row is never loaded into this struct — the queries below
+/// answer with a count or write directly — but the shape is kept as the schema's documentation.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct Favorite {
     pub user_uuid: Uuid,
     pub cipher_uuid: Uuid,

@@ -470,6 +470,9 @@ pub struct OrgHeaders {
     pub user: User,
     pub org_user_type: UserOrgType,
     pub org_user: UserOrganization,
+    // Handlers take the org id from their own `Path` extractor; kept here so the derived
+    // Manager/Admin/Owner headers can be built without re-parsing the path.
+    #[allow(dead_code)]
     pub org_id: Uuid,
     pub ip: IpAddr,
 }
@@ -497,10 +500,10 @@ impl<'a> FromRequestParts<'a> for OrgHeaders {
         //TODO: this is error prone, and should be _deleted_! REFACTOR THIS AWAY!
         let url_org_id: Option<Uuid> = {
             let mut url_org_id = None;
-            if let Some(path) = Path::<OrgIdPath>::from_request_parts(req).await.ok() {
+            if let Ok(path) = Path::<OrgIdPath>::from_request_parts(req).await {
                 url_org_id = Some(path.org_uuid);
             }
-            if let Some(query) = Query::<OrgIdQuery>::from_request_parts(req).await.ok() {
+            if let Ok(query) = Query::<OrgIdQuery>::from_request_parts(req).await {
                 url_org_id = Some(query.organization_id);
             }
 
@@ -607,6 +610,9 @@ async fn get_col_id(req: RequestPartsRef<'_>) -> Option<Uuid> {
 pub struct ManagerHeaders {
     pub device: Device,
     pub user: User,
+    // The extractor has already enforced the minimum type; handlers that need finer checks use
+    // OrgHeaders directly.
+    #[allow(dead_code)]
     pub org_user_type: UserOrgType,
     pub ip: IpAddr,
 }
@@ -649,6 +655,8 @@ impl From<ManagerHeaders> for Headers {
 pub struct ManagerHeadersLoose {
     pub device: Device,
     pub user: User,
+    // Carried over from OrgHeaders for handlers that need the membership; none do today.
+    #[allow(dead_code)]
     pub org_user: UserOrganization,
     pub org_user_type: UserOrgType,
     pub ip: IpAddr,
@@ -684,7 +692,7 @@ impl From<ManagerHeadersLoose> for Headers {
 impl ManagerHeaders {
     pub async fn from_loose(h: ManagerHeadersLoose, collections: &[Uuid], conn: &Conn) -> Result<ManagerHeaders> {
         for col_id in collections {
-            if Collection::find_by_uuid_and_user(&conn, *col_id, h.user.uuid).await?.is_none() {
+            if Collection::find_by_uuid_and_user(conn, *col_id, h.user.uuid).await?.is_none() {
                 err!("Collection not found");
             }
         }

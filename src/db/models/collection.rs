@@ -30,7 +30,10 @@ pub struct CollectionUser {
     pub manage: bool,
 }
 
+/// Mirrors the `collection_ciphers` join table. Callers only ever add/remove rows by id, so the
+/// mapped fields are never read back; the shape is kept as the schema's documentation.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct CollectionCipher {
     pub cipher_uuid: Uuid,
     pub collection_uuid: Uuid,

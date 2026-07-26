@@ -27,14 +27,11 @@ struct DuoData {
 
 impl DuoData {
     fn global() -> Option<Self> {
-        match CONFIG.duo.as_ref() {
-            Some(duo) => Some(Self {
-                host: duo.server.clone(),
-                integration_key: duo.integration_key.clone(),
-                secret_key: duo.secret_key.clone(),
-            }),
-            _ => None,
-        }
+        CONFIG.duo.as_ref().map(|duo| Self {
+            host: duo.server.clone(),
+            integration_key: duo.integration_key.clone(),
+            secret_key: duo.secret_key.clone(),
+        })
     }
     fn msg(s: &str) -> Self {
         Self {
@@ -195,7 +192,7 @@ async fn duo_api_request(method: &str, path: &str, params: &str, data: &DuoData)
     let url = format!("https://{}{}", &data.host, path);
     let date = Utc::now().to_rfc2822();
     let username = &data.integration_key;
-    let fields = [&date, method, &data.host.to_string(), path, params];
+    let fields = [&date, method, data.host.as_ref(), path, params];
     let password = crypto::hmac_sign(&data.secret_key, &fields.join("\n"));
 
     let m = Method::from_str(method).unwrap_or_default();

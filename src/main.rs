@@ -20,7 +20,6 @@
     clippy::match_wildcard_for_single_variants,
     clippy::mem_forget,
     clippy::string_add_assign,
-    clippy::string_to_string,
     clippy::unnecessary_join,
     clippy::unnecessary_self_imports,
     clippy::unused_async,

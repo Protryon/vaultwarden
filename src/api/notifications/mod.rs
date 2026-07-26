@@ -29,7 +29,7 @@ static WS_USERS: Lazy<Arc<WebSocketUsers>> = Lazy::new(|| {
 });
 
 pub fn ws_users() -> &'static Arc<WebSocketUsers> {
-    &*WS_USERS
+    &WS_USERS
 }
 
 static WS_ANONYMOUS_SUBSCRIPTIONS: Lazy<Arc<AnonymousWebSocketSubscriptions>> = Lazy::new(|| {
@@ -39,7 +39,7 @@ static WS_ANONYMOUS_SUBSCRIPTIONS: Lazy<Arc<AnonymousWebSocketSubscriptions>> = 
 });
 
 pub fn ws_anonymous_subscriptions() -> &'static Arc<AnonymousWebSocketSubscriptions> {
-    &*WS_ANONYMOUS_SUBSCRIPTIONS
+    &WS_ANONYMOUS_SUBSCRIPTIONS
 }
 
 use crate::push::{push_auth_request, push_auth_response, push_cipher_update, push_folder_update, push_logout, push_send_update, push_user_update};
@@ -133,7 +133,7 @@ async fn init_websocket(ws: WebSocket, data: WsAccessToken, ip: ClientIp) -> Res
         // Add a channel to send messages to this client to the map
         let entry_uuid = Uuid::new_v4();
         let (tx, rx) = mpsc::channel::<Message>(100);
-        users.map.entry(claims.sub.clone()).or_default().push((entry_uuid, tx));
+        users.map.entry(claims.sub).or_default().push((entry_uuid, tx));
 
         // Once the guard goes out of scope, the connection will have been closed and the entry will be deleted from the map
         (rx, WSEntryMapGuard::new(users, claims.sub, entry_uuid, addr))
@@ -206,7 +206,7 @@ async fn run_websocket(mut ws: WebSocket, ip: IpAddr, mut rx: mpsc::Receiver<Mes
                                     error!("invalid inbound message, not an array");
                                     continue;
                                 };
-                                if msg.get(0).and_then(|x| x.as_u64()) == Some(6) {
+                                if msg.first().and_then(|x| x.as_u64()) == Some(6) {
                                     // binary ping
                                     ws.send(Message::Binary(message)).await?;
                                 } else {
@@ -485,10 +485,10 @@ pub struct AnonymousWebSocketSubscriptions {
 
 impl AnonymousWebSocketSubscriptions {
     async fn send_update(&self, token: Uuid, data: &[u8]) {
-        if let Some(sender) = self.map.get(&token).map(|v| v.clone()) {
-            if let Err(e) = sender.send(Message::Binary(data.to_vec())).await {
-                error!("Error sending anonymous WS update {e}");
-            }
+        if let Some(sender) = self.map.get(&token).map(|v| v.clone())
+            && let Err(e) = sender.send(Message::Binary(data.to_vec())).await
+        {
+            error!("Error sending anonymous WS update {e}");
         }
     }
 

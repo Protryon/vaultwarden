@@ -43,6 +43,7 @@ async fn _log_user_event(event_type: EventType, user_uuid: Uuid, device_type: i3
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn log_event(
     event_type: EventType,
     source_uuid: Uuid,

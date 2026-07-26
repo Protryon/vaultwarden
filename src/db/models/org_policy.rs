@@ -88,7 +88,7 @@ impl OrganizationPolicy {
         Self {
             uuid: Uuid::new_v4(),
             organization_uuid,
-            atype: atype,
+            atype,
             enabled: false,
             data,
         }
@@ -206,10 +206,10 @@ impl OrganizationPolicy {
                 continue;
             }
 
-            if let Some(user) = UserOrganization::get(conn, user_uuid, policy.organization_uuid).await.ise()? {
-                if user.atype < UserOrgType::Admin {
-                    return Ok(true);
-                }
+            if let Some(user) = UserOrganization::get(conn, user_uuid, policy.organization_uuid).await.ise()?
+                && user.atype < UserOrgType::Admin
+            {
+                return Ok(true);
             }
         }
         Ok(false)
@@ -258,16 +258,16 @@ impl OrganizationPolicy {
     /// option of the `Send Options` policy, and the user is not an owner or admin of that org.
     pub async fn is_hide_email_disabled(conn: &Conn, user_uuid: Uuid) -> Result<bool> {
         for policy in OrganizationPolicy::find_confirmed_by_user_and_active_policy(conn, user_uuid, OrgPolicyType::SendOptions).await.ise()? {
-            if let Some(user) = UserOrganization::get(conn, user_uuid, policy.organization_uuid).await.ise()? {
-                if user.atype < UserOrgType::Admin {
-                    match serde_json::from_value::<SendOptionsPolicyData>(policy.data) {
-                        Ok(opts) => {
-                            if opts.disable_hide_email {
-                                return Ok(true);
-                            }
+            if let Some(user) = UserOrganization::get(conn, user_uuid, policy.organization_uuid).await.ise()?
+                && user.atype < UserOrgType::Admin
+            {
+                match serde_json::from_value::<SendOptionsPolicyData>(policy.data) {
+                    Ok(opts) => {
+                        if opts.disable_hide_email {
+                            return Ok(true);
                         }
-                        Err(e) => error!("Failed to deserialize SendOptionsPolicyData: {e}"),
                     }
+                    Err(e) => error!("Failed to deserialize SendOptionsPolicyData: {e}"),
                 }
             }
         }

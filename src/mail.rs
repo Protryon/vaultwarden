@@ -28,7 +28,7 @@ lazy_static::lazy_static! {
             return None
         };
 
-        let port = smtp.port.unwrap_or_else(|| match smtp.security {
+        let port = smtp.port.unwrap_or(match smtp.security {
             SmtpSecurity::Starttls | SmtpSecurity::Off => 587,
             SmtpSecurity::ForceTls => 465,
         });

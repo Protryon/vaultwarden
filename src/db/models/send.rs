@@ -130,16 +130,16 @@ impl Send {
     }
 
     pub async fn creator_identifier(&self, conn: &Conn) -> Result<Option<String>> {
-        if let Some(hide_email) = self.hide_email {
-            if hide_email {
-                return Ok(None);
-            }
+        if let Some(hide_email) = self.hide_email
+            && hide_email
+        {
+            return Ok(None);
         }
 
-        if let Some(user_uuid) = self.user_uuid {
-            if let Some(user) = User::get(conn, user_uuid).await.ise()? {
-                return Ok(Some(user.email));
-            }
+        if let Some(user_uuid) = self.user_uuid
+            && let Some(user) = User::get(conn, user_uuid).await.ise()?
+        {
+            return Ok(Some(user.email));
         }
 
         Ok(None)

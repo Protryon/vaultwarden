@@ -144,11 +144,11 @@ async fn purge_sends() {
 
 async fn purge_trashed_ciphers() {
     debug!("Purging trashed ciphers");
-    let Ok(mut conn) = DB.get().await else {
+    let Ok(conn) = DB.get().await else {
         error!("Failed to get DB connection while purging trashed ciphers");
         return;
     };
-    if let Err(e) = Cipher::purge_trash(&mut conn).await {
+    if let Err(e) = Cipher::purge_trash(&conn).await {
         error!("failed to purge expired ciphers: {e}");
     }
 }

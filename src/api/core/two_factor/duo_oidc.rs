@@ -81,8 +81,13 @@ struct AuthorizationRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 enum HealthCheckResponse {
-    HealthOK { stat: String },
-    HealthFail { message: String, message_detail: String },
+    HealthOK {
+        stat: String,
+    },
+    HealthFail {
+        message: String,
+        message_detail: String,
+    },
 }
 
 // Outer structure of response when exchanging authz code for MFA results.
@@ -156,13 +161,7 @@ impl DuoClient {
         post_body.insert("client_assertion", token);
         post_body.insert("client_id", self.client_id.clone());
 
-        let res = match get_reqwest_client()
-            .post(&health_check_url)
-            .header(header::USER_AGENT, "vaultwarden:Duo/2.0 (Rust)")
-            .form(&post_body)
-            .send()
-            .await
-        {
+        let res = match get_reqwest_client().post(&health_check_url).header(header::USER_AGENT, "vaultwarden:Duo/2.0 (Rust)").form(&post_body).send().await {
             Ok(r) => r,
             Err(e) => err!(format!("Error requesting Duo health check: {e:?}")),
         };
@@ -245,13 +244,7 @@ impl DuoClient {
         post_body.insert("client_assertion_type", String::from("urn:ietf:params:oauth:client-assertion-type:jwt-bearer"));
         post_body.insert("client_assertion", token);
 
-        let res = match get_reqwest_client()
-            .post(&token_url)
-            .header(header::USER_AGENT, "vaultwarden:Duo/2.0 (Rust)")
-            .form(&post_body)
-            .send()
-            .await
-        {
+        let res = match get_reqwest_client().post(&token_url).header(header::USER_AGENT, "vaultwarden:Duo/2.0 (Rust)").form(&post_body).send().await {
             Ok(r) => r,
             Err(e) => err!(format!("Error exchanging Duo code: {e:?}")),
         };
@@ -271,7 +264,8 @@ impl DuoClient {
         validation.set_audience(&[&self.client_id]);
         validation.set_issuer(&[token_url.as_str()]);
 
-        let token_data = match jsonwebtoken::decode::<IdTokenClaims>(&response.id_token, &DecodingKey::from_secret(self.client_secret.as_bytes()), &validation) {
+        let token_data = match jsonwebtoken::decode::<IdTokenClaims>(&response.id_token, &DecodingKey::from_secret(self.client_secret.as_bytes()), &validation)
+        {
             Ok(c) => c,
             Err(e) => err!(format!("Failed to decode Duo token {e:?}")),
         };

@@ -123,7 +123,7 @@ pub async fn activate_yubikey(headers: Headers, data: Json<EnableYubikeyData>) -
     // Check if we already have some data
     let mut yubikey_data = match TwoFactor::find_by_user_and_type(&conn, user.uuid, TwoFactorType::YubiKey).await? {
         Some(data) => data,
-        None => TwoFactor::new(user.uuid.clone(), TwoFactorType::YubiKey, Value::Null),
+        None => TwoFactor::new(user.uuid, TwoFactorType::YubiKey, Value::Null),
     };
 
     let yubikeys = parse_yubikeys(&data);
@@ -150,7 +150,7 @@ pub async fn activate_yubikey(headers: Headers, data: Json<EnableYubikeyData>) -
     };
 
     yubikey_data.data = serde_json::to_value(yubikey_metadata.clone()).ise()?;
-    yubikey_data.save(&mut conn).await?;
+    yubikey_data.save(&conn).await?;
 
     _generate_recover_code(&mut user, &conn).await?;
 

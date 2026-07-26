@@ -251,7 +251,7 @@ pub async fn activate_webauthn(headers: Headers, data: Json<EnableWebauthnData>)
     });
 
     // Save the registrations and return them
-    TwoFactor::new(user.uuid.clone(), TwoFactorType::Webauthn, serde_json::to_value(registrations.clone()).ise()?).save(&mut conn).await?;
+    TwoFactor::new(user.uuid, TwoFactorType::Webauthn, serde_json::to_value(registrations.clone()).ise()?).save(&conn).await?;
     _generate_recover_code(&mut user, &conn).await?;
 
     log_user_event(EventType::UserUpdated2fa, user.uuid, headers.device.atype, Utc::now(), headers.ip, &mut conn).await?;

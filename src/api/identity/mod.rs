@@ -233,13 +233,14 @@ async fn authorization_login(data: ConnectData, user_uuid: &mut Option<Uuid>, co
 
     let twofactor_token = twofactor_auth(user.uuid, &data, &mut device, ip, conn).await?;
 
-    if CONFIG.mail_enabled() && new_device {
-        if let Err(e) = mail::send_new_device_logged_in(&user.email, ip.ip, now, &device.name).await {
-            error!("Error sending new device email: {:#?}", e);
+    if CONFIG.mail_enabled()
+        && new_device
+        && let Err(e) = mail::send_new_device_logged_in(&user.email, ip.ip, now, &device.name).await
+    {
+        error!("Error sending new device email: {:#?}", e);
 
-            if CONFIG.advanced.require_device_email {
-                err!("Could not send login notification email. Please contact your administrator.")
-            }
+        if CONFIG.advanced.require_device_email {
+            err!("Could not send login notification email. Please contact your administrator.")
         }
     }
 
@@ -389,7 +390,7 @@ async fn password_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &
     };
 
     // Set the user_uuid here to be passed back used for event logging.
-    *user_uuid = Some(user.uuid.clone());
+    *user_uuid = Some(user.uuid);
 
     // Check password. With an auth request (login with device) we don't check the user's
     // password, but the access code of the approved auth request instead.
@@ -464,14 +465,15 @@ async fn password_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &
 
     let twofactor_token = twofactor_auth(user.uuid, &data, &mut device, ip, conn).await?;
 
-    if CONFIG.mail_enabled() && new_device {
-        if let Err(e) = mail::send_new_device_logged_in(&user.email, ip.ip, now, &device.name).await {
-            error!("Error sending new device email: {:#?}", e);
+    if CONFIG.mail_enabled()
+        && new_device
+        && let Err(e) = mail::send_new_device_logged_in(&user.email, ip.ip, now, &device.name).await
+    {
+        error!("Error sending new device email: {:#?}", e);
 
-            if CONFIG.advanced.require_device_email {
-                Event::new(EventType::UserFailedLogIn, None).with_user_uuid(user.uuid).save(conn).await?;
-                err!("Could not send login notification email. Please contact your administrator.")
-            }
+        if CONFIG.advanced.require_device_email {
+            Event::new(EventType::UserFailedLogIn, None).with_user_uuid(user.uuid).save(conn).await?;
+            err!("Could not send login notification email. Please contact your administrator.")
         }
     }
 
@@ -618,7 +620,7 @@ async fn get_device(data: &ConnectData, conn: &Conn, user: &User) -> Result<(Dev
         Some(device) => device,
         None => {
             new_device = true;
-            Device::new(device_id, user.uuid.clone(), device_name, device_type)
+            Device::new(device_id, user.uuid, device_name, device_type)
         }
     };
 
@@ -692,7 +694,7 @@ async fn twofactor_auth(user_uuid: Uuid, data: &ConnectData, device: &mut Device
 }
 
 fn selected_data(tf: Option<TwoFactor>) -> Result<Value> {
-    tf.map(|t| t.data).map_res("Two factor doesn't exist").map_err(Into::into)
+    tf.map(|t| t.data).map_res("Two factor doesn't exist")
 }
 
 async fn json_err_twofactor(providers: &[TwoFactorType], user_uuid: Uuid, data: &ConnectData, conn: &Conn) -> Result<Value> {

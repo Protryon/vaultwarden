@@ -350,20 +350,20 @@ pub async fn update_cipher_from_data(
     enforce_personal_ownership_policy(Some(&data), headers, conn).await?;
 
     // Check that the client isn't updating an existing cipher with stale data.
-    if let Some(dt) = data.last_known_revision_date {
-        if cipher.updated_at.signed_duration_since(dt).num_seconds() > 1 {
-            err!("The client copy of this cipher is out of date. Resync the client and try again.");
-        }
+    if let Some(dt) = data.last_known_revision_date
+        && cipher.updated_at.signed_duration_since(dt).num_seconds() > 1
+    {
+        err!("The client copy of this cipher is out of date. Resync the client and try again.");
     }
 
     if cipher.organization_uuid.is_some() && cipher.organization_uuid != data.organization_id {
         err!("Organization mismatch. Please resync the client before updating the cipher")
     }
 
-    if let Some(note) = &data.notes {
-        if note.len() > 10_000 {
-            err!("The field Notes exceeds the maximum encrypted value length of 10000 characters.")
-        }
+    if let Some(note) = &data.notes
+        && note.len() > 10_000
+    {
+        err!("The field Notes exceeds the maximum encrypted value length of 10000 characters.")
     }
 
     // Check if this cipher is being transferred from a personal to an organization vault
@@ -480,9 +480,9 @@ pub async fn update_cipher_from_data(
     cipher.key = data.key;
     cipher.name = data.name;
     cipher.notes = data.notes;
-    cipher.fields = data.fields.map(|f| _clean_cipher_data(f));
+    cipher.fields = data.fields.map(_clean_cipher_data);
     cipher.data = type_data;
-    cipher.password_history = data.password_history.map(|f| serde_json::from_value(f)).transpose().ise()?.unwrap_or_default();
+    cipher.password_history = data.password_history.map(serde_json::from_value).transpose().ise()?.unwrap_or_default();
     cipher.reprompt = data.reprompt;
 
     cipher.save(conn).await?;
@@ -663,7 +663,7 @@ async fn post_collections_inner(conn: AutoTxn, uuid: Uuid, headers: Headers, dat
         EventType::CipherUpdatedCollections,
         cipher.uuid,
         cipher.organization_uuid.unwrap(),
-        headers.user.uuid.clone(),
+        headers.user.uuid,
         headers.device.atype,
         Utc::now(),
         headers.ip,
@@ -941,10 +941,10 @@ async fn save_attachment(mut attachment: Option<Attachment>, cipher_uuid: Uuid, 
         err!("Cipher is neither owned by a user nor an organization");
     };
 
-    if let Some(size_limit) = size_limit {
-        if data.data.len() as u64 > size_limit {
-            err!("Attachment storage limit exceeded with this file");
-        }
+    if let Some(size_limit) = size_limit
+        && data.data.len() as u64 > size_limit
+    {
+        err!("Attachment storage limit exceeded with this file");
     }
 
     let file_id = match &attachment {
@@ -971,10 +971,10 @@ async fn save_attachment(mut attachment: Option<Attachment>, cipher_uuid: Uuid, 
             if size != attachment.file_size {
                 // Update the attachment with the actual file size.
                 attachment.file_size = size;
-                attachment.save(&conn).await?;
+                attachment.save(conn).await?;
             }
         } else {
-            attachment.delete(&conn).await?;
+            attachment.delete(conn).await?;
 
             err!(format!("Attachment size mismatch (expected within [{min_size}, {max_size}], got {size})"));
         }
@@ -1006,7 +1006,7 @@ async fn save_attachment(mut attachment: Option<Attachment>, cipher_uuid: Uuid, 
     });
 
     if let Some(org_uuid) = cipher.organization_uuid {
-        log_event(EventType::CipherAttachmentCreated, cipher.uuid, org_uuid, headers.user.uuid, headers.device.atype, Utc::now(), headers.ip, &conn).await?;
+        log_event(EventType::CipherAttachmentCreated, cipher.uuid, org_uuid, headers.user.uuid, headers.device.atype, Utc::now(), headers.ip, conn).await?;
     }
 
     Ok(cipher)

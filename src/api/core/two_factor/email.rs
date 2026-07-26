@@ -165,7 +165,7 @@ pub async fn email(headers: Headers, data: Json<EmailData>) -> Result<Json<Value
     email_data.reset_token();
     twofactor.atype = TwoFactorType::Email;
     twofactor.data = serde_json::to_value(email_data.clone()).ise()?;
-    twofactor.save(&mut conn).await?;
+    twofactor.save(&conn).await?;
 
     _generate_recover_code(&mut user, &conn).await?;
 

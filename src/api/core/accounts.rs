@@ -387,10 +387,10 @@ pub async fn register(conn: AutoTxn, data: Json<RegisterData>) -> Result<Json<Va
 
     // Check if the length of the username exceeds 50 characters (Same is Upstream Bitwarden)
     // This also prevents issues with very long usernames causing to large JWT's. See #2419
-    if let Some(ref name) = data.name {
-        if name.len() > 50 {
-            err!("The field Name must be a string with a maximum length of 50.");
-        }
+    if let Some(ref name) = data.name
+        && name.len() > 50
+    {
+        err!("The field Name must be a string with a maximum length of 50.");
     }
 
     // Check against the password hint setting here so if it fails, the user
@@ -546,7 +546,7 @@ pub async fn post_set_password(headers: Headers, data: Json<SetPasswordData>) ->
     }
 
     //We need to allow revision-date to use the old security_timestamp
-    let routes = vec!["revision_date"];
+    let routes = ["revision_date"];
     let routes: Option<Vec<String>> = Some(routes.iter().map(ToString::to_string).collect());
 
     user.client_kdf_memory = kdf_mem;
@@ -613,10 +613,10 @@ pub async fn put_avatar(headers: Headers, data: Json<AvatarData>) -> Result<Json
     // It looks like it only supports the 6 hex color format.
     // If you try to add the short value it will not show that color.
     // Check and force 7 chars, including the #.
-    if let Some(color) = &data.avatar_color {
-        if color.len() != 7 {
-            err!("The field AvatarColor must be a HTML/Hex color code with a length of 7 characters")
-        }
+    if let Some(color) = &data.avatar_color
+        && color.len() != 7
+    {
+        err!("The field AvatarColor must be a HTML/Hex color code with a length of 7 characters")
     }
     let conn = DB.get().await.ise()?;
 
@@ -1187,10 +1187,10 @@ pub async fn post_delete_recover(data: Json<DeleteRecoverData>) -> Result<()> {
     if CONFIG.mail_enabled() {
         let conn = DB.get().await.ise()?;
 
-        if let Some(user) = User::find_by_email(&conn, &data.email).await? {
-            if let Err(e) = mail::send_delete_account(&user.email, user.uuid).await {
-                error!("Error sending delete account email: {:#?}", e);
-            }
+        if let Some(user) = User::find_by_email(&conn, &data.email).await?
+            && let Err(e) = mail::send_delete_account(&user.email, user.uuid).await
+        {
+            error!("Error sending delete account email: {:#?}", e);
         }
         Ok(())
     } else {

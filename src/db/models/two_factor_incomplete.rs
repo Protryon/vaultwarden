@@ -14,6 +14,8 @@ pub struct TwoFactorIncomplete {
     // This device UUID is simply what's claimed by the device. It doesn't
     // necessarily correspond to any UUID in the devices table, since a device
     // must complete 2FA login before being added into the devices table.
+    // Stored and matched on in SQL; nothing reads it off a loaded row.
+    #[allow(dead_code)]
     pub device_uuid: Uuid,
     pub device_name: String,
     pub login_time: DateTime<Utc>,

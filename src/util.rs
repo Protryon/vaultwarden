@@ -311,10 +311,10 @@ pub fn format_date(dt: &DateTime<Utc>) -> String {
 pub fn format_datetime_local(dt: &DateTime<Local>, fmt: &str) -> String {
     // Try parsing the `TZ` environment variable to enable formatting `%Z` as
     // a time zone abbreviation.
-    if let Ok(tz) = std::env::var("TZ") {
-        if let Ok(tz) = tz.parse::<chrono_tz::Tz>() {
-            return dt.with_timezone(&tz).format(fmt).to_string();
-        }
+    if let Ok(tz) = std::env::var("TZ")
+        && let Ok(tz) = tz.parse::<chrono_tz::Tz>()
+    {
+        return dt.with_timezone(&tz).format(fmt).to_string();
     }
 
     // Otherwise, fall back to formatting `%Z` as a UTC offset.

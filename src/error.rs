@@ -59,21 +59,21 @@ impl<S> MapResult<S> for Option<S> {
 macro_rules! err {
     ($msg:expr) => {{
         log::error!("{}", $msg);
-        return Err(axol::Error::bad_request(crate::error::api_error($msg)));
+        return Err(axol::Error::bad_request($crate::error::api_error($msg)));
     }};
     ($usr_msg:expr, $log_value:expr) => {{
         log::error!("{}. {}", $usr_msg, $log_value);
-        return Err(axol::Error::bad_request(crate::error::api_error($usr_msg)));
+        return Err(axol::Error::bad_request($crate::error::api_error($usr_msg)));
     }};
 }
 
 #[macro_export]
 macro_rules! err_silent {
     ($msg:expr) => {{
-        return Err(axol::Error::bad_request(crate::error::api_error($msg)));
+        return Err(axol::Error::bad_request($crate::error::api_error($msg)));
     }};
     ($usr_msg:expr, $log_value:expr) => {{
-        return Err(axol::Error::bad_request(crate::error::api_error($usr_msg)));
+        return Err(axol::Error::bad_request($crate::error::api_error($usr_msg)));
     }};
 }
 
@@ -81,11 +81,11 @@ macro_rules! err_silent {
 macro_rules! err_code {
     ($msg:expr, $err_code:expr) => {{
         log::error!("{}", $msg);
-        return Err(axol::Error::response(($err_code, crate::error::api_error($msg))));
+        return Err(axol::Error::response(($err_code, $crate::error::api_error($msg))));
     }};
     ($usr_msg:expr, $log_value:expr, $err_code:expr) => {{
         log::error!("{}. {}", $usr_msg, $log_value);
-        return Err(axol::Error::response(($err_code, crate::error::api_error($usr_msg))));
+        return Err(axol::Error::response(($err_code, $crate::error::api_error($usr_msg))));
     }};
 }
 

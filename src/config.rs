@@ -562,17 +562,18 @@ fn validate_config(config: &Config) -> Result<()> {
         bail!(format!("`DATABASE_MAX_CONNS` contains an invalid value. Ensure it is between 1 and {limit}.",));
     }
 
-    if let Some(ref token) = config.settings.admin_token {
-        if token.trim().is_empty() && !config.advanced.disable_admin_token {
-            eprintln!("[WARNING] `ADMIN_TOKEN` is enabled but has an empty value, so the admin page will be disabled.");
-            eprintln!("[WARNING] To enable the admin page without a token, use `DISABLE_ADMIN_TOKEN`.");
-        }
+    if let Some(ref token) = config.settings.admin_token
+        && token.trim().is_empty()
+        && !config.advanced.disable_admin_token
+    {
+        eprintln!("[WARNING] `ADMIN_TOKEN` is enabled but has an empty value, so the admin page will be disabled.");
+        eprintln!("[WARNING] To enable the admin page without a token, use `DISABLE_ADMIN_TOKEN`.");
     }
 
-    if let Some(smtp) = &config.smtp {
-        if !smtp.from_address.contains('@') {
-            bail!("SMTP_FROM does not contain a mandatory @ sign");
-        }
+    if let Some(smtp) = &config.smtp
+        && !smtp.from_address.contains('@')
+    {
+        bail!("SMTP_FROM does not contain a mandatory @ sign");
     }
 
     if let Some(email_2fa) = &config.email_2fa {

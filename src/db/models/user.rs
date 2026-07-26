@@ -204,10 +204,10 @@ impl User {
         //Check if external id is empty. We don't want to have
         //empty strings in the database
         let mut ext_id: Option<String> = None;
-        if let Some(external_id) = external_id {
-            if !external_id.is_empty() {
-                ext_id = Some(external_id);
-            }
+        if let Some(external_id) = external_id
+            && !external_id.is_empty()
+        {
+            ext_id = Some(external_id);
         }
         self.external_id = ext_id;
     }
@@ -220,8 +220,8 @@ impl User {
     /// * `password` - A str which contains a hashed version of the users master password.
     /// * `new_key` - A String  which contains the new aKey value of the users master password.
     /// * `allow_next_route` - A Option<Vec<String>> with the function names of the next allowed (rocket) routes.
-    ///                       These routes are able to use the previous stamp id for the next 2 minutes.
-    ///                       After these 2 minutes this stamp will expire.
+    ///   These routes are able to use the previous stamp id for the next 2 minutes.
+    ///   After these 2 minutes this stamp will expire.
     ///
     pub async fn set_password(
         &mut self,
@@ -258,8 +258,8 @@ impl User {
     ///
     /// # Arguments
     /// * `route_exception` - A Vec<String> with the function names of the next allowed (rocket) routes.
-    ///                       These routes are able to use the previous stamp id for the next 2 minutes.
-    ///                       After these 2 minutes this stamp will expire.
+    ///   These routes are able to use the previous stamp id for the next 2 minutes.
+    ///   After these 2 minutes this stamp will expire.
     ///
     pub fn set_stamp_exception(&mut self, route_exception: Vec<String>) {
         let stamp_exception = UserStampException {

@@ -82,7 +82,7 @@ pub async fn ldap_import(conn: AutoTxn, token: PublicToken, data: Json<OrgImport
                 UserOrgStatus::Accepted // Automatically mark user as accepted if no email invites
             };
 
-            let mut new_org_user = UserOrganization::new(user.uuid.clone(), org_id.clone());
+            let mut new_org_user = UserOrganization::new(user.uuid, org_id);
             new_org_user.access_all = false;
             new_org_user.atype = UserOrgType::User;
             new_org_user.status = user_org_status;
@@ -114,11 +114,11 @@ pub async fn ldap_import(conn: AutoTxn, token: PublicToken, data: Json<OrgImport
             GroupUser::delete_all_by_group(&conn, group_uuid).await?;
 
             for ext_id in &group_data.member_external_ids {
-                if let Some(user) = User::find_by_external_id(&conn, ext_id).await? {
-                    if let Some(user_org) = UserOrganization::get(&conn, user.uuid, org_id).await? {
-                        let group_user = GroupUser::new(group_uuid.clone(), user_org.user_uuid);
-                        group_user.save(&conn).await?;
-                    }
+                if let Some(user) = User::find_by_external_id(&conn, ext_id).await?
+                    && let Some(user_org) = UserOrganization::get(&conn, user.uuid, org_id).await?
+                {
+                    let group_user = GroupUser::new(group_uuid, user_org.user_uuid);
+                    group_user.save(&conn).await?;
                 }
             }
         }

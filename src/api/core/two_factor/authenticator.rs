@@ -276,9 +276,8 @@ mod tests {
         let secret = gen_resp.json()["key"].as_str().unwrap().to_string();
 
         // Neither a valid password nor a valid token → rejected before touching the TOTP code.
-        let bad = client
-            .post("/api/two-factor/authenticator", json!({ "userVerificationToken": "not-a-jwt", "key": secret, "token": totp_code(&secret, 0) }))
-            .await;
+        let bad =
+            client.post("/api/two-factor/authenticator", json!({ "userVerificationToken": "not-a-jwt", "key": secret, "token": totp_code(&secret, 0) })).await;
         assert!(bad.status >= 400, "bogus token should be rejected, got {}: {}", bad.status, bad.body);
     }
 
