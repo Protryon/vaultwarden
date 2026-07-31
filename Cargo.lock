@@ -4719,7 +4719,7 @@ checksum = "8f54a172d0620933a27a4360d3db3e2ae0dd6cceae9730751a036bbf182c4b23"
 
 [[package]]
 name = "vaultwarden"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "always_cell",
  "anyhow",
