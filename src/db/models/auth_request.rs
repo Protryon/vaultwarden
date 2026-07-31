@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use tokio_postgres::Row;
 use uuid::Uuid;
 
-use crate::{config::PUBLIC_NO_TRAILING_SLASH, crypto::ct_eq, db::Conn, util::format_date};
+use crate::{config::PUBLIC_NO_TRAILING_SLASH, crypto::ct_eq, db::Conn, db::models::device_type_name, util::format_date};
 
 pub struct AuthRequest {
     pub uuid: Uuid,
@@ -163,39 +163,5 @@ impl AuthRequest {
         let expiry = Utc::now() - chrono::TimeDelta::minutes(15);
         conn.execute(r"DELETE FROM auth_requests WHERE creation_date < $1", &[&expiry]).await.ise()?;
         Ok(())
-    }
-}
-
-/// Maps a Bitwarden device-type id to its display name, used for `requestDeviceType`.
-/// https://github.com/bitwarden/server/blob/master/src/Core/Enums/DeviceType.cs
-fn device_type_name(value: i32) -> &'static str {
-    match value {
-        0 => "Android",
-        1 => "iOS",
-        2 => "Chrome Extension",
-        3 => "Firefox Extension",
-        4 => "Opera Extension",
-        5 => "Edge Extension",
-        6 => "Windows",
-        7 => "macOS",
-        8 => "Linux",
-        9 => "Chrome",
-        10 => "Firefox",
-        11 => "Opera",
-        12 => "Edge",
-        13 => "Internet Explorer",
-        15 => "Android",
-        16 => "UWP",
-        17 => "Safari",
-        18 => "Vivaldi",
-        19 => "Vivaldi Extension",
-        20 => "Safari Extension",
-        21 => "SDK",
-        22 => "Server",
-        23 => "Windows CLI",
-        24 => "macOS CLI",
-        25 => "Linux CLI",
-        26 => "DuckDuckGo",
-        _ => "Unknown Browser",
     }
 }

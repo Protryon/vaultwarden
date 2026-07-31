@@ -18,6 +18,7 @@ use crate::util::Cached;
 pub fn route(mut router: Router) -> Router {
     if CONFIG.settings.web_vault_enabled {
         router = router.get("/", web_index);
+        router = router.get("/css/vaultwarden.css", vaultwarden_css);
         router = router.get("/app-id.json", app_id);
         router = router.fallback("/", web_files);
     }
@@ -40,6 +41,14 @@ async fn web_index() -> Result<Response> {
     let path = CONFIG.folders.web_vault().join("index.html");
     let raw = tokio::fs::read_to_string(&path).await?;
     (Cached::short(false), Html(raw)).into_response()
+}
+
+/// The stylesheet the web-vault's `index.html` pulls in to hide features this
+/// server doesn't provide. Missing it leaves those UI elements visible.
+async fn vaultwarden_css() -> Result<Response> {
+    let css = crate::templates::render_vaultwarden_css()?;
+    // Cache for one day should be enough and not too much
+    (Typed(ContentType::from(mime::TEXT_CSS)), Cached::ttl(86_400, false), css).into_response()
 }
 
 async fn app_id() -> Result<Response> {
@@ -169,4 +178,23 @@ pub async fn static_files(Path(filename): Path<String>) -> Result<Response> {
         _ => return Err(Error::NotFound),
     };
     (content_type, bytes).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::test_harness::TestClient;
+
+    /// The web-vault's `index.html` links this stylesheet. When the route is
+    /// missing the SPA fallback answers with HTML, and browsers refuse to apply
+    /// it under strict MIME checking.
+    #[tokio::test]
+    async fn vaultwarden_css_is_served_as_css() {
+        let client = TestClient::new().await;
+        let resp = client.get("/css/vaultwarden.css").await;
+        resp.assert_ok();
+        assert_eq!(resp.content_type.as_deref(), Some("text/css"));
+        // Compiled SCSS, so the `%vw-hide` placeholder is gone but its rule isn't.
+        assert!(resp.body.contains("display:none"), "unexpected stylesheet body: {}", resp.body);
+        assert!(!resp.body.contains("@extend"), "stylesheet was not compiled: {}", resp.body);
+    }
 }

@@ -20,6 +20,7 @@ use uuid::Uuid;
 use crate::{
     CONFIG,
     auth::{encode_jwt, generate_delete_claims, generate_emergency_access_invite_claims, generate_invite_claims, generate_verify_email_claims},
+    db::{Device, device_type_name},
 };
 
 lazy_static::lazy_static! {
@@ -390,9 +391,8 @@ pub async fn send_invite_confirmed(address: &str, org_name: &str) -> Result<()> 
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_new_device_logged_in(address: &str, ip: IpAddr, dt: DateTime<Utc>, device: &str) -> Result<()> {
+pub async fn send_new_device_logged_in(address: &str, ip: IpAddr, dt: DateTime<Utc>, device: &Device) -> Result<()> {
     use crate::util::upcase_first;
-    let device = upcase_first(device);
 
     let fmt = "%A, %B %_d, %Y at %r %Z";
     let (subject, body_html, body_text) = get_text(
@@ -401,7 +401,8 @@ pub async fn send_new_device_logged_in(address: &str, ip: IpAddr, dt: DateTime<U
             "url": &*PUBLIC_NO_TRAILING_SLASH,
             "img_src": &*SMTP_IMAGE_SRC,
             "ip": ip,
-            "device": device,
+            "device_name": upcase_first(&device.name),
+            "device_type": device_type_name(device.atype),
             "datetime": crate::util::format_naive_datetime_local(dt, fmt),
         }),
     )?;
@@ -409,9 +410,8 @@ pub async fn send_new_device_logged_in(address: &str, ip: IpAddr, dt: DateTime<U
     send_email(address, &subject, body_html, body_text).await
 }
 
-pub async fn send_incomplete_2fa_login(address: &str, ip: IpAddr, dt: DateTime<Utc>, device: &str) -> Result<()> {
+pub async fn send_incomplete_2fa_login(address: &str, ip: &str, dt: DateTime<Utc>, device_name: &str, device_type: i32) -> Result<()> {
     use crate::util::upcase_first;
-    let device = upcase_first(device);
 
     let fmt = "%A, %B %_d, %Y at %r %Z";
     let (subject, body_html, body_text) = get_text(
@@ -420,7 +420,8 @@ pub async fn send_incomplete_2fa_login(address: &str, ip: IpAddr, dt: DateTime<U
             "url": &*PUBLIC_NO_TRAILING_SLASH,
             "img_src": &*SMTP_IMAGE_SRC,
             "ip": ip,
-            "device": device,
+            "device_name": upcase_first(device_name),
+            "device_type": device_type_name(device_type),
             "datetime": crate::util::format_naive_datetime_local(dt, fmt),
             "time_limit": CONFIG.settings.incomplete_2fa_time_limit,
         }),
@@ -552,4 +553,31 @@ async fn send_email(address: &str, subject: &str, body_html: String, body_text: 
         .map_err(Error::internal)?;
 
     send_with_selected_transport(email).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_harness::init_globals;
+
+    /// Mail is disabled in the test config, so `send_email` is a no-op — but the
+    /// templates are still rendered, and handlebars runs in strict mode. These
+    /// catch senders whose variables drift out of sync with their template.
+    #[tokio::test]
+    async fn new_device_logged_in_renders() {
+        init_globals().await;
+        let device = Device::new(Uuid::new_v4(), Uuid::new_v4(), "firefox".to_string(), 10);
+        let (subject, body_html, body_text) =
+            get_text("email/new_device_logged_in", json!({ "url": &*PUBLIC_NO_TRAILING_SLASH, "img_src": &*SMTP_IMAGE_SRC, "ip": "127.0.0.1", "device_name": "Firefox", "device_type": device_type_name(device.atype), "datetime": "now" })).unwrap();
+        assert!(subject.contains("Firefox"));
+        assert!(body_html.contains("Firefox"));
+        assert!(body_text.contains("Firefox"));
+        send_new_device_logged_in("user@example.com", IpAddr::from([127, 0, 0, 1]), Utc::now(), &device).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn incomplete_2fa_login_renders() {
+        init_globals().await;
+        send_incomplete_2fa_login("user@example.com", "127.0.0.1", Utc::now(), "firefox", 10).await.unwrap();
+    }
 }

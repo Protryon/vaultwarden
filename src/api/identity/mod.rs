@@ -235,7 +235,7 @@ async fn authorization_login(data: ConnectData, user_uuid: &mut Option<Uuid>, co
 
     if CONFIG.mail_enabled()
         && new_device
-        && let Err(e) = mail::send_new_device_logged_in(&user.email, ip.ip, now, &device.name).await
+        && let Err(e) = mail::send_new_device_logged_in(&user.email, ip.ip, now, &device).await
     {
         error!("Error sending new device email: {:#?}", e);
 
@@ -467,7 +467,7 @@ async fn password_login(data: ConnectData, user_uuid: &mut Option<Uuid>, conn: &
 
     if CONFIG.mail_enabled()
         && new_device
-        && let Err(e) = mail::send_new_device_logged_in(&user.email, ip.ip, now, &device.name).await
+        && let Err(e) = mail::send_new_device_logged_in(&user.email, ip.ip, now, &device).await
     {
         error!("Error sending new device email: {:#?}", e);
 
@@ -544,7 +544,7 @@ async fn user_api_key_login(data: ConnectData, user_uuid: &mut Option<Uuid>, con
 
     if CONFIG.mail_enabled() && new_device {
         let now = Utc::now();
-        if let Err(e) = mail::send_new_device_logged_in(&user.email, ip.ip, now, &device.name).await {
+        if let Err(e) = mail::send_new_device_logged_in(&user.email, ip.ip, now, &device).await {
             error!("Error sending new device email: {:#?}", e);
 
             if CONFIG.advanced.require_device_email {
@@ -635,7 +635,7 @@ async fn twofactor_auth(user_uuid: Uuid, data: &ConnectData, device: &mut Device
         return Ok(None);
     }
 
-    let incomplete_uuid = TwoFactorIncomplete::mark_incomplete(conn, user_uuid, device.uuid, &device.name, ip.ip).await?;
+    let incomplete_uuid = TwoFactorIncomplete::mark_incomplete(conn, user_uuid, device, ip.ip).await?;
 
     let twofactor_ids: Vec<_> = twofactors.iter().map(|tf| tf.atype).collect();
     let selected_id = data.two_factor_provider.unwrap_or(twofactor_ids[0]); // If we aren't given a two factor provider, asume the first one

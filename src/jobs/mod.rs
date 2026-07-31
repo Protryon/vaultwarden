@@ -172,7 +172,7 @@ async fn send_incomplete_2fa_notifications() -> Result<()> {
     for login in incomplete_logins {
         let user = User::get(&conn, login.user_uuid).await?.ok_or(Error::NotFound)?;
         info!("User {} did not complete a 2FA login within the configured time limit. IP: {}", user.email, login.ip_address);
-        crate::mail::send_incomplete_2fa_login(&user.email, login.ip_address, login.login_time, &login.device_name).await?;
+        crate::mail::send_incomplete_2fa_login(&user.email, &login.ip_address, login.login_time, &login.device_name, login.device_type).await?;
         login.delete(&conn).await?;
     }
     Ok(())

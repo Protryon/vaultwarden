@@ -69,6 +69,7 @@ lettre = { version = "0.11", features = ["smtp-transport", "sendmail-transport",
 percent-encoding = "2.3" # URL encoding library used for URL's in the emails
 email_address = "0.2.9"
 handlebars = { version = "6.3", features = ["dir_source"] }
+grass_compiler = { version = "0.13.4", default-features = false } # compiles the web-vault customization stylesheet
 reqwest = { version = "0.12", features = ["stream", "json", "gzip", "brotli", "socks", "cookies", "hickory-dns"] }
 html5gum = "0.8"
 regex = { version = "1.11", features = ["std", "perf", "unicode-perl"], default-features = false }

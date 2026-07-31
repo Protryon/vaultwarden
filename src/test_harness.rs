@@ -203,6 +203,12 @@ impl TestDb {
 ///     .await;
 /// }
 /// ```
+/// Install the global `CONFIG` (and the RSA keys) without touching the database,
+/// for tests that only need config to be present.
+pub async fn init_globals() {
+    global_init().await;
+}
+
 pub async fn run_db_test<T, F>(test: F) -> T
 where
     F: AsyncFnOnce(&mut TestDb) -> T,
@@ -298,6 +304,7 @@ async fn wait_until_ready(addr: SocketAddr) {
 pub struct TestResponse {
     pub status: u16,
     pub body: String,
+    pub content_type: Option<String>,
 }
 
 impl TestResponse {
@@ -417,10 +424,12 @@ impl TestClient {
     async fn send(&self, builder: reqwest::RequestBuilder) -> TestResponse {
         let resp = builder.send().await.expect("HTTP request failed");
         let status = resp.status().as_u16();
+        let content_type = resp.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).map(ToOwned::to_owned);
         let body = resp.text().await.unwrap_or_default();
         TestResponse {
             status,
             body,
+            content_type,
         }
     }
 

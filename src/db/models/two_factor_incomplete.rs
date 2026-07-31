@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use tokio_postgres::Row;
 use uuid::Uuid;
 
-use crate::{CONFIG, db::Conn};
+use crate::{CONFIG, db::Conn, db::models::Device};
 
 #[derive(Debug)]
 pub struct TwoFactorIncomplete {
@@ -18,8 +18,9 @@ pub struct TwoFactorIncomplete {
     #[allow(dead_code)]
     pub device_uuid: Uuid,
     pub device_name: String,
+    pub device_type: i32,
     pub login_time: DateTime<Utc>,
-    pub ip_address: IpAddr,
+    pub ip_address: String,
 }
 
 impl From<Row> for TwoFactorIncomplete {
@@ -29,14 +30,15 @@ impl From<Row> for TwoFactorIncomplete {
             user_uuid: row.get(1),
             device_uuid: row.get(2),
             device_name: row.get(3),
-            login_time: row.get(4),
-            ip_address: row.get(5),
+            device_type: row.get(4),
+            login_time: row.get(5),
+            ip_address: row.get(6),
         }
     }
 }
 
 impl TwoFactorIncomplete {
-    pub async fn mark_incomplete(conn: &Conn, user_uuid: Uuid, device_uuid: Uuid, device_name: &str, ip: IpAddr) -> Result<Option<Uuid>> {
+    pub async fn mark_incomplete(conn: &Conn, user_uuid: Uuid, device: &Device, ip: IpAddr) -> Result<Option<Uuid>> {
         if CONFIG.settings.incomplete_2fa_time_limit <= 0 || !CONFIG.mail_enabled() {
             return Ok(None);
         }
@@ -45,8 +47,8 @@ impl TwoFactorIncomplete {
         let login_time = Utc::now();
 
         conn.execute(
-            r"INSERT INTO twofactor_incomplete (uuid, user_uuid, device_uuid, device_name, login_time, ip_address) VALUES ($1, $2, $3, $4, $5, $6)",
-            &[&uuid, &user_uuid, &device_uuid, &device_name, &login_time, &ip.to_string()],
+            r"INSERT INTO twofactor_incomplete (uuid, user_uuid, device_uuid, device_name, device_type, login_time, ip_address) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            &[&uuid, &user_uuid, &device.uuid, &device.name, &device.atype, &login_time, &ip.to_string()],
         )
         .await
         .ise()?;
@@ -65,7 +67,16 @@ impl TwoFactorIncomplete {
     }
 
     pub async fn find_logins_before(conn: &Conn, when: DateTime<Utc>) -> Result<Vec<Self>> {
-        Ok(conn.query(r"SELECT * FROM twofactor_incomplete WHERE login_time < $1", &[&when]).await.ise()?.into_iter().map(|x| x.into()).collect())
+        Ok(conn
+            .query(
+                r"SELECT uuid, user_uuid, device_uuid, device_name, device_type, login_time, ip_address FROM twofactor_incomplete WHERE login_time < $1",
+                &[&when],
+            )
+            .await
+            .ise()?
+            .into_iter()
+            .map(|x| x.into())
+            .collect())
     }
 
     pub async fn delete(&self, conn: &Conn) -> Result<()> {

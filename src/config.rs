@@ -711,6 +711,13 @@ impl Config {
         }
     }
 
+    /// Tests whether signup is closed off entirely, i.e. no email address could
+    /// register through the web vault. Used to hide the register link.
+    pub fn is_signup_disabled(&self) -> bool {
+        (!self.settings.signups_allowed && self.settings.signups_domains_whitelist.is_empty() && (self.mail_enabled() || !self.settings.invitations_allowed))
+            || self.sso.as_ref().is_some_and(|sso| sso.force_sso)
+    }
+
     /// Tests whether the specified user is allowed to create an organization.
     pub fn is_org_creation_allowed(&self, email: &str) -> bool {
         if self.settings.org_creation_users.is_empty() {
