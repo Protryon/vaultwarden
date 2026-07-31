@@ -389,7 +389,10 @@ impl FullCipher {
             "notes": self.cipher.notes,
             "fields": self.cipher.fields,
 
-            "data": data_json,
+            // Modern clients (e.g. the WASM SDK used by the browser extension) deserialize
+            // this as a plain string, mirroring upstream Bitwarden's `Cipher.Data` column,
+            // which stores the raw JSON text rather than a parsed object.
+            "data": data_json.to_string(),
 
             "passwordHistory": password_history_json,
 

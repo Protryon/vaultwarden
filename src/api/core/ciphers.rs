@@ -1476,7 +1476,11 @@ mod tests {
             let created = created.json();
             assert_eq!(created["type"], atype, "type must be preserved: {}", created);
             assert_eq!(created[key]["value"], format!("2.secret-{atype}|mac"), "typed sub-object must carry the data: {}", created);
-            assert_eq!(created["data"]["value"], format!("2.secret-{atype}|mac"), "data must carry the body: {}", created);
+            // `data` is a JSON-serialized string (matching upstream Bitwarden's `Cipher.Data`
+            // column), not a nested object — modern clients (e.g. the WASM SDK) require this.
+            let data_str = created["data"].as_str().expect("data must be a string");
+            let data_value: serde_json::Value = serde_json::from_str(data_str).expect("data must be valid JSON");
+            assert_eq!(data_value["value"], format!("2.secret-{atype}|mac"), "data must carry the body: {}", created);
 
             // And it survives a sync (exercises the response builder for a stored cipher).
             let id = created["id"].as_str().expect("cipher id").to_string();
